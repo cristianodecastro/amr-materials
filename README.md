@@ -34,6 +34,8 @@ Take these courses in the sequence that works best for you.
 | **Basic Robotic Behaviors & Odometry** | Coursera | Wheeled locomotion, differential drive, kinematics | [Open Course](https://www.coursera.org/learn/basic-robotic-behaviors-and-odometry/home/module/1) |
 | **Robotic Mapping & Trajectory Generation** | Coursera | Occupancy grids, sensor filtering, trajectory design | [Open Course](https://www.coursera.org/learn/robotic-mapping-trajectory-generation/home/module/1) |
 | **Robotic Path Planning & Task Execution** | Coursera | $A^*$, Dijkstra, obstacle avoidance, mission logic | [Open Course](https://www.coursera.org/learn/robotic-path-planning-task-execution/home/module/1) |
+| **Robotics Foundations I: Robot Modeling** | edX (UniNa) | Direct/inverse kinematics, transformation matrices | [Open Course](https://www.edx.org/learn/robotics/universita-degli-studi-di-napoli-federico-ii-robotics-foundations-i-robot-modeling) |
+| **Robotics Foundations II: Robot Control** | edX (UniNa) | PID loops, trajectory tracking, dynamic control | [Open Course](https://www.edx.org/learn/robotics/universita-degli-studi-di-napoli-federico-ii-robotics-foundation-ii-robot-control) |
 
 ---
 
@@ -51,5 +53,3 @@ Take these courses in the sequence that works best for you.
 | Course | Provider | Key Topics | Link |
 | :--- | :--- | :--- | :--- |
 | **Computer Vision & Image Processing** | edX (IBM) | Filters, edge detection, feature extraction | [Open Course](https://www.edx.org/learn/image-processing/ibm-computer-vision-and-image-processing-fundamentals) |
-| **Robotics Foundations I: Robot Modeling** | edX (UniNa) | Direct/inverse kinematics, transformation matrices | [Open Course](https://www.edx.org/learn/robotics/universita-degli-studi-di-napoli-federico-ii-robotics-foundations-i-robot-modeling) |
-| **Robotics Foundations II: Robot Control** | edX (UniNa) | PID loops, trajectory tracking, dynamic control | [Open Course](https://www.edx.org/learn/robotics/universita-degli-studi-di-napoli-federico-ii-robotics-foundation-ii-robot-control) |
