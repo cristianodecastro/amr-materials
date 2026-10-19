@@ -484,7 +484,7 @@ controller is being forwarded.
 | `src/main/include/subsystems/LocalizationSubsystem.h`, `src/main/cpp/subsystems/LocalizationSubsystem.cpp` | Periodic mode selection, controller input processing, subsystem/dashboard setup, sonar ping scheduler, localization start and diagnostics. |
 | `src/main/cpp/Robot.cpp` | Robot lifecycle, cleanup of old SmartDashboard trees, LiveWindow suppression, automatic tab selection. |
 | `src/main/cpp/RobotContainer.cpp` | Command/subsystem container; no autonomous command is currently selected. |
-| `README.md` | Operator instructions and source-level wiring/measurement documentation. |
+| `SkillsChallenge-Info.md` | Operator instructions and source-level wiring/measurement documentation. |
 | `src/test/cpp/ForwardDriveControllerChecks.cpp` | Compile-time regression checks for the pure one-metre controller. These are not a substitute for a physical drive test. |
 
 ## 12. Suggested first teleop check
