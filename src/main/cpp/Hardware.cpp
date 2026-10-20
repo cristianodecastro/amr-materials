@@ -62,24 +62,14 @@ void Hardware::DriveRobotRelative(double vx_MMps, double vy_MMps,
 }
 
 void Hardware::DriveWheelsMMps(const double (&wheelSpeed)[3], double maxOutput) {
-  if (!std::isfinite(maxOutput) || maxOutput <= 0.0 ||
-      !std::isfinite(localization_config::MAX_WHEEL_SPEED_MMPS) ||
-      localization_config::MAX_WHEEL_SPEED_MMPS <= 0.0) {
+  const double denominator =
+      drive_kinematics::OutputDenominator(wheelSpeed, maxOutput);
+  if (denominator <= 0.0) {
     StopDrive();
     return;
   }
-  maxOutput = std::min(1.0, maxOutput);
-  double largest = localization_config::MAX_WHEEL_SPEED_MMPS;
   for (int wheel = 0; wheel < localization_config::WHEEL_COUNT; ++wheel) {
-    if (!std::isfinite(wheelSpeed[wheel])) {
-      StopDrive();
-      return;
-    }
-    // Scale the whole vector together to preserve translation direction.
-    largest = std::max(largest, std::fabs(wheelSpeed[wheel]) / maxOutput);
-  }
-  for (int wheel = 0; wheel < localization_config::WHEEL_COUNT; ++wheel) {
-    SetWheelPwm(wheel, wheelSpeed[wheel] / largest);
+    SetWheelPwm(wheel, wheelSpeed[wheel] / denominator);
   }
 }
 

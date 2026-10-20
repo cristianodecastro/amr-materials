@@ -27,7 +27,8 @@ projects.
 The software has three source-selected operating paths:
 
 1. **Manual teleoperation** is the current default. The driver's left stick
-   commands robot-relative translation in any direction, including diagonals.
+   commands robot-relative translation in any direction, including diagonals;
+   L2/R2 request counterclockwise/clockwise rotation.
 2. **Forward 1000 mm exercise** is an encoder-only test started by the
    physical button. It is available by changing source constants.
 3. **Localization evaluation** reads the IMU, wheel encoders, and sonars to
@@ -170,43 +171,80 @@ dashboard to verify the actual mode. Change `DRIVER_JOYSTICK_PORT`,
 Disconnect other gamepads during initial setup if they shift which device is
 joystick port 0.
 
-### Translation shaping and output
+L2 and R2 use digital button inputs, numbered from 1 by WPILib. Defaults are
+`DRIVER_L2_BUTTON = 7` and `DRIVER_R2_BUTTON = 8`, a PS-style mapping. The exact
+Windows/Control Station mapping is not established by the product page.
+Check the L2/R2 dashboard lamps while Disabled, and change these two constants
+if the physical buttons report different numbers in Windows `joy.cpl`.
+Trigger-axis values such as -1 at rest are not used by this digital mapping.
+
+### Motor specifications, translation shaping, and rotation
 
 - A circular 12% center deadband suppresses stick noise. Values outside the
   deadband are rescaled smoothly to the requested speed range.
 - The vector magnitude is capped, so a full diagonal does not request
   sqrt(2) times the maximum straight-line speed.
-- The full-stick nominal request is 250 mm/s. A 500 mm/s^2 limit smooths
-  changes in commanded vector. Centering the stick requests zero immediately.
-- The drive output is capped at 25%. `Hardware::DriveRobotRelative()` maps
-  the desired translation through the three-wheel inverse kinematics, and
-  `DriveWheelsMMps()` scales the wheel vector together to preserve its ratios.
-- No yaw rate is commanded. The mode does not implement heading hold,
-  field-oriented driving, obstacle avoidance, sonar correction, or a measured
-  velocity PID loop. `MAX_WHEEL_SPEED_MMPS = 1000` is still a placeholder, so
-  mm/s dashboard values are requested speeds rather than verified physical
-  speeds.
+- The full-stick request is about 598.16 mm/s, calculated from a 102 mm wheel
+  diameter and 112 RPM maximum no-load gearbox-output speed. A 1000 mm/s^2
+  limit smooths translation changes. Centering the stick requests zero
+  translation immediately, including while rotation is active.
+- Manual drive allows 100% motor output. `Hardware::DriveRobotRelative()`
+  maps translation and yaw through the three-wheel inverse kinematics, and
+  `DriveWheelsMMps()` scales the combined wheel vector together if a motor
+  reaches its limit. This preserves the requested ratios while reducing
+  translation and yaw together during saturation.
+- L2 requests positive (counterclockwise) yaw; R2 requests negative (clockwise)
+  yaw. The nominal yaw limit is 90 degrees/s and its ramp is 180 degrees/s^2.
+  Both triggers pressed cancel yaw. Releasing both triggers commands zero yaw
+  immediately while translation can continue. The left stick and triggers
+  can be used simultaneously. `TELEOP_YAW_SIGN = +1` follows the existing
+  tangent-wheel convention; the installed rotation direction still needs a
+  physical check.
+- The mode does not implement heading hold, field-oriented driving, obstacle
+  avoidance, sonar correction, or a measured velocity PID loop. The RPM-based
+  wheel-speed scale is a feedforward estimate, so dashboard speeds remain
+  requests rather than verified physical speeds under load.
 - The physical Start button is unused in this mode. Wheel encoder counts are
   displayed for observation, but they do not adjust the teleop command.
 
 After Control Station attaches, the controller must report both configured
-axes. A missing Driver Station or missing axes commands zero and disarms the
+axes and enough buttons for the configured L2/R2 numbers. A missing Driver
+Station or missing configured inputs commands zero and disarms the
 stick. Disabled, Autonomous, or Test mode also commands zero and disarms it.
 After enabling, changing modes, or reconnecting, center the stick until
-**Stick armed** is true before moving it. This prevents a stick held off-center
-through enable from immediately starting the robot. If a PC continues to send
+**Stick armed** is true and release both L2/R2 before moving. Arming requires
+the stick centered and both triggers released, so holding a control through
+enable cannot immediately start the robot. If a PC continues to send
 stale axis values as valid controller input after a Bluetooth failure, the
 robot cannot independently detect the physical radio failure; the status
 reflects the data reported through Control Station.
 
+Studica's [Maverick motor specifications](https://docs.wsr.studica.com/en/latest/docs/Motors/maverick-dc-motor.html)
+give no-load speed 88/100/112 RPM (minimum/nominal/maximum) and rated speed
+68/80/92 RPM. These are already speeds at the 61:1 gearbox output. For direct
+drive, wheel surface speed is `pi * 102 * RPM / 60` mm/s. Nominal no-load speed
+is about 534.07 mm/s and nominal rated speed about 427.26 mm/s. The code uses
+the maximum no-load value, 598.16 mm/s, as the full-output wheel scale; it does
+not divide the output-shaft RPM by 61 again. External gearing still belongs
+in `MOTOR_TO_WHEEL_RATIO`.
+
+The first manual-drive revision limited output to 25% and used a 1000 mm/s
+placeholder. With a 250 mm/s request, full forward applied only about 21.65%
+to M0/M1; full sideways translation reached 25%. The updated full forward
+pattern reaches about +86.6%/-86.6%/0 and sideways travel can reach 100% on
+the fastest wheel. These are ideal command percentages, not measured chassis
+speeds. The optional one-metre exercise retains its own 25% output cap and
+encoder target while using the corrected shared wheel-speed scale.
+
 ### Teleop dashboard
 
-Robot startup selects the **Teleop** Shuffleboard tab. Its 14 values are
-arranged in three rows:
+Robot startup selects the **Teleop** Shuffleboard tab. Its 18 values are
+arranged in four rows:
 
 1. Drive status, Enabled, Controller, Stick armed.
 2. Raw left-stick X/Y and requested forward/left speeds in mm/s.
 3. M0/M1/M2 raw encoder counts and applied output percentages.
+4. L2 - CCW, R2 - CW, requested yaw rate in degrees/s, and output limit (%).
 
 These are enough to check controller recognition, axis signs, drive request,
 motor output, and encoder response. This compact mode does not run sonar
@@ -391,10 +429,13 @@ or a layout/IMU convention mismatch would require revisiting it.
 | Wheel diameter | 102 mm | User specified; radius is 51 mm. |
 | Wheel-center radius | 168 mm for each wheel | User changed the earlier 150 mm placeholder to 168 mm. |
 | Radial wheel angles | M0 150°, M1 30°, M2 270° | Supplied by user in a top-view trigonometric-quadrant description. |
-| Titan output counts/revolution | 1464 | Provisional; confirm against actual Titan/75001 encoder count convention. |
+| Titan output counts/revolution | 1464 | Matches Studica's documented 6 CPR * 61 * 4 quadrature output-shaft convention; verify readings on the installed hardware. |
 | Motor-to-wheel ratio | 1.0 | Assumes direct drive; verify external gearing. |
 | Encoder and motor signs | all +1.0 | Must agree with installed motor and encoder wiring; the first drive observation makes this worth rechecking. |
-| Maximum wheel surface speed | 1000 mm/s | Placeholder used to map mm/s requests to normalized output. |
+| Full-output wheel surface-speed scale | 598.16 mm/s | 112 RPM at 102 mm diameter, external ratio 1.0; no-load feedforward estimate. |
+| Teleop full-stick request / output cap | 598.16 mm/s / 100% | Replaces the initial 250 mm/s request and 25% cap. |
+| L2/R2 button mapping | 7 / 8 | PS-style digital defaults; verify with the Disabled dashboard lamps. |
+| Teleop yaw rate / acceleration | 90 degrees/s / 180 degrees/s^2 | Nominal requests, L2 CCW and R2 CW; both triggers cancel. |
 | Arena size | 2000 x 2000 mm | Placeholder. |
 | Starting pose | (500, 250) mm, 0° | Placeholder. |
 | Sonar mount faces | rear X=-100 mm, rear half-spacing 80 mm, side Y=120 mm | Symmetric placeholders; measure actual sensing faces from robot center. |
@@ -402,7 +443,7 @@ or a layout/IMU convention mismatch would require revisiting it.
 | Joystick mapping | port 0, axes 0/1, signs +1/-1 | Common default; verify in Windows `joy.cpl` and the Teleop raw-axis cards for the selected USB/Bluetooth mode. |
 | Manual drive frame correction | -90° relative to source wheel-layout frame | Empirical, based on the first one-metre attempt moving left; not yet confirmed by a subsequent physical run. |
 
-The one-metre estimate uses the provisional scale
+The one-metre estimate uses the documented output-count scale
 `2*pi*51 / 1464 = 0.218881455 mm/count`, then divides each signed wheel
 travel by its projection coefficient. Any count-per-revolution or gearing
 error affects the reported travel. Wheel slip, wheel compression/effective
@@ -471,6 +512,11 @@ controller is being forwarded.
    Station's first joystick, uses the left stick for robot-relative translation
    including diagonals, and reports raw axes/encoder/output values on a new
    Teleop tab. Debug and release builds succeeded after this source change.
+9. After the user reported slow manual translation, the wheel-speed scale was
+   corrected to the Maverick's documented 112 RPM maximum no-load output
+   speed, and the manual motor cap was raised from 25% to 100%. L2/R2 rotation,
+   combined translation/rotation, trigger-aware arming, four more dashboard
+   fields, and a pure teleop controller with compile-time checks were added.
 
 ## 11. Current files and responsibilities
 
@@ -480,12 +526,15 @@ controller is being forwarded.
 | `src/main/include/Hardware.h`, `src/main/cpp/Hardware.cpp` | VMX DIO inputs, ultrasonic objects, navX access, Titan M0-M2 and encoder access, wheel-kinematic output and motor stop behavior. |
 | `src/main/include/DriveKinematics.h` | Shared wheel speed and direction-projection equations. |
 | `src/main/include/ForwardDriveController.h` | Hardware-independent one-metre state machine and encoder feedback for the optional exercise. |
+| `src/main/include/TeleopDriveController.h` | Manual-drive input validation, neutral arming, translation shaping, L2/R2 yaw requests, independent component release, and translation-frame rotation. |
 | `src/main/include/Localization.h`, `src/main/cpp/Localization.cpp` | Pose, encoder odometry, yaw/acceleration fusion, predicted sonar wall ranges, covariance correction, optional detailed telemetry. |
 | `src/main/include/subsystems/LocalizationSubsystem.h`, `src/main/cpp/subsystems/LocalizationSubsystem.cpp` | Periodic mode selection, controller input processing, subsystem/dashboard setup, sonar ping scheduler, localization start and diagnostics. |
 | `src/main/cpp/Robot.cpp` | Robot lifecycle, cleanup of old SmartDashboard trees, LiveWindow suppression, automatic tab selection. |
 | `src/main/cpp/RobotContainer.cpp` | Command/subsystem container; no autonomous command is currently selected. |
 | `SkillsChallenge-Info.md` | Operator instructions and source-level wiring/measurement documentation. |
 | `src/test/cpp/ForwardDriveControllerChecks.cpp` | Compile-time regression checks for the pure one-metre controller. These are not a substitute for a physical drive test. |
+| `src/test/cpp/TeleopDriveControllerChecks.cpp` | Compile-time checks for RPM scaling, button directions, arming, release, disconnect, diagonal magnitude, acceleration, and mixed wheel-output limits. |
+| `TELEOP_SETUP.md` | Current speed settings, rotation mapping, operating procedure, and validation details. |
 
 ## 12. Suggested first teleop check
 
@@ -497,7 +546,8 @@ controller is being forwarded.
 3. With the robot still disabled, move the stick in each direction and record
    the raw axis signs. If needed, edit the joystick port, axis indices, or
    signs in `LocalizationConstants.h`, then rebuild and redeploy.
-4. Enable Teleoperated with the stick centered. Confirm **Stick armed**.
+4. While Disabled, verify the L2/R2 lamps match their physical triggers. Enable
+   Teleoperated with the stick centered and both triggers released. Confirm **Stick armed**.
    Briefly test each direction at low risk, checking motor outputs and encoder
    count changes. Disable immediately if the chassis direction differs from
    the intended command; correct the configured frame or motor signs before
@@ -512,3 +562,95 @@ This checklist is a bring-up aid, not a record that these physical checks have
 already passed. The last confirmed source build does not prove controller axis
 mapping, motor polarity, encoder calibration, sonar timing, or arena pose
 accuracy on the installed robot.
+
+## 13. Control Station connection recovery — 20 October 2026
+
+The user reported that Windows could join the robot Wi-Fi but Control Station
+could no longer connect after the previous teleoperation session. Diagnosis
+was performed on the PC and on the VMX, and communication was restored.
+
+### Findings
+
+- `VMX-23` was broadcasting. Connecting the saved Windows profile assigned the
+  PC `10.0.23.3/24`. The VMX at `10.0.23.2` answered ping and SSH, proving that
+  the access point, IP addressing, and basic OS networking were working during
+  those checks. One association attempt failed transiently, but subsequent
+  association and SSH succeeded.
+- NetworkTables TCP port 1735 was not reachable, and the robot was not listening
+  for Driver Station packets on UDP 1110. Control Station had enabled Public
+  firewall allow rules; a missing app exception was not established as the
+  cause.
+- On the robot, `vmx_robot_manager.service` was enabled for boot but inactive.
+  `/home/lvuser/robotCommand` referenced `/home/lvuser/frcUserProgram`, which was
+  missing. The launch log explicitly reported `No such file or directory`.
+- Direct Ethernet then provided a stable diagnostic path: PC address
+  `172.22.11.1/24`, robot address `172.22.11.2`.
+- A forced deployment restored the executable and native libraries. The first
+  startup then failed to find `libopencv_videoio.so.3.4`. That library was
+  present, had the correct ARM architecture, and matched the local cached file
+  by SHA-256. Refreshing the dynamic-loader cache with an explicit privileged
+  `/sbin/ldconfig` made all executable dependencies resolve. The existing
+  `/etc/ld.so.conf.d/frc_libs.conf` already contained the correct library path;
+  no new loader configuration was needed.
+
+### Recovery performed
+
+The stale Control Station session was closed so no driver enable command would
+be present during recovery. From this project's directory, the existing
+release program was redeployed over Ethernet:
+
+```powershell
+$env:JAVA_HOME = 'C:/Users/Public/wpilib/2020/jdk'
+.\gradlew.bat deploy -PteamNumber=23 --offline -Pdeploy-dirty --console=plain
+```
+
+The `deploy-dirty` property forced files to be transferred rather than relying
+on the deployment cache. Gradle discovered `pi@172.22.11.2:22` automatically;
+the golden project configuration was not edited. After deployment, the
+following recovery commands were run on the VMX through SSH:
+
+```sh
+sudo /sbin/ldconfig
+sudo systemctl restart vmx_robot_manager.service
+sync
+```
+
+Verification showed an active robot-manager service, startup enabled at boot,
+a running `/home/lvuser/frcUserProgram`, no unresolved `ldd` dependencies,
+UDP 1110 bound by the robot program, and TCP 1735 listening and reachable
+from the PC. The deployed executable's SHA-256 matched the local release
+artifact. Control Station was reopened; the user entered `172.22.11.2` and
+confirmed that **Robot Comms and Robot Code were both checked**, with the robot
+kept Disabled during the check.
+
+For subsequent connections, use `172.22.11.2` with the Ethernet cable, or join
+`VMX-23` and use `10.0.23.2` over Wi-Fi. These are different interfaces of the
+same robot. The temporary Wi-Fi diagnostic connections were restored to the
+PC's original network; Ethernet allowed robot access while preserving the
+PC's Internet connection.
+
+### If the symptom returns
+
+First distinguish a Wi-Fi association/IP problem from a robot-program startup
+problem. With the PC on the appropriate network, ping the matching robot IP,
+then use SSH to check:
+
+```sh
+ls -l /home/lvuser/frcUserProgram
+systemctl status vmx_robot_manager.service --no-pager
+tail -n 80 /var/local/kauailabs/log/FRC_UserProgram.log
+ldd /home/lvuser/frcUserProgram
+```
+
+An absent executable requires a successful redeployment. A present executable
+with unresolved libraries requires checking deployment of its dependencies
+and refreshing the loader cache before restarting the manager. A successful
+Gradle result alone did not establish successful runtime startup in this
+incident; the process, sockets, log, and Control Station indicators were
+checked afterward.
+
+The available evidence does not establish why the executable had disappeared.
+The native deployment sequence deletes the previous executable before
+uploading its replacement, so an interrupted deployment is one possible
+explanation, not a confirmed cause. Motor direction, physical speed, and
+controller mapping were not tested as part of this connection recovery.

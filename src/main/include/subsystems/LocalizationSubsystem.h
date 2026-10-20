@@ -9,6 +9,7 @@
 #include "Hardware.h"
 #include "ForwardDriveController.h"
 #include "Localization.h"
+#include "TeleopDriveController.h"
 
 class LocalizationSubsystem : public frc2::SubsystemBase {
  public:
@@ -29,12 +30,11 @@ class LocalizationSubsystem : public frc2::SubsystemBase {
   ForwardDriveController forwardDrive_;
   frc::Joystick driver_{localization_config::DRIVER_JOYSTICK_PORT};
   bool driverConnected_ = false;
-  bool teleopArmed_ = false;
   double driverRawX_ = 0.0;
   double driverRawY_ = 0.0;
-  double teleopForward_MMps_ = 0.0;
-  double teleopLeft_MMps_ = 0.0;
-  std::string teleopStatus_ = "Waiting for Control Station";
+  bool driverL2_ = false;
+  bool driverR2_ = false;
+  TeleopDriveController teleopDrive_;
   bool started_ = false;
   int startButtonDebounceCount_ = 0;
   int nextSonarIndex_ = 0;

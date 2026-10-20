@@ -8,7 +8,7 @@ namespace localization_config {
 // extra SmartDashboard troubleshooting fields in localization mode.
 static constexpr bool ENABLE_DETAILED_TELEMETRY = false;
 
-// Left-stick robot-relative translation. This mode takes priority over the
+// Left-stick translation and L2/R2 rotation. This mode takes priority over the
 // previous arena exercise; no physical Start press is needed for manual drive.
 static constexpr bool TELEOP_DRIVE_ENABLED = true;
 static constexpr int DRIVER_JOYSTICK_PORT = 0;
@@ -19,9 +19,17 @@ static constexpr int DRIVER_LEFT_Y_AXIS = 1;
 static constexpr double DRIVER_LEFT_X_SIGN = 1.0;  // positive raw X = right
 static constexpr double DRIVER_LEFT_Y_SIGN = -1.0; // negative raw Y = forward
 static constexpr double DRIVER_STICK_DEADBAND = 0.12;
-static constexpr double TELEOP_SPEED_MMPS = 250.0;
-static constexpr double TELEOP_ACCELERATION_MMPS2 = 500.0;
-static constexpr double TELEOP_MAX_MOTOR_OUTPUT = 0.25;
+// PS-style digital trigger buttons, numbered from 1 by WPILib. Check the
+// L2/R2 dashboard lamps while Disabled; USB/Bluetooth host mappings can differ.
+static constexpr int DRIVER_L2_BUTTON = 7;
+static constexpr int DRIVER_R2_BUTTON = 8;
+static constexpr double TELEOP_ACCELERATION_MMPS2 = 1000.0;
+static constexpr double TELEOP_MAX_MOTOR_OUTPUT = 0.90;
+static constexpr double TELEOP_MAX_YAW_RATE_DPS = 90.0;
+static constexpr double TELEOP_YAW_ACCELERATION_DPS2 = 180.0;
+// The tangent wheel model is counterclockwise-positive. Flip only if a
+// physical rotation check establishes opposite installed motor polarity.
+static constexpr double TELEOP_YAW_SIGN = 1.0;
 
 // Current arena exercise: encoder-only forward travel, started by the button
 // in enabled Teleoperated mode. Set false to restore localization diagnostics.
@@ -57,7 +65,7 @@ static constexpr int TITAN_MOTOR_FREQUENCY_HZ = 15600;
 static constexpr int WHEEL_COUNT = 3;
 static constexpr int WHEEL_TITAN_PORT[WHEEL_COUNT] = {0, 1, 2};
 
-// Verify the Titan encoder's configured count convention for the 75001.
+// Studica specifies 6 CPR * 61 gearbox ratio * 4 quadrature = 1464/output rev.
 static constexpr double ENCODER_COUNTS_PER_OUTPUT_REV = 1464.0;
 static constexpr double MOTOR_TO_WHEEL_RATIO = 1.0;  // PLACEHOLDER if gearing differs
 
@@ -74,7 +82,16 @@ static constexpr double WHEEL_CENTER_RADIUS_MM[WHEEL_COUNT] = {
 static constexpr double WHEEL_ANGLE_DEG[WHEEL_COUNT] = {150.0, 30.0, 270.0};
 static constexpr double WHEEL_ENCODER_SIGN[WHEEL_COUNT] = {1.0, 1.0, 1.0};
 static constexpr double WHEEL_MOTOR_SIGN[WHEEL_COUNT] = {1.0, 1.0, 1.0};
-static constexpr double MAX_WHEEL_SPEED_MMPS = 1000.0;  // PLACEHOLDER
+// Maverick 75001 speeds are already at the 61:1 gearbox OUTPUT shaft.
+// MOTOR_TO_WHEEL_RATIO represents external gearing only; do not divide by 61
+// again. This is a feedforward estimate, not an encoder speed-control loop.
+static constexpr double MAVERICK_MAX_NO_LOAD_RPM = 112.0;
+static constexpr double MAVERICK_NOMINAL_NO_LOAD_RPM = 100.0;
+static constexpr double MAVERICK_NOMINAL_RATED_RPM = 80.0;
+static constexpr double MAX_WHEEL_SPEED_MMPS =
+    2.0 * M_PI * WHEEL_RADIUS_MM * MAVERICK_MAX_NO_LOAD_RPM /
+    (60.0 * MOTOR_TO_WHEEL_RATIO);
+static constexpr double TELEOP_SPEED_MMPS = MAX_WHEEL_SPEED_MMPS;
 
 // Arena coordinates span X=[0,width], Y=[0,height].
 static constexpr double ARENA_WIDTH_MM = 2000.0;   // PLACEHOLDER

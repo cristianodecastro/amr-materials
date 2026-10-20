@@ -128,21 +128,21 @@ void LocalizationSubsystem::InitializeDashboard() {
 
 void LocalizationSubsystem::InitializeTeleopDashboard() {
   auto& tab = frc::Shuffleboard::GetTab("Teleop");
-  tab.AddString("Drive status", [this] { return teleopStatus_; })
+  tab.AddString("Drive status", [this] { return std::string(teleopDrive_.GetStatus()); })
       .WithPosition(0, 0).WithSize(6, 1);
   tab.AddBoolean("Enabled", [] { return frc::RobotState::IsEnabled(); })
       .WithPosition(6, 0).WithSize(2, 1);
   tab.AddBoolean("Controller", [this] { return driverConnected_; })
       .WithPosition(8, 0).WithSize(2, 1);
-  tab.AddBoolean("Stick armed", [this] { return teleopArmed_; })
+  tab.AddBoolean("Stick armed", [this] { return teleopDrive_.IsArmed(); })
       .WithPosition(10, 0).WithSize(2, 1);
   tab.AddNumber("Left stick X", [this] { return driverRawX_; })
       .WithPosition(0, 1).WithSize(3, 1);
   tab.AddNumber("Left stick Y", [this] { return driverRawY_; })
       .WithPosition(3, 1).WithSize(3, 1);
-  tab.AddNumber("Forward request (mm/s)", [this] { return teleopForward_MMps_; })
+  tab.AddNumber("Forward request (mm/s)", [this] { return teleopDrive_.GetForwardMMps(); })
       .WithPosition(6, 1).WithSize(3, 1);
-  tab.AddNumber("Left request (mm/s)", [this] { return teleopLeft_MMps_; })
+  tab.AddNumber("Left request (mm/s)", [this] { return teleopDrive_.GetLeftMMps(); })
       .WithPosition(9, 1).WithSize(3, 1);
   for (int wheel = 0; wheel < 3; ++wheel) {
     const std::string port = "M" + std::to_string(
@@ -154,92 +154,48 @@ void LocalizationSubsystem::InitializeTeleopDashboard() {
                   [this, wheel] { return hardware_.GetWheelCommand(wheel) * 100.0; })
         .WithPosition(6 + wheel * 2, 2).WithSize(2, 1);
   }
+  tab.AddBoolean("L2 - CCW", [this] { return driverL2_; })
+      .WithPosition(0, 3).WithSize(3, 1);
+  tab.AddBoolean("R2 - CW", [this] { return driverR2_; })
+      .WithPosition(3, 3).WithSize(3, 1);
+  tab.AddNumber("Rotation request (deg/s)", [this] {
+    return teleopDrive_.GetYawRateRadps() * 180.0 / localization_config::PI;
+  }).WithPosition(6, 3).WithSize(3, 1);
+  tab.AddNumber("Output limit (%)", [] {
+    return localization_config::TELEOP_MAX_MOTOR_OUTPUT * 100.0;
+  }).WithPosition(9, 3).WithSize(3, 1);
 }
 
 void LocalizationSubsystem::UpdateTeleopDrive(double dt) {
-  auto stop = [this](const char* message, bool disarm) {
-    hardware_.StopDrive();
-    teleopForward_MMps_ = 0.0;
-    teleopLeft_MMps_ = 0.0;
-    if (disarm) teleopArmed_ = false;
-    teleopStatus_ = message;
-  };
   auto& ds = frc::DriverStation::GetInstance();
   const bool attached = ds.IsDSAttached();
   const int xAxis = localization_config::DRIVER_LEFT_X_AXIS;
   const int yAxis = localization_config::DRIVER_LEFT_Y_AXIS;
+  const int l2Button = localization_config::DRIVER_L2_BUTTON;
+  const int r2Button = localization_config::DRIVER_R2_BUTTON;
   const bool validAxes = xAxis >= 0 && yAxis >= 0 && xAxis != yAxis;
   const int axisCount = attached ? driver_.GetAxisCount() : 0;
-  driverConnected_ = validAxes && axisCount > std::max(xAxis, yAxis);
-  driverRawX_ = driverConnected_ ? driver_.GetRawAxis(xAxis) : 0.0;
-  driverRawY_ = driverConnected_ ? driver_.GetRawAxis(yAxis) : 0.0;
-  if (!attached || !driverConnected_) {
-    stop(attached ? "Controller missing - check PC connection/port 0"
-                  : "Control Station disconnected", true);
-    return;
+  const int buttonCount = attached ? driver_.GetButtonCount() : 0;
+  const bool axesPresent = validAxes && axisCount > std::max(xAxis, yAxis);
+  const bool buttonsPresent = l2Button > 0 && r2Button > 0 &&
+      l2Button != r2Button && buttonCount >= std::max(l2Button, r2Button);
+  driverConnected_ = attached && axesPresent && buttonsPresent;
+  // Expose inputs while Disabled so their mapping can be checked before drive.
+  driverRawX_ = axesPresent ? driver_.GetRawAxis(xAxis) : 0.0;
+  driverRawY_ = axesPresent ? driver_.GetRawAxis(yAxis) : 0.0;
+  driverL2_ = buttonsPresent && driver_.GetRawButton(l2Button);
+  driverR2_ = buttonsPresent && driver_.GetRawButton(r2Button);
+  const bool motionAllowed = frc::RobotState::IsEnabled() &&
+      frc::RobotState::IsOperatorControl() && !frc::RobotState::IsTest();
+  teleopDrive_.Update(motionAllowed, driverConnected_, driverRawX_, driverRawY_,
+                       driverL2_, driverR2_, dt);
+  if (teleopDrive_.IsArmed()) {
+    hardware_.DriveRobotRelative(teleopDrive_.GetLayoutVxMMps(),
+        teleopDrive_.GetLayoutVyMMps(), teleopDrive_.GetYawRateRadps(),
+        localization_config::TELEOP_MAX_MOTOR_OUTPUT);
+  } else {
+    hardware_.StopDrive();
   }
-  if (!std::isfinite(driverRawX_) || !std::isfinite(driverRawY_) ||
-      std::fabs(driverRawX_) > 1.01 || std::fabs(driverRawY_) > 1.01) {
-    stop("Invalid stick input", true);
-    return;
-  }
-  if (!frc::RobotState::IsEnabled() || !frc::RobotState::IsOperatorControl() ||
-      frc::RobotState::IsTest()) {
-    stop("Disabled - select and enable Teleoperated mode", true);
-    return;
-  }
-  const double deadband = localization_config::DRIVER_STICK_DEADBAND;
-  if (!(deadband >= 0.0 && deadband < 1.0) ||
-      !std::isfinite(localization_config::TELEOP_FORWARD_DIRECTION_DEG) ||
-      !(localization_config::TELEOP_SPEED_MMPS > 0.0) ||
-      !std::isfinite(localization_config::TELEOP_SPEED_MMPS) ||
-      !(localization_config::TELEOP_ACCELERATION_MMPS2 > 0.0) ||
-      !std::isfinite(localization_config::TELEOP_ACCELERATION_MMPS2) ||
-      std::fabs(localization_config::DRIVER_LEFT_X_SIGN) != 1.0 ||
-      std::fabs(localization_config::DRIVER_LEFT_Y_SIGN) != 1.0) {
-    stop("Invalid teleop configuration", true);
-    return;
-  }
-  const double magnitude = std::hypot(driverRawX_, driverRawY_);
-  if (!teleopArmed_) {
-    if (magnitude > deadband) {
-      stop("Center left stick to arm", true);
-      return;
-    }
-    teleopArmed_ = true;
-  }
-  if (magnitude <= deadband) {
-    // Releasing the stick commands zero immediately, without a ramp-down.
-    stop("Ready - move left stick", false);
-    return;
-  }
-  // Radial deadband preserves diagonal direction. Clamp vector magnitude so
-  // a square-range gamepad cannot request sqrt(2) times the straight speed.
-  const double speed = (std::min(1.0, magnitude) - deadband) /
-      (1.0 - deadband) * localization_config::TELEOP_SPEED_MMPS;
-  const double requestedForward = driverRawY_ *
-      localization_config::DRIVER_LEFT_Y_SIGN / magnitude * speed;
-  const double requestedLeft = -driverRawX_ *
-      localization_config::DRIVER_LEFT_X_SIGN / magnitude * speed;
-  const double deltaForward = requestedForward - teleopForward_MMps_;
-  const double deltaLeft = requestedLeft - teleopLeft_MMps_;
-  const double delta = std::hypot(deltaForward, deltaLeft);
-  const double step = localization_config::TELEOP_ACCELERATION_MMPS2 *
-      (std::isfinite(dt) ? std::max(0.0, std::min(0.050, dt)) : 0.0);
-  const double fraction = delta > step && delta > 0.0 ? step / delta : 1.0;
-  teleopForward_MMps_ += deltaForward * fraction;
-  teleopLeft_MMps_ += deltaLeft * fraction;
-  const double direction = localization_config::TELEOP_FORWARD_DIRECTION_DEG *
-      localization_config::PI / 180.0;
-  const double c = std::cos(direction);
-  const double s = std::sin(direction);
-  // Driver frame: +forward, +left. Rotate both axes into the wheel-layout
-  // frame using the same mounting correction as the last forward exercise.
-  hardware_.DriveRobotRelative(
-      c * teleopForward_MMps_ - s * teleopLeft_MMps_,
-      s * teleopForward_MMps_ + c * teleopLeft_MMps_, 0.0,
-      localization_config::TELEOP_MAX_MOTOR_OUTPUT);
-  teleopStatus_ = "Driving - left stick translation";
 }
 
 void LocalizationSubsystem::InitializeForwardDashboard() {

@@ -23,7 +23,9 @@ not launch a distance run in this mode. The left thumbstick requests translation
 relative to the robot's front: up = forward, down = backward, left = left,
 right = right. Intermediate stick angles request diagonal motion, and partial
 deflection requests slower travel. The stick click and right stick are unused.
-No rotation is requested; there is no automatic heading hold or obstacle stop.
+L2 requests counterclockwise rotation and R2 requests clockwise rotation;
+both together cancel yaw. Translation and rotation can be combined. There is
+no automatic heading hold or obstacle stop.
 Sonars, localization, and IMU corrections do not participate in this mode.
 
 ### Connect and drive
@@ -39,6 +41,8 @@ Sonars, localization, and IMU corrections do not participate in this mode.
    Y axis 1, right-positive X and forward-negative Y. Change the
    `DRIVER_JOYSTICK_PORT`, `DRIVER_LEFT_X_AXIS`, `DRIVER_LEFT_Y_AXIS`, or sign
    constants if the selected connection mode exposes a different mapping.
+   L2/R2 use digital buttons 7/8 by default. Check their dashboard lamps while
+   Disabled and adjust `DRIVER_L2_BUTTON` / `DRIVER_R2_BUTTON` if needed.
 3. Connect Control Station to `10.0.23.2`. Its Joysticks indicator should be
    checked. The remote must be the controller forwarded as joystick port 0
    (the first joystick); disconnect unrelated gamepads for the initial setup.
@@ -49,12 +53,14 @@ Sonars, localization, and IMU corrections do not participate in this mode.
    is true and **Left stick X/Y** respond. Expect approximately X=+1 right,
    X=-1 left, Y=-1 forward and Y=+1 backward, returning close to zero at rest.
 6. Select Teleoperated mode (`o`) and enable (`e`) in Control Station. Center
-   the stick until **Stick armed** is true, then move the stick to drive.
-   Returning to center immediately requests zero motor output. Disable with `d`.
+   the stick and release L2/R2 until **Stick armed** is true. Then use the
+   stick to translate and L2/R2 to rotate. Centering requests zero translation;
+   releasing the triggers requests zero yaw. Disable with `d`.
 
 Disabling, changing out of Teleoperated mode, losing Control Station, or losing
-the reported controller axes commands zero and disarms manual drive. A centered
-stick is required again after re-enabling/reconnecting. Disconnect detection
+the reported configured controller inputs commands zero and disarms manual
+drive. A centered stick and released triggers are required again after
+re-enabling/reconnecting. Disconnect detection
 depends on the controller state reported by Control Station; the robot cannot
 infer a physical Bluetooth failure if the PC continues sending stale axes as
 valid input.
@@ -64,10 +70,13 @@ valid input.
 The source applies a 12% circular center deadband and rescales the remaining
 stick travel continuously to full request. Diagonals are capped to the same
 translation magnitude as straight travel. The nominal full-stick request is
-250 mm/s with a 500 mm/s^2 vector acceleration limit; all motors are capped
-at 25% output. Motor requests are scaled together to preserve their ratios.
-These are nominal speed requests using the existing `MAX_WHEEL_SPEED_MMPS`
-placeholder, not measured velocity control. Encoder counts remain visible,
+598.16 mm/s with a 1000 mm/s^2 vector acceleration limit; manual drive allows
+100% output. The scale comes from 112 RPM maximum no-load output-shaft speed
+and the installed 102 mm wheel diameter, without dividing by the 61:1 gearbox
+ratio again. L2/R2 request up to 90 degrees/s with a 180 degrees/s^2 yaw ramp.
+Combined motor requests are scaled together when any wheel reaches the cap.
+These are feedforward speed requests; actual speed under load varies.
+Encoder counts remain visible,
 but neither the distance controller nor its wheel synchronization runs during
 manual drive.
 
@@ -78,11 +87,16 @@ M1 negative, M2 zero; left requests M0 negative, M1 negative, M2 positive.
 Backward/right reverse those patterns, and diagonals combine them. All
 directions remain relative to the chassis, regardless of its arena heading.
 
-The **Teleop** tab keeps 14 fields in three rows: drive status, Enabled,
+The **Teleop** tab keeps 18 fields in four rows: drive status, Enabled,
 Controller and Stick armed; two raw stick axes and forward/left speed requests;
-three encoder counts and three applied motor percentages. A positive forward
+three encoder counts and three applied motor percentages; L2/R2 lamps,
+yaw request, and output limit. A positive forward
 request means forward; a positive left request means left. These are commands,
 not measured robot velocities.
+
+See [TELEOP_SETUP.md](TELEOP_SETUP.md) for the motor-speed derivation, trigger
+mapping, operator procedure, and verification details. The motor values come
+from [Studica's Maverick documentation](https://docs.wsr.studica.com/en/latest/docs/Motors/maverick-dc-motor.html).
 
 To restore the old 1000 mm exercise, set `TELEOP_DRIVE_ENABLED = false` and
 `FORWARD_TEST_ENABLED = true`. To restore localization diagnostics, set both
@@ -174,7 +188,7 @@ vector scaled uniformly to preserve its requested ratios. Encoder travel
 synchronization increases the lagging driven wheel's request and decreases
 the leading wheel's request, with a bounded 80 mm/s correction to projected
 travel speed. The idle wheel remains at zero. Absolute speed still depends on the still-uncalibrated
-`MAX_WHEEL_SPEED_MMPS` scale, motor loading and battery voltage. The stopping
+RPM-based `MAX_WHEEL_SPEED_MMPS` estimate, motor loading and battery voltage. The stopping
 decision uses measured encoder travel. Physical accuracy also depends on
 effective wheel diameter, encoder scale, slip and coasting after zero output;
 the first arena run is a distance calibration measurement.
@@ -335,7 +349,7 @@ the fused arena pose:
 | `ENCODER_COUNTS_PER_OUTPUT_REV` | Confirm the Titan count convention for the 75001 encoders |
 | `MOTOR_TO_WHEEL_RATIO` | External motor-output-to-wheel ratio, if the wheel is not directly coupled |
 | `WHEEL_ENCODER_SIGN[]`, `WHEEL_MOTOR_SIGN[]` | Sign corrections after checking encoder and motor directions |
-| `MAX_WHEEL_SPEED_MMPS` | Calibrated maximum wheel surface speed for the future drive helper |
+| `MAX_WHEEL_SPEED_MMPS` | Calculated 598.16 mm/s from 112 RPM and 102 mm wheel diameter; verify/tune the feedforward estimate against actual speed |
 
 The kinematics assume three omni wheels whose centers are spaced
 120 degrees apart, with each wheel rolling tangent to a circle around the
