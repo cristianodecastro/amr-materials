@@ -1,10 +1,24 @@
 # Project 7: robot software, decisions, and operating notes
 
+**23 October 2026 — Cobra check:** the user connected the Cobra through its
+analog module J1 to VMX I2C. Enabled the existing Cobra driver and added a
+dedicated Shuffleboard check with raw voltages, disabled-only averaged white
+and black captures, per-channel contrast checks, and independent BLACK lamps.
+Captures are temporary diagnostic references, not autonomous calibration.
+Autonomous tape validity is now explicitly gated by COBRA_CALIBRATED, which
+remains false. Debug/release assemble passed; no automatic deployment or
+physical sensor result is claimed. Procedure: [COBRA_CHECK.md](COBRA_CHECK.md).
+
 This document records what was designed and implemented during the project
 work in this chat, why the design changed over time, how the VMX, Titan,
 sensors, controller, and dashboards are connected, what has actually been
 observed on the robot, and what remains to be calibrated. It describes the
-current source tree in `7 - SkillsChallenge/SkillsChallenge`.
+development of `7 - SkillsChallenge/SkillsChallenge`.
+
+**Autonomous update:** the current arena design and operating instructions are
+in [AUTONOMOUS_SETUP.md](AUTONOMOUS_SETUP.md). The former one metre controller
+has been deleted. Earlier observations below are retained as history; old
+calibration values and former dashboard names are superseded by that guide.
 
 ## 1. Project goal and boundaries
 
@@ -24,22 +38,18 @@ runtime, Raspberry Pi cross compiler, and cached WPILib/Studica/navX
 dependencies. These installed tools are not dependencies on the example
 projects.
 
-The software has three source-selected operating paths:
+The software now selects operation from Control Station mode:
 
-1. **Manual teleoperation** is the current default. The driver's left stick
-   commands robot-relative translation in any direction, including diagonals;
-   L2/R2 request counterclockwise/clockwise rotation.
-2. **Forward 1000 mm exercise** is an encoder-only test started by the
-   physical button. It is available by changing source constants.
-3. **Localization evaluation** reads the IMU, wheel encoders, and sonars to
-   estimate and correct arena pose. It is also available by changing source
-   constants; it is not currently active while manual teleoperation is
-   enabled.
+1. **Teleoperated:** left-stick translation and L2 CW / R2 CCW rotation.
+2. **Autonomous:** mapped waypoint navigation, tape docking, action hooks and
+   job sequencing. Unconfirmed geometry/calibration and the unfinished pickup
+   mechanism currently block start.
+3. **Stationary observation:** disable manual drive in source and enable
+   Teleoperated mode to inspect sensors while commanding drive outputs zero.
 
-These are mutually prioritized code paths, not three simultaneously running
-controllers. `TELEOP_DRIVE_ENABLED` takes priority; otherwise
-`FORWARD_TEST_ENABLED` selects the one-metre exercise; otherwise the source
-runs the stationary localization evaluation mode.
+Localization remains observable in manual operation; wall corrections are
+restricted to initialized autonomous operation. The old one metre and
+localization-only mode selectors were removed.
 
 ### Earlier projects used as references
 
@@ -188,12 +198,12 @@ Trigger-axis values such as -1 at rest are not used by this digital mapping.
   diameter and 112 RPM maximum no-load gearbox-output speed. A 1000 mm/s^2
   limit smooths translation changes. Centering the stick requests zero
   translation immediately, including while rotation is active.
-- Manual drive allows 100% motor output. `Hardware::DriveRobotRelative()`
+- Manual drive currently allows 90% motor output. `Hardware::DriveRobotRelative()`
   maps translation and yaw through the three-wheel inverse kinematics, and
   `DriveWheelsMMps()` scales the combined wheel vector together if a motor
   reaches its limit. This preserves the requested ratios while reducing
   translation and yaw together during saturation.
-- L2 requests positive (counterclockwise) yaw; R2 requests negative (clockwise)
+- L2 requests negative (clockwise) yaw; R2 requests positive (counterclockwise)
   yaw. The nominal yaw limit is 90 degrees/s and its ramp is 180 degrees/s^2.
   Both triggers pressed cancel yaw. Releasing both triggers commands zero yaw
   immediately while translation can continue. The left stick and triggers
@@ -231,10 +241,10 @@ in `MOTOR_TO_WHEEL_RATIO`.
 The first manual-drive revision limited output to 25% and used a 1000 mm/s
 placeholder. With a 250 mm/s request, full forward applied only about 21.65%
 to M0/M1; full sideways translation reached 25%. The updated full forward
-pattern reaches about +86.6%/-86.6%/0 and sideways travel can reach 100% on
+pattern reaches about +86.6%/-86.6%/0 and sideways travel can reach the current 90% cap on
 the fastest wheel. These are ideal command percentages, not measured chassis
-speeds. The optional one-metre exercise retains its own 25% output cap and
-encoder target while using the corrected shared wheel-speed scale.
+speeds. The earlier one-metre exercise used its own 25% cap; that controller
+has now been removed. Autonomous has a separate calibrated-speed control path.
 
 ### Teleop dashboard
 
@@ -244,7 +254,7 @@ arranged in four rows:
 1. Drive status, Enabled, Controller, Stick armed.
 2. Raw left-stick X/Y and requested forward/left speeds in mm/s.
 3. M0/M1/M2 raw encoder counts and applied output percentages.
-4. L2 - CCW, R2 - CW, requested yaw rate in degrees/s, and output limit (%).
+4. L2 - CW, R2 - CCW, requested yaw rate in degrees/s, and output limit (%).
 
 These are enough to check controller recognition, axis signs, drive request,
 motor output, and encoder response. This compact mode does not run sonar
@@ -259,133 +269,38 @@ describes USB/Bluetooth support. Its [Control Station instructions](https://docs
 describe joystick forwarding, the Joysticks indicator, connection, operation
 mode, and enable/disable controls.
 
-## 5. Optional encoder-only one-metre exercise
+## 5. Retired one-metre exercise
 
-Set `TELEOP_DRIVE_ENABLED = false` and `FORWARD_TEST_ENABLED = true` to select
-this mode. It uses the physical start button and the three Titan encoder
-readings. It does not ping sonars, update localization, or require a ready IMU.
-The robot must be enabled in Teleoperated mode. Start must first be released
-to arm; a 60 ms debounced press snapshots the three current counts and begins
-the one-metre run. A held press cannot retrigger the run. Disabling or leaving
-Teleoperated mode stops the motors and aborts the run; enabling again does not
-resume it.
+The button-started encoder-only exercise was useful for exposing a direction
+mismatch. Its controller, constants, dashboard and dedicated checks have been
+deleted as part of the arena autonomous work. The observed encoder counts and
+direction correction are preserved in section 7 as development evidence.
 
-`ForwardDriveController.h` is a hardware-independent controller used by the
-subsystem. It:
+## 6. Current localization and autonomous integration
 
-1. Converts encoder count deltas into wheel surface millimetres using wheel
-   circumference, output counts per revolution, external motor-to-wheel
-   ratio, encoder sign, and the direction coefficient.
-2. Estimates translation along the commanded direction with a least-squares
-   projection: `sum(projected wheel travel * coefficient^2) / sum(coefficient^2)`.
-   For the symmetric wheel arrangement, this suppresses some common wheel
-   displacement caused by a small amount of rotation.
-3. Ramps requested speed up, limits the nominal cruise request, and reduces
-   requested speed near the goal. It stops at 1000 mm estimated travel.
-4. Applies bounded wheel synchronization to the two active wheels so a
-   lagging encoder receives more requested speed and a leading one receives
-   less. This correction is bounded at 80 mm/s.
-5. Stops on a 20 s total timeout, two seconds without progress on a driven
-   wheel, more than 20 mm projected reverse travel, invalid encoder values,
-   or more than 100 mm disagreement between wheel travel projections.
+See [AUTONOMOUS_SETUP.md](AUTONOMOUS_SETUP.md) for current parameters,
+coordinate conventions, route planning, wall/tape corrections, hardware hooks,
+start checks and fault behavior. Highlights:
 
-The one-metre dashboard shows run status, enabled/start/complete state,
-travel/target/remaining/elapsed values, three encoder counts, and three
-applied output percentages. Its status keeps the abort or fault message visible
-after disabling.
+- Body-to-wheel commands and inverse encoder odometry now share the -90 degree
+  empirical frame correction. This still needs physical confirmation.
+- Encoders drive translation; gyro/AHRS drives yaw. Acceleration is captured
+  but its integration weight is now zero to prevent bias drift.
+- Wall raycasting includes both central divider segments. Object envelopes
+  occlude walls and are not trusted localization landmarks.
+- Sonars are staggered, require Control Station enable, and only correct pose
+  during suitably slow motion with fresh, geometrically consistent readings.
+- Cobra uses per-channel floor/tape calibration and station-specific docking.
+- The Autonomous and Calibration tabs replace the old Robot/Forward layouts.
 
-## 6. Optional localization and sensor fusion
-
-Set both `TELEOP_DRIVE_ENABLED = false` and `FORWARD_TEST_ENABLED = false` to
-select the localization evaluation mode. This path holds all Titan motor
-outputs at zero so sensors and odometry can be observed without driving. It
-does not execute while teleop or the forward exercise is selected.
-
-### Start and odometry flow
-
-The program waits until the VMX IMU is connected and no longer calibrating.
-After the active-low start button is held long enough to pass the localization
-debounce (three periodic samples), it zeroes the navX yaw, records current
-encoder baselines, and initializes pose from `START_X_MM`, `START_Y_MM`, and
-`START_HEADING_DEG`.
-
-On each update, `Localization::UpdateOdometry()`:
-
-1. Reads the three encoder changes, applies each configured encoder sign, and
-   converts counts to wheel speed in mm/s.
-2. Builds the three-wheel tangent rolling model from wheel radial angles and
-   center radii, then solves its 3x3 system for body X/Y velocity and
-   encoder-derived yaw rate.
-3. Predicts heading by blending VMX gyro yaw rate with encoder wheel yaw rate.
-   It then corrects that prediction toward the navX AHRS yaw. Hardware access
-   converts the navX clockwise-positive yaw and rate into the localization
-   counterclockwise-positive convention.
-4. Uses encoder-derived world velocity as the main translational estimate,
-   blended with a small, damped integration of VMX world linear acceleration.
-   The accelerometer contribution has a deadband and 0.10 blend weight to
-   reduce the effect of bias and drift. Acceleration can help translational
-   estimates but does not independently measure planar yaw.
-5. Integrates velocity into arena X/Y and grows a 3-state covariance for X,
-   Y, and heading.
-
-This is a lightweight covariance-based sensor-fusion estimator; it is not a
-full general-purpose SLAM system. It assumes the wheel geometry, encoder
-signs, IMU-to-body alignment, and starting pose are calibrated.
-
-### Ultrasonic polling and pose correction
-
-The four sonars are polled sequentially. WPILib automatic ultrasonic mode is
-disabled so there is only one ping scheduler. `Ping()` requests a short active
-trigger pulse and resets that sensor's echo capture. The code waits at least
-60 ms before reading, then leaves a 40 ms interval before the next sensor.
-This spacing limits cross-talk and allows time for the longest configured
-range and VMX/HAL update. A complete four-sensor cycle is roughly 400 ms at
-the normal loop cadence.
-
-Usable ranges are 20 through 4000 mm. `Localization::PredictSonarRange()`
-projects the configured sensor face and beam direction to the nearest valid
-wall in the rectangular arena. A reading is rejected if invalid, outside the
-range, if no wall can be predicted, or if its residual exceeds 400 mm. For an
-accepted range, a numerical Jacobian and scalar covariance correction update
-pose and heading. A person or object in the beam can resemble a wall, and bad
-arena/sensor geometry can make a correct sensor reading produce an incorrect
-pose correction.
-
-The sonar mount coordinates and arena dimensions are currently placeholders.
-Current defaults assume a 2000 x 2000 mm arena, a 500 x 250 mm start position,
-rear sensor X=-100 mm and half-spacing 80 mm, and side sensor Y offsets of
-120 mm. The configured rear beams point at 180 degrees; left/right beams point
-at +90/-90 degrees. Measure the sensor faces, beam directions, arena walls,
-origin, and initial pose before relying on corrections.
-
-### Localization dashboard and sonar debugging history
-
-The compact **Robot** tab shows readiness, enabled/IMU/start status, count of
-valid sonar sensors, four numeric ranges in mm, arena X/Y, fused heading,
-body velocities, yaw rate, encoder counts, yaw, and world linear acceleration.
-Detailed diagnostics are off by default. Set
-`ENABLE_DETAILED_TELEMETRY = true` for ping requests, echo responses,
-timeouts, sonar status/ranges, raw IMU axes, and localization uncertainty.
-
-Earlier, sonar entries appeared as Boolean values because generic LiveWindow
-DIO widgets describe digital pin states, not a numeric distance. The useful
-distance is obtained from WPILib's ultrasonic range API and is published as a
-number in millimetres; the compact Robot dashboard replaced the confusing
-generic view. The user checked that the sonar hardware had 5 V and that signal
-A/B were connected as planned. Four sensors initially appeared unavailable,
-then sensor values were observed; later the left sensor alone was reported
-not working. The source gives the left sonar its own configured DIO 4/5 pair
-but runs it through the same polling and validation path as the other sensors.
-No distinct missing left-sensor code path was found, and no confirmed root
-cause for the intermittent left reading was established in this chat.
-
-The VMX disabled-state IO watchdog explained why trigger pulses/ranges could
-be absent even when a sensor had 5 V. Diagnostics therefore need the robot
-enabled. A `_ping_requests` counter proves that software called `Ping()`; it
-does not electrically prove a pulse reached the connector. A numeric `-1`
-denotes unavailable/invalid in the compact view; detailed status separates
-waiting, disabled, no echo, out-of-range, and valid results. Boolean `_valid`
-fields are intentionally status indicators, not distances.
+Earlier sonar troubleshooting found that Boolean LiveWindow DIO widgets did
+not represent distance, and VMX's disabled IO watchdog could suppress triggers
+despite 5 V sensor power. Numeric mm ranges and explicit enabled-state polling
+resolved that display/trigger confusion. The left sonar later appeared
+unavailable on its own; it uses the same production path as the others on
+DIO 4/5, and no confirmed hardware root cause was established in this chat.
+These observations remain relevant to calibration; ping requests alone do not
+prove a signal was measured electrically.
 
 ## 7. One-metre arena attempt and direction correction
 
@@ -433,9 +348,9 @@ or a layout/IMU convention mismatch would require revisiting it.
 | Motor-to-wheel ratio | 1.0 | Assumes direct drive; verify external gearing. |
 | Encoder and motor signs | all +1.0 | Must agree with installed motor and encoder wiring; the first drive observation makes this worth rechecking. |
 | Full-output wheel surface-speed scale | 598.16 mm/s | 112 RPM at 102 mm diameter, external ratio 1.0; no-load feedforward estimate. |
-| Teleop full-stick request / output cap | 598.16 mm/s / 100% | Replaces the initial 250 mm/s request and 25% cap. |
+| Teleop full-stick request / output cap | 598.16 mm/s / 90% | Replaces the initial 250 mm/s request and 25% cap; reflects the user's current 90% setting. |
 | L2/R2 button mapping | 7 / 8 | PS-style digital defaults; verify with the Disabled dashboard lamps. |
-| Teleop yaw rate / acceleration | 90 degrees/s / 180 degrees/s^2 | Nominal requests, L2 CCW and R2 CW; both triggers cancel. |
+| Teleop yaw rate / acceleration | 90 degrees/s / 180 degrees/s^2 | Nominal requests, L2 CW and R2 CCW; both triggers cancel. |
 | Arena size | 2000 x 2000 mm | Placeholder. |
 | Starting pose | (500, 250) mm, 0° | Placeholder. |
 | Sonar mount faces | rear X=-100 mm, rear half-spacing 80 mm, side Y=120 mm | Symmetric placeholders; measure actual sensing faces from robot center. |
@@ -520,21 +435,25 @@ controller is being forwarded.
 
 ## 11. Current files and responsibilities
 
-| File | Responsibility |
+| File/class | Responsibility |
 |---|---|
-| `src/main/include/LocalizationConstants.h` | Mode selection, IO mappings, wheel/sensor geometry, joystick axis/sign mapping, output/speed limits, arena placeholders, sensor-fusion tuning. |
-| `src/main/include/Hardware.h`, `src/main/cpp/Hardware.cpp` | VMX DIO inputs, ultrasonic objects, navX access, Titan M0-M2 and encoder access, wheel-kinematic output and motor stop behavior. |
-| `src/main/include/DriveKinematics.h` | Shared wheel speed and direction-projection equations. |
-| `src/main/include/ForwardDriveController.h` | Hardware-independent one-metre state machine and encoder feedback for the optional exercise. |
-| `src/main/include/TeleopDriveController.h` | Manual-drive input validation, neutral arming, translation shaping, L2/R2 yaw requests, independent component release, and translation-frame rotation. |
-| `src/main/include/Localization.h`, `src/main/cpp/Localization.cpp` | Pose, encoder odometry, yaw/acceleration fusion, predicted sonar wall ranges, covariance correction, optional detailed telemetry. |
-| `src/main/include/subsystems/LocalizationSubsystem.h`, `src/main/cpp/subsystems/LocalizationSubsystem.cpp` | Periodic mode selection, controller input processing, subsystem/dashboard setup, sonar ping scheduler, localization start and diagnostics. |
-| `src/main/cpp/Robot.cpp` | Robot lifecycle, cleanup of old SmartDashboard trees, LiveWindow suppression, automatic tab selection. |
-| `src/main/cpp/RobotContainer.cpp` | Command/subsystem container; no autonomous command is currently selected. |
-| `SkillsChallenge-Info.md` | Operator instructions and source-level wiring/measurement documentation. |
-| `src/test/cpp/ForwardDriveControllerChecks.cpp` | Compile-time regression checks for the pure one-metre controller. These are not a substitute for a physical drive test. |
-| `src/test/cpp/TeleopDriveControllerChecks.cpp` | Compile-time checks for RPM scaling, button directions, arming, release, disconnect, diagonal magnitude, acceleration, and mixed wheel-output limits. |
-| `TELEOP_SETUP.md` | Current speed settings, rotation mapping, operating procedure, and validation details. |
+| LocalizationConstants | Wheel/IMU/body frames, IO, manual controls and sonar configuration |
+| AutonomousConfig | Arena, stations, jobs, footprint, Cobra, tuning, confirmation flags |
+| ManipulatorConfig | Future Maverick/servo/limit placeholders |
+| RobotGeometry / DriveKinematics | Shared pose and frame/wheel calculations |
+| ArenaMap | Inflated-obstacle planning and trusted/untrusted sonar ray hits |
+| AutonomousController | Nonblocking mission states, routes, tape docking and action requests |
+| Hardware | VMX/Titan/Cobra access, manual mixer, autonomous wheel-speed PI and object hooks |
+| Localization | Encoder/AHRS pose, covariance, gated wall/tape updates |
+| LocalizationSubsystem | Mode ownership, polling, controller input/output and dashboard tabs |
+| Robot / RobotContainer | Scheduler and explicit autonomous/disable/mode-entry lifecycle |
+| TeleopDriveController | Existing input shaping, neutral arming and trigger yaw |
+| TeleopDriveControllerChecks.cpp | Existing compile-time manual-controller/mixer checks |
+| AUTONOMOUS_SETUP.md | Current autonomous architecture, status, calibration and operations |
+| SkillsChallenge-Info.md / TELEOP_SETUP.md | Current overview/wiring and manual operation |
+
+The retired ForwardDriveController and template Example command/subsystem
+files are no longer present. Project 7 remains independent of projects 1–6.
 
 ## 12. Suggested first teleop check
 
@@ -555,8 +474,8 @@ controller is being forwarded.
 5. Confirm the -90° physical frame correction with a short forward movement
    before relying on it. Record whether the robot translates straight and
    whether it rotates. Only after direction, motor polarity, and frame
-   alignment are understood should the one-metre or sensor-fusion mode be
-   treated as calibrated.
+   alignment are understood should autonomous navigation be considered for
+   calibration. Follow the current autonomous guide.
 
 This checklist is a bring-up aid, not a record that these physical checks have
 already passed. The last confirmed source build does not prove controller axis
@@ -654,3 +573,48 @@ The native deployment sequence deletes the previous executable before
 uploading its replacement, so an interrupted deployment is one possible
 explanation, not a confirmed cause. Motor direction, physical speed, and
 controller mapping were not tested as part of this connection recovery.
+
+## 14. Trigger direction swap — 20 October 2026
+
+The user requested that the two rotation controls exchange their purposes.
+The current mapping is **L2 = clockwise** and **R2 = counterclockwise**.
+The production controller now computes `(r2 ? 1 : 0) - (l2 ? 1 : 0)` for its
+signed rotation request. Its status message, the Shuffleboard L2/R2 direction
+labels, the teleop regression checks, this document, `TELEOP_SETUP.md`, and
+`SkillsChallenge-Info.md` were updated to the same mapping.
+
+`TriggerDirections()` is a regression check, not the input-binding code.
+`Settled(x, y, l2, r2)` presses simulated controls to test the real production
+controller. Changing only the Boolean arguments in that test would not alter
+what the robot does. Related tests were updated to check CW/CCW signs, mixed
+translation/rotation, yaw acceleration, and wheel kinematics with the new
+mapping. The test that previously required an exact 100% cap was removed,
+and output-limit checks use the configured cap; the user's existing 90%
+source setting was preserved.
+
+## 15. Arena autonomous foundation — 20 October 2026
+
+The user supplied a 2000 mm arena drawing with a central start square, split
+divider, four upper storage stations and four lower deliveries. The old
+distance exercise was removed and replaced with a fixed-map mission state
+machine. Routing inflates obstacles by a circular robot/cargo envelope and
+clearance; the central square remains a traversable floor marking.
+
+The controller navigates to station staging points, acquires expected Cobra
+tape, docks with odometry and line feedback, waits for confirmed manipulation,
+retreats, and proceeds to the assigned delivery. It stops for route/timing,
+sensor, uncertainty, tape, progress, proximity or mechanism faults. A new
+Autonomous entry requires repositioning and a fresh physical Start sequence.
+
+The user confirmed one additional Maverick motor and two servos, with possibly
+one or two limit switches. Detailed mechanism behavior/ports remain unknown,
+so only explicit hooks/placeholders were added. The user will provide a
+specific storage assignment/order and cannot yet confirm start heading,
+footprint or Cobra mounting/version. These remain blocking configuration
+requirements. No complete pickup/release is claimed.
+
+Autonomous gets feedforward + PI wheel-speed control; manual drive retains its
+90% cap, controls and open-loop behavior. Existing project/vendor/Gradle
+parameters were preserved. Debug and release assemble succeeded. No physical
+arena run or deployment of this new autonomous program was performed.
+

@@ -3,58 +3,55 @@
 #include <frc/Timer.h>
 #include <frc/Joystick.h>
 #include <frc2/command/SubsystemBase.h>
-
-#include <string>
+#include <networktables/NetworkTableEntry.h>
 
 #include "Hardware.h"
-#include "ForwardDriveController.h"
 #include "Localization.h"
+#include "AutonomousController.h"
 #include "TeleopDriveController.h"
+#include "CobraCheck.h"
 
 class LocalizationSubsystem : public frc2::SubsystemBase {
  public:
   LocalizationSubsystem();
   void Periodic() override;
+  // Explicit lifecycle entry/exit: no autonomous state survives a mode change.
+  void EnterAutonomous();
+  void StopAll();
 
  private:
-  void BeginLocalization();
+  std::string PreflightError() const;
   void InitializeDashboard();
-  void InitializeForwardDashboard();
   void InitializeTeleopDashboard();
+  void InitializeCobraDashboard();
   void UpdateTeleopDrive(double dt);
-  void UpdateSonarPoll(double nowSeconds, bool robotEnabled);
+  void UpdateSonarPoll(double now, bool enabled);
+  void UpdateAutonomous(double now, double dt);
   void PublishDiagnostics();
+  bool SonarMotionSafe(double now) const;
 
   Hardware hardware_;
   Localization localization_{&hardware_};
-  ForwardDriveController forwardDrive_;
+  AutonomousController autonomous_;
   frc::Joystick driver_{localization_config::DRIVER_JOYSTICK_PORT};
-  bool driverConnected_ = false;
-  double driverRawX_ = 0.0;
-  double driverRawY_ = 0.0;
-  bool driverL2_ = false;
-  bool driverR2_ = false;
   TeleopDriveController teleopDrive_;
-  bool started_ = false;
-  int startButtonDebounceCount_ = 0;
-  int nextSonarIndex_ = 0;
-  bool sonarAwaitingEcho_ = false;
-  bool sonarPollingEnabled_ = false;
-  double sonarPingTime_ = 0.0;
-  double lastSonarPingTime_ = 0.0;
-  double lastLoopTime_ = 0.0;
-  double lastSonarRange_MM_ = -1.0;
-  int lastSonarIndex_ = -1;
-  double sonarRanges_MM_[4] = {-1.0, -1.0, -1.0, -1.0};
-  bool sonarRangeValid_[4] = {false, false, false, false};
-  bool sonarEchoReceived_[4] = {false, false, false, false};
-  bool sonarCorrectionAccepted_[4] = {false, false, false, false};
-  unsigned int sonarPingRequests_[4] = {0, 0, 0, 0};
-  unsigned int sonarEchoResponses_[4] = {0, 0, 0, 0};
-  unsigned int sonarTimeouts_[4] = {0, 0, 0, 0};
-  double sonarLastReadTime_S_[4] = {-1.0, -1.0, -1.0, -1.0};
-  const char* sonarStatus_[4] = {"Waiting for robot enable",
-                                "Waiting for robot enable",
-                                "Waiting for robot enable",
-                                "Waiting for robot enable"};
+  bool driverConnected_=false;
+  double driverRawX_=0,driverRawY_=0;
+  bool driverL2_=false,driverR2_=false;
+  bool autoSession_=false;
+  bool poseAnchored_=false;
+  ObjectAction objectRequest_=ObjectAction::None;
+  LineReading line_;
+  CobraCheck cobraCheck_;
+  nt::NetworkTableEntry captureCobraWhite_,captureCobraBlack_;
+  double lastLineCorrection_=0;
+  double lastLoopTime_=0;
+  int nextSonarIndex_=0;
+  bool sonarAwaitingEcho_=false;
+  bool sonarSlowAtPing_=false;
+  double sonarPingTime_=0,lastSonarPingTime_=0;
+  double sonarRanges_MM_[4]={-1,-1,-1,-1};
+  double sonarReadTime_[4]={-1,-1,-1,-1};
+  bool sonarRangeValid_[4]={false,false,false,false};
+  bool sonarCorrectionAccepted_[4]={false,false,false,false};
 };

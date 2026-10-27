@@ -1,12 +1,7 @@
 #pragma once
 
 #include "Hardware.h"
-
-struct RobotPose {
-  double x_MM;
-  double y_MM;
-  double headingRad;
-};
+#include "ArenaMap.h"
 
 class Localization {
  public:
@@ -15,6 +10,9 @@ class Localization {
   void Reset(double x_MM, double y_MM, double headingDeg);
   void UpdateOdometry(double dtSeconds);
   bool CorrectFromSonar(int sensorIndex, double measuredRange_MM);
+  bool CorrectFromLine(const autonomous_config::Station& station, double tapeLeftError_MM);
+  bool IsHealthy() const;
+  double GetPositionSigmaMM() const;
   void PublishTelemetry(double sonarRange_MM, int sonarIndex) const;
 
   const RobotPose& GetPose() const { return pose_; }
@@ -23,12 +21,14 @@ class Localization {
 
  private:
   double PredictSonarRange(int sensorIndex, const RobotPose& pose) const;
+  ArenaRayHit PredictSonarHit(int sensorIndex, const RobotPose& pose, double angleOffset=0) const;
   void ApplyScalarCorrection(const double jacobian[3], double innovation,
                              double variance);
   static double WrapRadians(double angleRad);
   static double DegreesToRadians(double angleDeg);
 
   Hardware* hardware_;
+  ArenaMap arena_;
   RobotPose pose_;
   double covariance_[3][3];
   double previousEncoder_[localization_config::WHEEL_COUNT];

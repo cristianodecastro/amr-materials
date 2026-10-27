@@ -66,9 +66,9 @@ class TeleopDriveController {
       forward_MMps_ += deltaForward * fraction;
       left_MMps_ += deltaLeft * fraction;
     }
-    // Independent digital triggers: L2 = CCW, R2 = CW; both cancel. Releasing
+    // Independent digital triggers: L2 = CW, R2 = CCW; both cancel. Releasing
     // rotation commands zero immediately, independently of translation.
-    const int rotation = (l2 ? 1 : 0) - (r2 ? 1 : 0);
+    const int rotation = (r2 ? 1 : 0) - (l2 ? 1 : 0);
     if (rotation == 0) {
       yawRate_Radps_ = 0.0;
     } else {
@@ -81,7 +81,7 @@ class TeleopDriveController {
     }
     const bool translating = magnitude > deadband;
     status_ = rotation != 0
-        ? (translating ? "Driving and rotating" : "Rotating - L2 CCW / R2 CW")
+        ? (translating ? "Driving and rotating" : "Rotating - L2 CW / R2 CCW")
         : (translating ? "Driving - left stick translation"
                        : (l2 && r2 ? "L2 + R2 - rotation cancelled"
                                    : "Ready - left stick / L2 / R2"));

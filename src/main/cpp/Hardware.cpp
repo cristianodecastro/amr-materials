@@ -9,6 +9,8 @@ Hardware::Hardware() {
   // resets the echo counter and sends WPILib's 10 us active-high pulse.
   // Do not also enable the global ultrasonic automatic-mode thread.
   frc::Ultrasonic::SetAutomaticMode(false);
+  if (autonomous_config::COBRA_INSTALLED)
+    cobra_.reset(new studica::Cobra(static_cast<float>(autonomous_config::COBRA_REFERENCE_V)));
   ResetDriveEncoders();
   StopDrive();
 }
@@ -57,7 +59,8 @@ void Hardware::DriveRobotRelative(double vx_MMps, double vy_MMps,
   double wheelSpeed[3];
   for (int wheel = 0; wheel < 3; ++wheel)
     wheelSpeed[wheel] = drive_kinematics::WheelSpeedMMps(
-        wheel, vx_MMps, vy_MMps, yawRate_Radps);
+        wheel, drive_kinematics::LayoutVx(vx_MMps,vy_MMps),
+        drive_kinematics::LayoutVy(vx_MMps,vy_MMps), yawRate_Radps);
   DriveWheelsMMps(wheelSpeed, maxOutput);
 }
 
@@ -74,8 +77,48 @@ void Hardware::DriveWheelsMMps(const double (&wheelSpeed)[3], double maxOutput) 
 }
 
 void Hardware::StopDrive() {
+  speedBaselineValid_=false;
+  for (auto& integral:speedIntegral_) integral=0;
   for (int wheel = 0; wheel < localization_config::WHEEL_COUNT; ++wheel)
     SetWheelPwm(wheel, 0.0);
+}
+
+void Hardware::DriveRobotRelativeFeedback(double forward,double left,double yawRadps,
+                                           double maxOutput,double dt) {
+  if (!std::isfinite(forward) || !std::isfinite(left) || !std::isfinite(yawRadps) ||
+      !std::isfinite(dt) || dt<=0 || dt>autonomous_config::MAX_CONTROL_GAP_S ||
+      !std::isfinite(maxOutput) || maxOutput<=0 || maxOutput>1) { StopDrive(); return; }
+  double desired[3],counts[3],measured[3];
+  const double mmPerCount=2*localization_config::PI*localization_config::WHEEL_RADIUS_MM/
+      (localization_config::ENCODER_COUNTS_PER_OUTPUT_REV*localization_config::MOTOR_TO_WHEEL_RATIO);
+  for (int i=0;i<3;++i) {
+    desired[i]=drive_kinematics::WheelSpeedMMps(i,drive_kinematics::LayoutVx(forward,left),
+        drive_kinematics::LayoutVy(forward,left),yawRadps);
+    counts[i]=GetWheelEncoderRaw(i);
+    if (!std::isfinite(counts[i])) { StopDrive(); return; }
+    measured[i]=speedBaselineValid_?(counts[i]-speedPreviousCounts_[i])*
+        localization_config::WHEEL_ENCODER_SIGN[i]*mmPerCount/dt:0;
+  }
+  const double denominator=drive_kinematics::OutputDenominator(desired,maxOutput);
+  if (denominator<=0) { StopDrive(); return; }
+  const double scale=localization_config::MAX_WHEEL_SPEED_MMPS/denominator;
+  for (int i=0;i<3;++i) {
+    speedPreviousCounts_[i]=counts[i];
+    const double request=desired[i]*scale;
+    if (std::fabs(request)<1) { speedIntegral_[i]=0; SetWheelPwm(i,0); continue; }
+    const double error=request-measured[i];
+    const double candidate=std::max(-autonomous_config::WHEEL_INTEGRAL_LIMIT,
+        std::min(autonomous_config::WHEEL_INTEGRAL_LIMIT,
+          speedIntegral_[i]+autonomous_config::WHEEL_KI*error*dt));
+    const double feedforward=request/localization_config::MAX_WHEEL_SPEED_MMPS+
+        std::copysign(autonomous_config::WHEEL_KS,request);
+    const double output=feedforward+autonomous_config::WHEEL_KP*error+candidate;
+    // Conditional integration prevents accumulating error into saturation.
+    if (std::fabs(output)<=maxOutput || output*error<0) speedIntegral_[i]=candidate;
+    SetWheelPwm(i,std::max(-maxOutput,std::min(maxOutput,
+        feedforward+autonomous_config::WHEEL_KP*error+speedIntegral_[i])));
+  }
+  speedBaselineValid_=true;
 }
 
 bool Hardware::GetStartPressed() const {
@@ -127,4 +170,21 @@ bool Hardware::IsSonarRangeValid(int index) const {
     case 3: return rightSonar_.IsRangeValid();
     default: return false;
   }
+}
+
+LineReading Hardware::ReadLine() {
+  if (!cobra_) return {};
+  double volts[4];
+  for (int i=0;i<4;++i) volts[i]=cobra_->GetVoltage(i);
+  return TrackLine(volts);
+}
+
+void Hardware::BeginObjectAction(ObjectAction action) {
+  (void)action; // No invented motor ports or simulated completion.
+}
+ObjectActionStatus Hardware::GetObjectActionStatus() const {
+  return ObjectActionStatus::Unavailable;
+}
+void Hardware::StopObjectHandler() {
+  // Add immediate motor/servo cancellation when integrating the actual gripper.
 }

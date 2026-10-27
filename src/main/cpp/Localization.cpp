@@ -1,4 +1,5 @@
 #include "Localization.h"
+#include "DriveKinematics.h"
 
 #include <frc/smartdashboard/SmartDashboard.h>
 
@@ -53,9 +54,11 @@ void Localization::Reset(double x_MM, double y_MM, double headingDeg) {
   for (int row = 0; row < 3; ++row) {
     for (int col = 0; col < 3; ++col) covariance_[row][col] = 0.0;
   }
-  covariance_[0][0] = 250000.0;
-  covariance_[1][1] = 250000.0;
-  covariance_[2][2] = 0.12;
+  // Assumes the robot was placed at the measured start pose, within 20 mm.
+  // A single sonar return must never drag an unknown pose across the arena.
+  covariance_[0][0] = 400.0;
+  covariance_[1][1] = 400.0;
+  covariance_[2][2] = 0.0012;
 
   for (int wheel = 0; wheel < localization_config::WHEEL_COUNT; ++wheel) {
     previousEncoder_[wheel] = hardware_->GetWheelEncoderRaw(wheel);
@@ -121,8 +124,8 @@ void Localization::UpdateOdometry(double dtSeconds) {
         kinematics[row][index] -= scale * kinematics[column][index];
     }
   }
-  const double bodyVx = kinematicsValid ? kinematics[0][3] : 0.0;
-  const double bodyVy = kinematicsValid ? kinematics[1][3] : 0.0;
+  const double bodyVx = kinematicsValid ? drive_kinematics::BodyForward(kinematics[0][3],kinematics[1][3]) : 0.0;
+  const double bodyVy = kinematicsValid ? drive_kinematics::BodyLeft(kinematics[0][3],kinematics[1][3]) : 0.0;
   const double wheelYawRate = kinematicsValid ? kinematics[2][3] : 0.0;
 
   // Blend the VMX gyro with encoder-derived wheel rotation for the yaw
@@ -146,9 +149,8 @@ void Localization::UpdateOdometry(double dtSeconds) {
   pose_.headingRad = WrapRadians(
       gyroPrediction + localization_config::YAW_AHRS_CORRECTION * yawInnovation);
 
-  // Encoder velocity is the stable baseline. A small, damped acceleration
-  // integration helps during short transients without allowing accelerometer
-  // bias to dominate position. The navX reports world-linear acceleration in G.
+  // Encoders supply translation. Acceleration is captured for observation;
+  // its integration weight defaults to zero to avoid stationary bias drift.
   lastAccelX_G_ = hardware_->GetWorldAccelX_G();
   lastAccelY_G_ = hardware_->GetWorldAccelY_G();
   lastRawAccelX_G_ = hardware_->GetRawAccelX_G();
@@ -185,8 +187,12 @@ void Localization::UpdateOdometry(double dtSeconds) {
   lastBodyVelocityY_MMps_ = bodyVy;
   lastAngularVelocityRadps_ = wheelYawRate;
 
-  covariance_[0][0] += kPositionProcessNoiseMM2PerSecond * dt;
-  covariance_[1][1] += kPositionProcessNoiseMM2PerSecond * dt;
+  // Motion-dependent uncertainty: waiting still for Start must not exhaust the
+  // same drift budget as driving. Noise parameters require arena calibration.
+  const double motionScale=std::min(1.0,std::hypot(bodyVx,bodyVy)/250.0);
+  const double positionNoise=2.0+kPositionProcessNoiseMM2PerSecond*motionScale;
+  covariance_[0][0] += positionNoise * dt;
+  covariance_[1][1] += positionNoise * dt;
   covariance_[2][2] += kHeadingProcessNoiseRad2PerSecond * dt;
 
   // Keep a small non-zero yaw uncertainty after the AHRS correction. Range
@@ -199,54 +205,17 @@ void Localization::UpdateOdometry(double dtSeconds) {
 
 double Localization::PredictSonarRange(int sensorIndex,
                                        const RobotPose& pose) const {
-  if (sensorIndex < 0 || sensorIndex >= 4 ||
-      localization_config::ARENA_WIDTH_MM <= 0.0 ||
-      localization_config::ARENA_HEIGHT_MM <= 0.0) {
-    return -1.0;
-  }
+  const auto hit=PredictSonarHit(sensorIndex,pose);
+  return hit.trustedWall?hit.range:-1.0;
+}
 
-  const localization_config::SonarConfig& sensor =
-      localization_config::SONARS[sensorIndex];
-  const double mountAngle = DegreesToRadians(sensor.beamAngleDeg);
-  const double c = std::cos(pose.headingRad);
-  const double s = std::sin(pose.headingRad);
-  const double sensorX = pose.x_MM + c * sensor.mountX_MM - s * sensor.mountY_MM;
-  const double sensorY = pose.y_MM + s * sensor.mountX_MM + c * sensor.mountY_MM;
-  const double rayAngle = pose.headingRad + mountAngle;
-  const double rayX = std::cos(rayAngle);
-  const double rayY = std::sin(rayAngle);
-  const double infinity = std::numeric_limits<double>::infinity();
-  double nearest = infinity;
-
-  if (rayX > 1e-8) {
-    const double range = (localization_config::ARENA_WIDTH_MM - sensorX) / rayX;
-    const double hitY = sensorY + range * rayY;
-    if (range > 0.0 && hitY >= 0.0 &&
-        hitY <= localization_config::ARENA_HEIGHT_MM)
-      nearest = std::min(nearest, range);
-  } else if (rayX < -1e-8) {
-    const double range = (0.0 - sensorX) / rayX;
-    const double hitY = sensorY + range * rayY;
-    if (range > 0.0 && hitY >= 0.0 &&
-        hitY <= localization_config::ARENA_HEIGHT_MM)
-      nearest = std::min(nearest, range);
-  }
-
-  if (rayY > 1e-8) {
-    const double range = (localization_config::ARENA_HEIGHT_MM - sensorY) / rayY;
-    const double hitX = sensorX + range * rayX;
-    if (range > 0.0 && hitX >= 0.0 &&
-        hitX <= localization_config::ARENA_WIDTH_MM)
-      nearest = std::min(nearest, range);
-  } else if (rayY < -1e-8) {
-    const double range = (0.0 - sensorY) / rayY;
-    const double hitX = sensorX + range * rayX;
-    if (range > 0.0 && hitX >= 0.0 &&
-        hitX <= localization_config::ARENA_WIDTH_MM)
-      nearest = std::min(nearest, range);
-  }
-
-  return std::isfinite(nearest) ? nearest : -1.0;
+ArenaRayHit Localization::PredictSonarHit(int sensorIndex,const RobotPose& pose,double angleOffset) const {
+  if (sensorIndex<0 || sensorIndex>=4 || !robot_geometry::Finite(pose)) return {};
+  const auto& sensor=localization_config::SONARS[sensorIndex];
+  const double c=std::cos(pose.headingRad),s=std::sin(pose.headingRad);
+  return arena_.Raycast({pose.x_MM+c*sensor.mountX_MM-s*sensor.mountY_MM,
+      pose.y_MM+s*sensor.mountX_MM+c*sensor.mountY_MM},
+      pose.headingRad+DegreesToRadians(sensor.beamAngleDeg)+angleOffset);
 }
 
 void Localization::ApplyScalarCorrection(const double jacobian[3],
@@ -272,7 +241,11 @@ void Localization::ApplyScalarCorrection(const double jacobian[3],
 
   pose_.x_MM += gain[0] * innovation;
   pose_.y_MM += gain[1] * innovation;
-  pose_.headingRad = WrapRadians(pose_.headingRad + gain[2] * innovation);
+  const double headingCorrection=gain[2]*innovation;
+  pose_.headingRad = WrapRadians(pose_.headingRad + headingCorrection);
+  // Retain external wall/tape heading corrections relative to AHRS; otherwise
+  // the next yaw update would pull the estimate back to its old reference.
+  imuYawOffsetRad_=WrapRadians(imuYawOffsetRad_+headingCorrection);
 
   double updated[3][3];
   for (int row = 0; row < 3; ++row) {
@@ -287,6 +260,7 @@ void Localization::ApplyScalarCorrection(const double jacobian[3],
 
 bool Localization::CorrectFromSonar(int sensorIndex, double measuredRange_MM) {
   if (sensorIndex < 0 || sensorIndex >= 4 ||
+      !std::isfinite(measuredRange_MM) ||
       measuredRange_MM < localization_config::SONAR_MIN_RANGE_MM ||
       measuredRange_MM > localization_config::SONAR_MAX_RANGE_MM) {
     return false;
@@ -296,6 +270,15 @@ bool Localization::CorrectFromSonar(int sensorIndex, double measuredRange_MM) {
   if (predicted < 0.0 ||
       predicted > localization_config::SONAR_MAX_RANGE_MM) {
     return false;
+  }
+  const auto centerHit=PredictSonarHit(sensorIndex,pose_);
+  // Reject corners, occluders and broad-cone ambiguity. The sensor returns the
+  // nearest echo within a cone, not necessarily the center-ray intersection.
+  for (const double offset : {-autonomous_config::SONAR_CONE_HALF_ANGLE_RAD,
+                               autonomous_config::SONAR_CONE_HALF_ANGLE_RAD}) {
+    const auto edge=PredictSonarHit(sensorIndex,pose_,offset);
+    if (!edge.trustedWall || edge.surface!=centerHit.surface ||
+        std::fabs(edge.range-predicted)>autonomous_config::SONAR_CONE_RANGE_SPREAD_MM) return false;
   }
   const double innovation = measuredRange_MM - predicted;
   if (std::fabs(innovation) >
@@ -334,10 +317,50 @@ bool Localization::CorrectFromSonar(int sensorIndex, double measuredRange_MM) {
       (yPlus - yMinus) / (2.0 * kJacobianPositionStepMM),
       (thetaPlus - thetaMinus) /
           (2.0 * kJacobianHeadingStepRad)};
+  // Reject a changing surface in the finite-difference neighborhood.
+  if (std::fabs(jacobian[0])>4 || std::fabs(jacobian[1])>4 ||
+      std::fabs(jacobian[2])>5000) return false;
   const double variance = localization_config::SONAR_RANGE_STDDEV_MM *
                           localization_config::SONAR_RANGE_STDDEV_MM;
+  // Bound the actual proposed update, rather than clipping after updating P.
+  double ph[3]={};
+  double innovationVariance=variance;
+  for (int r=0;r<3;++r) for (int c=0;c<3;++c) ph[r]+=covariance_[r][c]*jacobian[c];
+  for (int i=0;i<3;++i) innovationVariance+=jacobian[i]*ph[i];
+  if (!std::isfinite(innovationVariance) || innovationVariance<=0 ||
+      innovation*innovation>9*innovationVariance ||
+      std::hypot(ph[0],ph[1])*std::fabs(innovation)/innovationVariance>autonomous_config::SONAR_MAX_POSE_STEP_MM ||
+      std::fabs(ph[2]*innovation/innovationVariance)>0.035) return false;
   ApplyScalarCorrection(jacobian, innovation, variance);
   return true;
+}
+
+bool Localization::CorrectFromLine(const autonomous_config::Station& station,double tapeLeftError_MM) {
+  using namespace autonomous_config;
+  if (!std::isfinite(tapeLeftError_MM)) return false;
+  const double h=DegreesToRadians(station.headingDeg),theta=pose_.headingRad;
+  if (std::fabs(WrapRadians(theta-h))>0.08 || std::fabs(tapeLeftError_MM)>30) return false;
+  const double sensorLeft=COBRA_LEFT_MM+tapeLeftError_MM;
+  const double sensorX=pose_.x_MM+std::cos(theta)*COBRA_FORWARD_MM-std::sin(theta)*sensorLeft;
+  const double sensorY=pose_.y_MM+std::sin(theta)*COBRA_FORWARD_MM+std::cos(theta)*sensorLeft;
+  const double innovation= -(-std::sin(h)*(sensorX-station.center.x)+std::cos(h)*(sensorY-station.center.y));
+  if (std::fabs(innovation)>25) return false;
+  const double derivativeX=-std::sin(theta)*COBRA_FORWARD_MM-std::cos(theta)*sensorLeft;
+  const double derivativeY=std::cos(theta)*COBRA_FORWARD_MM-std::sin(theta)*sensorLeft;
+  const double jacobian[3]={-std::sin(h),std::cos(h),-std::sin(h)*derivativeX+std::cos(h)*derivativeY};
+  ApplyScalarCorrection(jacobian,innovation,64.0);
+  return true;
+}
+
+double Localization::GetPositionSigmaMM() const {
+  return std::sqrt(std::max(covariance_[0][0],covariance_[1][1]));
+}
+bool Localization::IsHealthy() const {
+  return robot_geometry::Finite(pose_) && std::isfinite(GetPositionSigmaMM()) &&
+      GetPositionSigmaMM()<=autonomous_config::MAX_POSITION_SIGMA_MM &&
+      std::isfinite(covariance_[2][2]) && covariance_[2][2]>=0 &&
+      std::sqrt(covariance_[2][2])<=autonomous_config::MAX_HEADING_SIGMA_RAD &&
+      std::isfinite(lastBodyVelocityX_MMps_) && std::isfinite(lastBodyVelocityY_MMps_);
 }
 
 void Localization::PublishTelemetry(double sonarRange_MM,
@@ -371,9 +394,9 @@ void Localization::PublishTelemetry(double sonarRange_MM,
 }
 
 double Localization::WrapRadians(double angleRad) {
-  while (angleRad > localization_config::PI) angleRad -= 2.0 * localization_config::PI;
-  while (angleRad < -localization_config::PI) angleRad += 2.0 * localization_config::PI;
-  return angleRad;
+  // atan2 safely propagates nonfinite input to the health checks; subtracting
+  // 2*pi repeatedly could otherwise loop forever on an infinite sensor value.
+  return robot_geometry::Wrap(angleRad);
 }
 
 double Localization::DegreesToRadians(double angleDeg) {

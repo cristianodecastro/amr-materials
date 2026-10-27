@@ -6,6 +6,23 @@
 
 namespace drive_kinematics {
 
+inline constexpr double LayoutVx(double forward, double left) {
+  const double a=localization_config::DRIVE_FORWARD_DIRECTION_DEG*localization_config::PI/180.0;
+  return std::cos(a)*forward-std::sin(a)*left;
+}
+inline constexpr double LayoutVy(double forward, double left) {
+  const double a=localization_config::DRIVE_FORWARD_DIRECTION_DEG*localization_config::PI/180.0;
+  return std::sin(a)*forward+std::cos(a)*left;
+}
+inline constexpr double BodyForward(double layoutVx, double layoutVy) {
+  const double a=localization_config::DRIVE_FORWARD_DIRECTION_DEG*localization_config::PI/180.0;
+  return std::cos(a)*layoutVx+std::sin(a)*layoutVy;
+}
+inline constexpr double BodyLeft(double layoutVx, double layoutVy) {
+  const double a=localization_config::DRIVE_FORWARD_DIRECTION_DEG*localization_config::PI/180.0;
+  return -std::sin(a)*layoutVx+std::cos(a)*layoutVy;
+}
+
 inline constexpr double WheelSpeedMMps(int wheel, double vx_MMps, double vy_MMps,
                              double yawRate_Radps) {
   const double alpha = localization_config::WHEEL_ANGLE_DEG[wheel] *

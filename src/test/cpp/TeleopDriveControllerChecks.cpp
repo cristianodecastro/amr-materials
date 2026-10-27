@@ -27,8 +27,6 @@ constexpr TeleopDriveController Settled(double x, double y, bool l2, bool r2) {
 static_assert(localization_config::MAX_WHEEL_SPEED_MMPS > 598.15 &&
               localization_config::MAX_WHEEL_SPEED_MMPS < 598.17,
               "112 gearbox-output RPM and 102 mm diameter must give 598.16 mm/s");
-static_assert(localization_config::TELEOP_MAX_MOTOR_OUTPUT == 1.0,
-              "Manual drive must no longer be limited to 25 percent");
 
 constexpr bool HeldControlsCannotArm() {
   TeleopDriveController controller;
@@ -52,14 +50,14 @@ constexpr bool DeadbandDoesNotCreep() {
 static_assert(DeadbandDoesNotCreep(), "Neutral stick noise must not accumulate full-output motion");
 
 constexpr bool TriggerDirections() {
-  const auto ccw = Settled(0.0, 0.0, true, false);
-  const auto cw = Settled(0.0, 0.0, false, true);
+  const auto ccw = Settled(0.0, 0.0, false, true);
+  const auto cw = Settled(0.0, 0.0, true, false);
   const double limit = localization_config::TELEOP_MAX_YAW_RATE_DPS *
       localization_config::PI / 180.0;
   return ccw.GetForwardMMps() == 0.0 && cw.GetLeftMMps() == 0.0 &&
       Near(ccw.GetYawRateRadps(), limit) && Near(cw.GetYawRateRadps(), -limit);
 }
-static_assert(TriggerDirections(), "L2 requests CCW and R2 requests CW with a centered stick");
+static_assert(TriggerDirections(), "L2 requests CW and R2 requests CCW with a centered stick");
 
 constexpr bool BothTriggersCancelImmediately() {
   auto controller = Settled(0.0, 0.0, true, false);
@@ -84,9 +82,11 @@ constexpr bool CardinalAndDiagonalTranslation() {
 static_assert(CardinalAndDiagonalTranslation(), "Cardinal signs and diagonal speed limit must hold");
 
 constexpr bool SimultaneousTranslationAndRotation() {
-  const auto controller = Settled(-1.0, -1.0, true, false);
-  return controller.GetForwardMMps() > 0.0 && controller.GetLeftMMps() > 0.0 &&
-      controller.GetYawRateRadps() > 0.0;
+  const auto cw = Settled(-1.0, -1.0, true, false);
+  const auto ccw = Settled(-1.0, -1.0, false, true);
+  return cw.GetForwardMMps() > 0.0 && cw.GetLeftMMps() > 0.0 &&
+      cw.GetYawRateRadps() < 0.0 && ccw.GetForwardMMps() > 0.0 &&
+      ccw.GetLeftMMps() > 0.0 && ccw.GetYawRateRadps() > 0.0;
 }
 static_assert(SimultaneousTranslationAndRotation(), "Translation and trigger rotation must combine");
 
@@ -94,7 +94,7 @@ constexpr bool ReleaseTranslationPreservesRotation() {
   auto controller = Settled(0.0, -1.0, true, false);
   controller.Update(true, true, 0.0, 0.0, true, false, 0.02);
   return controller.GetForwardMMps() == 0.0 && controller.GetLeftMMps() == 0.0 &&
-      controller.GetYawRateRadps() > 0.0;
+      controller.GetYawRateRadps() < 0.0;
 }
 static_assert(ReleaseTranslationPreservesRotation(), "Centering the stick must allow pure rotation");
 
@@ -132,15 +132,15 @@ constexpr bool LongLoopCannotSkipRamp() {
   return Near(controller.GetForwardMMps(),
               localization_config::TELEOP_ACCELERATION_MMPS2 * 0.050) &&
       Near(controller.GetYawRateRadps(),
-           localization_config::TELEOP_YAW_ACCELERATION_DPS2 *
+           -localization_config::TELEOP_YAW_ACCELERATION_DPS2 *
            localization_config::PI / 180.0 * 0.050);
 }
 static_assert(LongLoopCannotSkipRamp(), "Ramp integration must cap a delayed loop to 50 ms");
 
 constexpr bool DriveAndYawUseSeparateFrames() {
   const auto forward = Settled(0.0, -1.0, false, false);
-  const auto ccw = Settled(0.0, 0.0, true, false);
-  const auto cw = Settled(0.0, 0.0, false, true);
+  const auto ccw = Settled(0.0, 0.0, false, true);
+  const auto cw = Settled(0.0, 0.0, true, false);
   if (!Near(forward.GetLayoutVxMMps(), 0.0) ||
       forward.GetLayoutVyMMps() >= 0.0) return false;
   for (int wheel = 0; wheel < 3; ++wheel) {
@@ -160,10 +160,12 @@ constexpr bool MixedOutputsRespectLimit() {
     wheelSpeed[wheel] = drive_kinematics::WheelSpeedMMps(wheel,
         controller.GetLayoutVxMMps(), controller.GetLayoutVyMMps(),
         controller.GetYawRateRadps());
-  const double denominator = drive_kinematics::OutputDenominator(wheelSpeed, 1.0);
+  const double denominator = drive_kinematics::OutputDenominator(
+      wheelSpeed, localization_config::TELEOP_MAX_MOTOR_OUTPUT);
   if (denominator <= 0.0) return false;
   for (int wheel = 0; wheel < 3; ++wheel)
-    if (Abs(wheelSpeed[wheel] / denominator) > 1.0000001) return false;
+    if (Abs(wheelSpeed[wheel] / denominator) >
+        localization_config::TELEOP_MAX_MOTOR_OUTPUT + 1.0e-7) return false;
   const double lowerLimit = drive_kinematics::OutputDenominator(wheelSpeed, 0.25);
   for (int wheel = 0; wheel < 3; ++wheel)
     if (Abs(wheelSpeed[wheel] / lowerLimit) > 0.2500001) return false;
@@ -177,7 +179,8 @@ constexpr bool FullStickHasMoreOutput() {
   for (int wheel = 0; wheel < 3; ++wheel)
     speeds[wheel] = drive_kinematics::WheelSpeedMMps(wheel,
         forward.GetLayoutVxMMps(), forward.GetLayoutVyMMps(), 0.0);
-  const double denominator = drive_kinematics::OutputDenominator(speeds, 1.0);
+  const double denominator = drive_kinematics::OutputDenominator(
+      speeds, localization_config::TELEOP_MAX_MOTOR_OUTPUT);
   return speeds[0] / denominator > 0.86 && speeds[1] / denominator < -0.86 &&
       Near(speeds[2] / denominator, 0.0);
 }

@@ -8,8 +8,8 @@ namespace localization_config {
 // extra SmartDashboard troubleshooting fields in localization mode.
 static constexpr bool ENABLE_DETAILED_TELEMETRY = false;
 
-// Left-stick translation and L2/R2 rotation. This mode takes priority over the
-// previous arena exercise; no physical Start press is needed for manual drive.
+// Left-stick translation and L2/R2 rotation in Control Station Teleoperated
+// mode. Autonomous selection is controlled by Control Station independently.
 static constexpr bool TELEOP_DRIVE_ENABLED = true;
 static constexpr int DRIVER_JOYSTICK_PORT = 0;
 // Common gamepad mapping; confirm with the Teleop tab/Windows game controller
@@ -21,6 +21,7 @@ static constexpr double DRIVER_LEFT_Y_SIGN = -1.0; // negative raw Y = forward
 static constexpr double DRIVER_STICK_DEADBAND = 0.12;
 // PS-style digital trigger buttons, numbered from 1 by WPILib. Check the
 // L2/R2 dashboard lamps while Disabled; USB/Bluetooth host mappings can differ.
+// Button identities: L2 requests CW, R2 requests CCW in TeleopDriveController.
 static constexpr int DRIVER_L2_BUTTON = 7;
 static constexpr int DRIVER_R2_BUTTON = 8;
 static constexpr double TELEOP_ACCELERATION_MMPS2 = 1000.0;
@@ -31,32 +32,11 @@ static constexpr double TELEOP_YAW_ACCELERATION_DPS2 = 180.0;
 // physical rotation check establishes opposite installed motor polarity.
 static constexpr double TELEOP_YAW_SIGN = 1.0;
 
-// Current arena exercise: encoder-only forward travel, started by the button
-// in enabled Teleoperated mode. Set false to restore localization diagnostics.
-static constexpr bool FORWARD_TEST_ENABLED = false;
-// Physical Titan-port/wheel mapping was supplied by the user. The direction
-// offset below is an arena-observation correction awaiting the next run.
-static constexpr bool FORWARD_WHEEL_MAPPING_CONFIRMED = true;
-static constexpr double FORWARD_TARGET_MM = 1000.0;
-static constexpr double FORWARD_CRUISE_SPEED_MMPS = 250.0;
-static constexpr double FORWARD_MIN_SPEED_MMPS = 150.0;
-static constexpr double FORWARD_ACCELERATION_MMPS2 = 250.0;
-static constexpr double FORWARD_DISTANCE_KP_PER_S = 2.0;
-static constexpr double FORWARD_MAX_MOTOR_OUTPUT = 0.25;
 // Arena observation: the original +X command translated physically left.
-// Rotate this exercise's travel vector clockwise 90 degrees in the existing
-// wheel-layout frame. Use this same vector for commands and encoder distance.
-static constexpr double FORWARD_TEST_DIRECTION_DEG = -90.0;
-// Keep manual forward consistent with the most recent arena correction.
-// This mounting-frame alignment still needs confirmation on the real robot.
-static constexpr double TELEOP_FORWARD_DIRECTION_DEG = FORWARD_TEST_DIRECTION_DEG;
-static constexpr double FORWARD_WHEEL_SYNC_KP_PER_S = 2.0;
-static constexpr double FORWARD_MAX_SYNC_MMPS = 80.0;
-static constexpr double FORWARD_TIMEOUT_S = 20.0;
-static constexpr double FORWARD_STALL_TIMEOUT_S = 2.0;
-static constexpr double FORWARD_PROGRESS_STEP_MM = 2.0;
-static constexpr double FORWARD_MAX_WHEEL_DISAGREEMENT_MM = 100.0;
-static constexpr double FORWARD_REVERSE_LIMIT_MM = 20.0;
+// Shared by command and inverse-odometry transforms. Confirm physically before
+// enabling autonomous. This preserves the existing manual driving direction.
+static constexpr double DRIVE_FORWARD_DIRECTION_DEG = -90.0;
+static constexpr double TELEOP_FORWARD_DIRECTION_DEG = DRIVE_FORWARD_DIRECTION_DEG;
 static constexpr double START_BUTTON_DEBOUNCE_S = 0.060;
 
 static constexpr int TITAN_CAN_ID = 42;
@@ -76,8 +56,7 @@ static constexpr double WHEEL_CENTER_RADIUS_MM[WHEEL_COUNT] = {
 
 // Confirmed top-view radial positions: M0 in quadrant II (150 deg),
 // M1 in quadrant I (30 deg), M2 on -Y (270 deg) in the supplied layout frame.
-// The first run exposed a mismatch with physical forward; the test's direction
-// offset above handles that observation without rewriting localization geometry.
+// DRIVE_FORWARD_DIRECTION_DEG aligns this layout with body +X forward.
 // Positive rolling direction is tangent in the counterclockwise direction.
 static constexpr double WHEEL_ANGLE_DEG[WHEEL_COUNT] = {150.0, 30.0, 270.0};
 static constexpr double WHEEL_ENCODER_SIGN[WHEEL_COUNT] = {1.0, 1.0, 1.0};
@@ -94,11 +73,11 @@ static constexpr double MAX_WHEEL_SPEED_MMPS =
 static constexpr double TELEOP_SPEED_MMPS = MAX_WHEEL_SPEED_MMPS;
 
 // Arena coordinates span X=[0,width], Y=[0,height].
-static constexpr double ARENA_WIDTH_MM = 2000.0;   // PLACEHOLDER
-static constexpr double ARENA_HEIGHT_MM = 2000.0;  // PLACEHOLDER
-static constexpr double START_X_MM = 500.0;        // PLACEHOLDER
-static constexpr double START_Y_MM = 250.0;        // PLACEHOLDER
-static constexpr double START_HEADING_DEG = 0.0;
+static constexpr double ARENA_WIDTH_MM = 2000.0;
+static constexpr double ARENA_HEIGHT_MM = 2000.0;
+static constexpr double START_X_MM = 1000.0;       // PLACEHOLDER center of start square
+static constexpr double START_Y_MM = 900.0;        // PLACEHOLDER center of start square
+static constexpr double START_HEADING_DEG = 90.0;  // PLACEHOLDER facing upper arena
 
 // At heading zero, robot +X points toward arena +X and +Y points left.
 // Sensor positions are their sensing-face coordinates from robot center.
@@ -137,11 +116,13 @@ static constexpr double SONAR_MIN_RANGE_MM = 20.0;
 static constexpr double SONAR_MAX_RANGE_MM = 4000.0;
 
 static constexpr double ACCEL_DEADBAND_G = 0.025;
-static constexpr double ACCEL_VELOCITY_BLEND = 0.10;
+// Still capture accelerometer data, but do not integrate its bias into position.
+// Encoders are the translation baseline; AHRS uses accelerometer internally.
+static constexpr double ACCEL_VELOCITY_BLEND = 0.0;
 static constexpr double ENCODER_YAW_RATE_BLEND = 0.10;
 static constexpr double YAW_AHRS_CORRECTION = 0.25;
 static constexpr double SONAR_RANGE_STDDEV_MM = 40.0;
-static constexpr double SONAR_MAX_INNOVATION_MM = 400.0;
+static constexpr double SONAR_MAX_INNOVATION_MM = 100.0;
 
 static constexpr double PI = M_PI;
 static constexpr double GRAVITY_MM_PER_S2 = 9806.65;

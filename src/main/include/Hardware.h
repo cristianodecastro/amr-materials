@@ -6,9 +6,13 @@
 
 #include <studica/TitanQuad.h>
 #include <studica/TitanQuadEncoder.h>
+#include <studica/Cobra.h>
+#include <memory>
 
 #include "AHRS.h"
 #include "LocalizationConstants.h"
+#include "LineTracker.h"
+#include "ObjectHandler.h"
 
 class Hardware {
  public:
@@ -21,6 +25,8 @@ class Hardware {
   void DriveRobotRelative(double vx_MMps, double vy_MMps,
                           double yawRate_Radps, double maxOutput = 1.0);
   void DriveWheelsMMps(const double (&wheelSpeed)[3], double maxOutput);
+  void DriveRobotRelativeFeedback(double forward, double left, double yawRadps,
+                                   double maxOutput, double dt);
   void StopDrive();
 
   bool GetStartPressed() const;
@@ -41,8 +47,17 @@ class Hardware {
   void PingSonar(int index);
   double GetSonarRangeMM(int index) const;
   bool IsSonarRangeValid(int index) const;
+  LineReading ReadLine();
+  bool IsObjectHandlerReady() const { return false; } // implement with actual mechanism
+  void BeginObjectAction(ObjectAction action);
+  ObjectActionStatus GetObjectActionStatus() const;
+  void StopObjectHandler();
 
  private:
+  std::unique_ptr<studica::Cobra> cobra_;
+  double speedPreviousCounts_[3]={0,0,0};
+  double speedIntegral_[3]={0,0,0};
+  bool speedBaselineValid_=false;
   double wheelCommands_[localization_config::WHEEL_COUNT] = {0.0, 0.0, 0.0};
   studica::TitanQuad motor0_{localization_config::TITAN_CAN_ID,
                               localization_config::TITAN_MOTOR_FREQUENCY_HZ,

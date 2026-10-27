@@ -1,479 +1,286 @@
 #include "subsystems/LocalizationSubsystem.h"
-#include "DriveKinematics.h"
 
 #include <frc/RobotState.h>
 #include <frc/DriverStation.h>
 #include <frc/shuffleboard/Shuffleboard.h>
+#include <frc/shuffleboard/BuiltInWidgets.h>
+#include <frc/shuffleboard/SimpleWidget.h>
 #include <frc/smartdashboard/SmartDashboard.h>
-
-#include <cmath>
 #include <algorithm>
+#include <cmath>
 #include <string>
 
-namespace {
-ForwardDriveCalibration MakeForwardCalibration() {
-  ForwardDriveCalibration calibration{};
-  calibration.millimetresPerCount =
-      (2.0 * localization_config::PI * localization_config::WHEEL_RADIUS_MM) /
-      (localization_config::ENCODER_COUNTS_PER_OUTPUT_REV *
-       localization_config::MOTOR_TO_WHEEL_RATIO);
-  calibration.mappingConfirmed =
-      localization_config::FORWARD_WHEEL_MAPPING_CONFIRMED;
-  for (int wheel = 0; wheel < 3; ++wheel) {
-    calibration.forwardCoefficient[wheel] = drive_kinematics::TravelCoefficient(
-        wheel, localization_config::FORWARD_TEST_DIRECTION_DEG);
-    calibration.encoderSign[wheel] = localization_config::WHEEL_ENCODER_SIGN[wheel];
-  }
-  return calibration;
-}
-}  // namespace
-
-LocalizationSubsystem::LocalizationSubsystem()
-    : forwardDrive_(MakeForwardCalibration()) {
-  lastLoopTime_ = frc::Timer::GetFPGATimestamp();
-  lastSonarPingTime_ = lastLoopTime_;
+LocalizationSubsystem::LocalizationSubsystem() {
+  lastLoopTime_=lastSonarPingTime_=frc::Timer::GetFPGATimestamp();
   hardware_.StopDrive();
   InitializeDashboard();
-  if (!localization_config::TELEOP_DRIVE_ENABLED &&
-      !localization_config::FORWARD_TEST_ENABLED) PublishDiagnostics();
+  InitializeTeleopDashboard();
+  InitializeCobraDashboard();
 }
 
-void LocalizationSubsystem::InitializeDashboard() {
-  if (localization_config::TELEOP_DRIVE_ENABLED) {
-    InitializeTeleopDashboard();
-    return;
-  }
-  if (localization_config::FORWARD_TEST_ENABLED) {
-    InitializeForwardDashboard();
-    return;
-  }
-  auto& tab = frc::Shuffleboard::GetTab("Robot");
-
-  // Four fixed rows keep the initial evaluation screen within one view.
-  // Row 0: robot readiness. No dashboard widget commands robot motion.
-  tab.AddString("Robot state", [this]() -> std::string {
-    if (!frc::RobotState::IsEnabled()) return "Disabled - enable for sonars";
-    if (!hardware_.IsImuConnected()) return "Waiting for IMU connection";
-    if (hardware_.IsImuCalibrating()) return "Keep still: IMU calibrating";
-    return started_ ? "Localization running" : "Sensors active - pose not started";
-  }).WithPosition(0, 0).WithSize(4, 1);
-  tab.AddBoolean("Enabled", [] { return frc::RobotState::IsEnabled(); })
-      .WithPosition(4, 0).WithSize(2, 1);
-  tab.AddBoolean("IMU ready", [this] {
-    return hardware_.IsImuConnected() && !hardware_.IsImuCalibrating();
-  }).WithPosition(6, 0).WithSize(2, 1);
-  tab.AddBoolean("Start button", [this] { return hardware_.GetStartPressed(); })
-      .WithPosition(8, 0).WithSize(2, 1);
-  tab.AddString("Sonars", [this]() -> std::string {
-    if (!frc::RobotState::IsEnabled()) return "Disabled";
-    int valid = 0;
-    int firstInvalid = -1;
-    for (int sensor = 0; sensor < 4; ++sensor) {
-      if (sonarRangeValid_[sensor]) {
-        ++valid;
-      } else if (firstInvalid < 0) {
-        firstInvalid = sensor;
-      }
-    }
-    if (firstInvalid < 0) return "4/4 valid";
-
-    const char* names[4] = {"Rear left", "Rear right", "Left", "Right"};
-    const char* reason = sonarLastReadTime_S_[firstInvalid] < 0.0
-        ? "waiting"
-        : (sonarEchoReceived_[firstInvalid] ? "out of range" : "no echo");
-    return std::to_string(valid) + "/4; " + names[firstInvalid] + ": " + reason;
-  }).WithPosition(10, 0).WithSize(2, 1);
-
-  // Row 1: a distance of -1 means disabled, no echo, or outside usable range.
-  const char* sonarTitles[4] = {
-      "Rear left (mm)", "Rear right (mm)", "Left (mm)", "Right (mm)"};
-  for (int sensor = 0; sensor < 4; ++sensor) {
-    tab.AddNumber(sonarTitles[sensor], [this, sensor] {
-      return sonarRangeValid_[sensor] ? sonarRanges_MM_[sensor] : -1.0;
-    }).WithPosition(sensor * 3, 1).WithSize(3, 1);
-  }
-
-  // Row 2: arena pose and body motion. Pose uses configured start values
-  // until the physical Start button begins localization.
-  tab.AddNumber("X (mm)", [this] { return localization_.GetPose().x_MM; })
-      .WithPosition(0, 2).WithSize(2, 1);
-  tab.AddNumber("Y (mm)", [this] { return localization_.GetPose().y_MM; })
-      .WithPosition(2, 2).WithSize(2, 1);
-  tab.AddNumber("Heading (deg)", [this] {
-    return localization_.GetPose().headingRad * 180.0 / localization_config::PI;
-  }).WithPosition(4, 2).WithSize(2, 1);
-  tab.AddNumber("Vx (mm/s)", [this] {
-    return localization_.GetBodyVelocityX_MMps();
-  }).WithPosition(6, 2).WithSize(2, 1);
-  tab.AddNumber("Vy (mm/s)", [this] {
-    return localization_.GetBodyVelocityY_MMps();
-  }).WithPosition(8, 2).WithSize(2, 1);
-  tab.AddNumber("Yaw rate (deg/s)", [this] {
-    return hardware_.GetYawRateDegreesPerSecond();
-  }).WithPosition(10, 2).WithSize(2, 1);
-
-  // Row 3: raw wheel counts and the IMU inputs used by localization.
-  for (int wheel = 0; wheel < localization_config::WHEEL_COUNT; ++wheel) {
-    tab.AddNumber("Encoder " + std::to_string(wheel) + " (counts)",
-                  [this, wheel] { return hardware_.GetWheelEncoderRaw(wheel); })
-        .WithPosition(wheel * 2, 3).WithSize(2, 1);
-  }
-  tab.AddNumber("IMU yaw (deg)", [this] { return hardware_.GetYawDegrees(); })
-      .WithPosition(6, 3).WithSize(2, 1);
-  tab.AddNumber("Accel X (g)", [this] { return hardware_.GetWorldAccelX_G(); })
-      .WithPosition(8, 3).WithSize(2, 1);
-  tab.AddNumber("Accel Y (g)", [this] { return hardware_.GetWorldAccelY_G(); })
-      .WithPosition(10, 3).WithSize(2, 1);
+std::string LocalizationSubsystem::PreflightError() const {
+  using namespace autonomous_config;
+  std::string missing;
+  auto require=[&missing](bool condition,const char* name) {
+    if (!condition) { if (!missing.empty()) missing+=", "; missing+=name; }
+  };
+  require(ARENA_AND_FOOTPRINT_CONFIRMED,"arena/footprint");
+  require(DRIVE_AND_IMU_FRAME_CONFIRMED,"drive/IMU frame");
+  require(WHEEL_SPEED_CONTROL_CONFIRMED,"wheel-speed tuning");
+  require(SONAR_MOUNTS_CONFIRMED,"sonar mounts");
+  require(START_POSE_CONFIRMED,"start pose");
+  require(STATION_ASSIGNMENTS_CONFIRMED,"station assignment");
+  require(COBRA_INSTALLED && COBRA_CALIBRATED,"Cobra installation/calibration");
+  require(hardware_.IsObjectHandlerReady(),"pickup/release hardware");
+  return missing.empty()?missing:"Blocked: configure "+missing;
 }
 
-void LocalizationSubsystem::InitializeTeleopDashboard() {
-  auto& tab = frc::Shuffleboard::GetTab("Teleop");
-  tab.AddString("Drive status", [this] { return std::string(teleopDrive_.GetStatus()); })
-      .WithPosition(0, 0).WithSize(6, 1);
-  tab.AddBoolean("Enabled", [] { return frc::RobotState::IsEnabled(); })
-      .WithPosition(6, 0).WithSize(2, 1);
-  tab.AddBoolean("Controller", [this] { return driverConnected_; })
-      .WithPosition(8, 0).WithSize(2, 1);
-  tab.AddBoolean("Stick armed", [this] { return teleopDrive_.IsArmed(); })
-      .WithPosition(10, 0).WithSize(2, 1);
-  tab.AddNumber("Left stick X", [this] { return driverRawX_; })
-      .WithPosition(0, 1).WithSize(3, 1);
-  tab.AddNumber("Left stick Y", [this] { return driverRawY_; })
-      .WithPosition(3, 1).WithSize(3, 1);
-  tab.AddNumber("Forward request (mm/s)", [this] { return teleopDrive_.GetForwardMMps(); })
-      .WithPosition(6, 1).WithSize(3, 1);
-  tab.AddNumber("Left request (mm/s)", [this] { return teleopDrive_.GetLeftMMps(); })
-      .WithPosition(9, 1).WithSize(3, 1);
-  for (int wheel = 0; wheel < 3; ++wheel) {
-    const std::string port = "M" + std::to_string(
-        localization_config::WHEEL_TITAN_PORT[wheel]);
-    tab.AddNumber(port + " encoder (counts)",
-                  [this, wheel] { return hardware_.GetWheelEncoderRaw(wheel); })
-        .WithPosition(wheel * 2, 2).WithSize(2, 1);
-    tab.AddNumber(port + " output (%)",
-                  [this, wheel] { return hardware_.GetWheelCommand(wheel) * 100.0; })
-        .WithPosition(6 + wheel * 2, 2).WithSize(2, 1);
-  }
-  tab.AddBoolean("L2 - CCW", [this] { return driverL2_; })
-      .WithPosition(0, 3).WithSize(3, 1);
-  tab.AddBoolean("R2 - CW", [this] { return driverR2_; })
-      .WithPosition(3, 3).WithSize(3, 1);
-  tab.AddNumber("Rotation request (deg/s)", [this] {
-    return teleopDrive_.GetYawRateRadps() * 180.0 / localization_config::PI;
-  }).WithPosition(6, 3).WithSize(3, 1);
-  tab.AddNumber("Output limit (%)", [] {
-    return localization_config::TELEOP_MAX_MOTOR_OUTPUT * 100.0;
-  }).WithPosition(9, 3).WithSize(3, 1);
+void LocalizationSubsystem::EnterAutonomous() {
+  StopAll();
+  autoSession_=true;
+  poseAnchored_=false;
+  // Snapshot encoder baselines and align existing AHRS yaw to the known arena
+  // start heading. Do not issue asynchronous ZeroYaw/encoder resets here.
+  localization_.Reset(localization_config::START_X_MM,localization_config::START_Y_MM,
+                      localization_config::START_HEADING_DEG);
+  const double now=frc::Timer::GetFPGATimestamp();
+  lastLoopTime_=now;
+  sonarAwaitingEcho_=false;
+  nextSonarIndex_=0; lastSonarPingTime_=now;
+  for (int i=0;i<4;++i) { sonarRanges_MM_[i]=-1; sonarRangeValid_[i]=false; sonarCorrectionAccepted_[i]=false; }
+  autonomous_.Enter(now,PreflightError());
 }
 
-void LocalizationSubsystem::UpdateTeleopDrive(double dt) {
-  auto& ds = frc::DriverStation::GetInstance();
-  const bool attached = ds.IsDSAttached();
-  const int xAxis = localization_config::DRIVER_LEFT_X_AXIS;
-  const int yAxis = localization_config::DRIVER_LEFT_Y_AXIS;
-  const int l2Button = localization_config::DRIVER_L2_BUTTON;
-  const int r2Button = localization_config::DRIVER_R2_BUTTON;
-  const bool validAxes = xAxis >= 0 && yAxis >= 0 && xAxis != yAxis;
-  const int axisCount = attached ? driver_.GetAxisCount() : 0;
-  const int buttonCount = attached ? driver_.GetButtonCount() : 0;
-  const bool axesPresent = validAxes && axisCount > std::max(xAxis, yAxis);
-  const bool buttonsPresent = l2Button > 0 && r2Button > 0 &&
-      l2Button != r2Button && buttonCount >= std::max(l2Button, r2Button);
-  driverConnected_ = attached && axesPresent && buttonsPresent;
-  // Expose inputs while Disabled so their mapping can be checked before drive.
-  driverRawX_ = axesPresent ? driver_.GetRawAxis(xAxis) : 0.0;
-  driverRawY_ = axesPresent ? driver_.GetRawAxis(yAxis) : 0.0;
-  driverL2_ = buttonsPresent && driver_.GetRawButton(l2Button);
-  driverR2_ = buttonsPresent && driver_.GetRawButton(r2Button);
-  const bool motionAllowed = frc::RobotState::IsEnabled() &&
-      frc::RobotState::IsOperatorControl() && !frc::RobotState::IsTest();
-  teleopDrive_.Update(motionAllowed, driverConnected_, driverRawX_, driverRawY_,
-                       driverL2_, driverR2_, dt);
-  if (teleopDrive_.IsArmed()) {
-    hardware_.DriveRobotRelative(teleopDrive_.GetLayoutVxMMps(),
-        teleopDrive_.GetLayoutVyMMps(), teleopDrive_.GetYawRateRadps(),
-        localization_config::TELEOP_MAX_MOTOR_OUTPUT);
-  } else {
-    hardware_.StopDrive();
-  }
-}
-
-void LocalizationSubsystem::InitializeForwardDashboard() {
-  auto& tab = frc::Shuffleboard::GetTab("Forward 1m");
-  tab.AddString("Run status", [this]() -> std::string {
-    std::string status = forwardDrive_.GetStatus();
-    if (forwardDrive_.GetFaultWheel() >= 0)
-      status += " (M" + std::to_string(
-          localization_config::WHEEL_TITAN_PORT[forwardDrive_.GetFaultWheel()]) + ")";
-    if (!frc::RobotState::IsEnabled()) {
-      return forwardDrive_.GetState() == ForwardDriveController::State::Ready
-          ? "Disabled - enable Teleoperated mode" : status + " | Disabled";
-    }
-    if (!frc::RobotState::IsOperatorControl() || frc::RobotState::IsTest())
-      return status + " | Select Teleoperated mode";
-    return status;
-  }).WithPosition(0, 0).WithSize(6, 1);
-  tab.AddBoolean("Enabled", [] { return frc::RobotState::IsEnabled(); })
-      .WithPosition(6, 0).WithSize(2, 1);
-  tab.AddBoolean("Start button", [this] { return hardware_.GetStartPressed(); })
-      .WithPosition(8, 0).WithSize(2, 1);
-  tab.AddBoolean("Complete", [this] { return forwardDrive_.IsComplete(); })
-      .WithPosition(10, 0).WithSize(2, 1);
-
-  tab.AddNumber("Travel (mm)", [this] { return forwardDrive_.GetDistanceMM(); })
-      .WithPosition(0, 1).WithSize(3, 1);
-  tab.AddNumber("Target (mm)", [] { return localization_config::FORWARD_TARGET_MM; })
-      .WithPosition(3, 1).WithSize(3, 1);
-  tab.AddNumber("Remaining (mm)", [this] { return forwardDrive_.GetRemainingMM(); })
-      .WithPosition(6, 1).WithSize(3, 1);
-  tab.AddNumber("Elapsed (s)", [this] { return forwardDrive_.GetElapsedSeconds(); })
-      .WithPosition(9, 1).WithSize(3, 1);
-
-  for (int wheel = 0; wheel < 3; ++wheel) {
-    const std::string port = "M" + std::to_string(
-        localization_config::WHEEL_TITAN_PORT[wheel]);
-    tab.AddNumber(port + " encoder (counts)",
-                  [this, wheel] { return hardware_.GetWheelEncoderRaw(wheel); })
-        .WithPosition(wheel * 2, 2).WithSize(2, 1);
-    tab.AddNumber(port + " output (%)",
-                  [this, wheel] { return hardware_.GetWheelCommand(wheel) * 100.0; })
-        .WithPosition(6 + wheel * 2, 2).WithSize(2, 1);
-  }
+void LocalizationSubsystem::StopAll() {
+  hardware_.StopDrive();
+  hardware_.StopObjectHandler();
+  objectRequest_=ObjectAction::None;
+  teleopDrive_.Update(false,false,0,0,false,false,localization_config::CONTROL_PERIOD_S);
+  autonomous_.Abort();
+  autoSession_=false;
 }
 
 void LocalizationSubsystem::Periodic() {
-  const double now = frc::Timer::GetFPGATimestamp();
-  const double dt = now - lastLoopTime_;
-  lastLoopTime_ = now;
-  if (localization_config::TELEOP_DRIVE_ENABLED) {
+  const double now=frc::Timer::GetFPGATimestamp(),dt=now-lastLoopTime_;
+  lastLoopTime_=now;
+  const bool enabled=frc::RobotState::IsEnabled();
+  const bool autoMode=frc::RobotState::IsAutonomous() && !frc::RobotState::IsTest();
+
+  // Pose remains observable in manual mode; only autonomous start anchors it
+  // to an arena placement. Never use manual-mode pose as a global guarantee.
+  if (hardware_.IsImuConnected() && !hardware_.IsImuCalibrating()) {
+    if (autoSession_ && !poseAnchored_) {
+      localization_.Reset(localization_config::START_X_MM,localization_config::START_Y_MM,
+          localization_config::START_HEADING_DEG);
+      poseAnchored_=true;
+    } else localization_.UpdateOdometry(dt);
+  }
+  line_=hardware_.ReadLine();
+  // Consume each capture request once; no dashboard entry commands movement.
+  const bool captureWhite=captureCobraWhite_.GetBoolean(false);
+  const bool captureBlack=captureCobraBlack_.GetBoolean(false);
+  if (captureWhite) captureCobraWhite_.SetBoolean(false);
+  if (captureBlack) captureCobraBlack_.SetBoolean(false);
+  cobraCheck_.Update(line_,now,!enabled,captureWhite,captureBlack);
+  UpdateSonarPoll(now,enabled);
+
+  if (enabled && autoMode) {
+    if (!autoSession_) {
+      hardware_.StopDrive(); // require explicit AutonomousInit, never resume
+    } else UpdateAutonomous(now,dt);
+  } else {
+    if (autoSession_) StopAll();
     UpdateTeleopDrive(dt);
-    return;
   }
-  if (localization_config::FORWARD_TEST_ENABLED) {
-    const bool motionAllowed = frc::RobotState::IsEnabled() &&
-        frc::RobotState::IsOperatorControl() && !frc::RobotState::IsTest();
-    const double counts[3] = {hardware_.GetWheelEncoderRaw(0),
-                              hardware_.GetWheelEncoderRaw(1),
-                              hardware_.GetWheelEncoderRaw(2)};
-    forwardDrive_.Update(motionAllowed, hardware_.GetStartPressed(), now, counts);
-    if (motionAllowed && forwardDrive_.IsDriving()) {
-      const double wheelSpeed[3] = {forwardDrive_.GetWheelCommandMMps(0),
-                                     forwardDrive_.GetWheelCommandMMps(1),
-                                     forwardDrive_.GetWheelCommandMMps(2)};
-      hardware_.DriveWheelsMMps(wheelSpeed,
-                                localization_config::FORWARD_MAX_MOTOR_OUTPUT);
-    } else {
-      hardware_.StopDrive();
-    }
-    // No sonar polling, sensor-fusion update, or IMU-readiness requirement
-    // participates in this exercise. Distance comes only from Titan counts.
-    return;
-  }
-  hardware_.StopDrive();  // Localization evaluation mode holds the motors still.
-
-  if (!started_) {
-    const bool imuReady = hardware_.IsImuConnected() &&
-                          !hardware_.IsImuCalibrating();
-    if (hardware_.GetStartPressed() && imuReady) {
-      ++startButtonDebounceCount_;
-    } else {
-      startButtonDebounceCount_ = 0;
-    }
-
-    if (startButtonDebounceCount_ >= 3) BeginLocalization();
-  }
-
-  if (started_) localization_.UpdateOdometry(dt);
-
-  // VMX's HAL watchdog blocks FlexDIO outputs while the robot is disabled.
-  // Enable in the Control Station to produce trigger pulses. The physical
-  // start button is independent: before start, ranges are diagnostic only.
-  UpdateSonarPoll(now, frc::RobotState::IsEnabled());
   PublishDiagnostics();
-  if (started_) localization_.PublishTelemetry(lastSonarRange_MM_, lastSonarIndex_);
 }
 
-void LocalizationSubsystem::BeginLocalization() {
-  hardware_.ZeroYaw();
-  hardware_.ResetDriveEncoders();
-  sonarAwaitingEcho_ = false;
-  nextSonarIndex_ = 0;
-  for (int sensor = 0; sensor < 4; ++sensor) {
-    sonarRanges_MM_[sensor] = -1.0;
-    sonarRangeValid_[sensor] = false;
-    sonarEchoReceived_[sensor] = false;
-    sonarCorrectionAccepted_[sensor] = false;
-    sonarLastReadTime_S_[sensor] = -1.0;
-    sonarStatus_[sensor] = "Waiting for ping";
+void LocalizationSubsystem::UpdateAutonomous(double now,double dt) {
+  bool sonarReady=true;
+  if (autonomous_.GetState()==AutonomousController::State::WaitingStart) {
+    for (int i=0;i<4;++i)
+      sonarReady=sonarReady && sonarRangeValid_[i] && now-sonarReadTime_[i]<=autonomous_config::SONAR_STALE_S;
   }
-  localization_.Reset(localization_config::START_X_MM,
-                      localization_config::START_Y_MM,
-                      localization_config::START_HEADING_DEG);
-  started_ = true;
-  lastSonarPingTime_ = frc::Timer::GetFPGATimestamp();
+  const AutonomousInput input={localization_.GetPose(),line_,now,dt,
+      hardware_.GetStartPressed(),hardware_.IsImuConnected() &&
+      !hardware_.IsImuCalibrating() && localization_.IsHealthy() && sonarReady,
+      hardware_.GetObjectActionStatus()};
+  autonomous_.Update(input);
+  const auto action=autonomous_.GetObjectRequest();
+  if (action!=objectRequest_) {
+    hardware_.StopObjectHandler();
+    objectRequest_=action;
+    if (action!=ObjectAction::None) hardware_.BeginObjectAction(action);
+  }
+  if (autonomous_.IsRunning() && !SonarMotionSafe(now)) {
+    autonomous_.SafetyStop("Stopped: close obstacle or stale sonar in commanded direction");
+  }
+  if (autonomous_.IsRunning()) {
+    hardware_.DriveRobotRelativeFeedback(autonomous_.GetForwardMMps(),autonomous_.GetLeftMMps(),
+        autonomous_.GetYawRadps(),autonomous_config::MAX_OUTPUT,dt);
+  } else {
+    hardware_.StopDrive();
+    hardware_.StopObjectHandler();
+  }
+  // Avoid treating highly correlated 50 Hz tape samples as independent pose
+  // measurements. The controller still follows the tape on every fresh read.
+  if (autonomous_.CanCorrectFromLine() && line_.valid && now-lastLineCorrection_>=0.20) {
+    localization_.CorrectFromLine(autonomous_.GetStation(),line_.leftErrorMM);
+    lastLineCorrection_=now;
+  }
 }
 
-void LocalizationSubsystem::UpdateSonarPoll(double nowSeconds,
-                                             bool robotEnabled) {
-  if (!robotEnabled) {
-    // Discard an interrupted measurement; never reuse its counter after
-    // re-enabling. The next Ping() resets that counter before triggering.
-    sonarAwaitingEcho_ = false;
-    sonarPollingEnabled_ = false;
-    nextSonarIndex_ = 0;
-    lastSonarPingTime_ = nowSeconds;
-    for (int sensor = 0; sensor < 4; ++sensor) {
-      sonarRanges_MM_[sensor] = -1.0;
-      sonarRangeValid_[sensor] = false;
-      sonarEchoReceived_[sensor] = false;
-      sonarCorrectionAccepted_[sensor] = false;
-      sonarStatus_[sensor] = "Blocked: robot disabled (VMX IO watchdog)";
-    }
+bool LocalizationSubsystem::SonarMotionSafe(double now) const {
+  const double vx=autonomous_.GetForwardMMps(),vy=autonomous_.GetLeftMMps(),w=autonomous_.GetYawRadps();
+  for (int i=0;i<4;++i) {
+    const auto& sensor=localization_config::SONARS[i];
+    const double a=robot_geometry::Radians(sensor.beamAngleDeg),c=std::cos(a),s=std::sin(a);
+    const double closing=vx*c+vy*s+w*(-sensor.mountY_MM*c+sensor.mountX_MM*s);
+    if (closing<=5) continue;
+    if (!sonarRangeValid_[i] || now-sonarReadTime_[i]>autonomous_config::SONAR_STALE_S) return false;
+    const double age=now-sonarReadTime_[i]+localization_config::SONAR_ECHO_SETTLE_S;
+    const double envelope=autonomous_config::ROBOT_ENVELOPE_RADIUS_MM+autonomous_config::CLEARANCE_MM-
+        (sensor.mountX_MM*c+sensor.mountY_MM*s);
+    const double stopDistance=closing*closing/(2*autonomous_config::ACCEL_MMPS2)+closing*age;
+    if (sonarRanges_MM_[i]<envelope+stopDistance) return false;
+  }
+  return true;
+}
+
+void LocalizationSubsystem::UpdateTeleopDrive(double dt) {
+  auto& ds=frc::DriverStation::GetInstance();
+  const bool attached=ds.IsDSAttached();
+  const int xAxis=localization_config::DRIVER_LEFT_X_AXIS;
+  const int yAxis=localization_config::DRIVER_LEFT_Y_AXIS;
+  const int l2=localization_config::DRIVER_L2_BUTTON,r2=localization_config::DRIVER_R2_BUTTON;
+  const int axes=attached?driver_.GetAxisCount():0;
+  const int buttons=attached?driver_.GetButtonCount():0;
+  const bool axesPresent=xAxis>=0 && yAxis>=0 && xAxis!=yAxis && axes>std::max(xAxis,yAxis);
+  const bool buttonsPresent=l2>0 && r2>0 && l2!=r2 && buttons>=std::max(l2,r2);
+  driverConnected_=attached && axesPresent && buttonsPresent;
+  driverRawX_=axesPresent?driver_.GetRawAxis(xAxis):0;
+  driverRawY_=axesPresent?driver_.GetRawAxis(yAxis):0;
+  driverL2_=buttonsPresent && driver_.GetRawButton(l2);
+  driverR2_=buttonsPresent && driver_.GetRawButton(r2);
+  const bool allowed=localization_config::TELEOP_DRIVE_ENABLED &&
+      frc::RobotState::IsEnabled() && frc::RobotState::IsOperatorControl() && !frc::RobotState::IsTest();
+  teleopDrive_.Update(allowed,driverConnected_,driverRawX_,driverRawY_,driverL2_,driverR2_,dt);
+  if (allowed && teleopDrive_.IsArmed())
+    hardware_.DriveRobotRelative(teleopDrive_.GetForwardMMps(),teleopDrive_.GetLeftMMps(),
+        teleopDrive_.GetYawRateRadps(),localization_config::TELEOP_MAX_MOTOR_OUTPUT);
+  else hardware_.StopDrive();
+}
+
+void LocalizationSubsystem::UpdateSonarPoll(double now,bool enabled) {
+  if (!enabled) {
+    sonarAwaitingEcho_=false;
+    nextSonarIndex_=0; lastSonarPingTime_=now;
+    for (int i=0;i<4;++i) { sonarRanges_MM_[i]=-1; sonarRangeValid_[i]=sonarCorrectionAccepted_[i]=false; }
     return;
   }
-
-  if (!sonarPollingEnabled_) {
-    sonarPollingEnabled_ = true;
-    for (int sensor = 0; sensor < 4; ++sensor) {
-      sonarStatus_[sensor] = "Waiting for ping";
-    }
-  }
-
+  const bool slow=std::hypot(localization_.GetBodyVelocityX_MMps(),localization_.GetBodyVelocityY_MMps())
+          <=autonomous_config::SONAR_FUSION_MAX_SPEED_MMPS &&
+      std::fabs(hardware_.GetYawRateDegreesPerSecond())<=autonomous_config::SONAR_FUSION_MAX_YAW_DPS;
   if (sonarAwaitingEcho_) {
-    if (nowSeconds - sonarPingTime_ <
-        localization_config::SONAR_ECHO_SETTLE_S) {
-      return;
-    }
-
-    sonarEchoReceived_[nextSonarIndex_] =
-        hardware_.IsSonarRangeValid(nextSonarIndex_);
-    sonarRangeValid_[nextSonarIndex_] = false;
-    sonarCorrectionAccepted_[nextSonarIndex_] = false;
-    sonarLastReadTime_S_[nextSonarIndex_] = nowSeconds;
-    if (sonarEchoReceived_[nextSonarIndex_]) {
-      ++sonarEchoResponses_[nextSonarIndex_];
-      const double range_MM = hardware_.GetSonarRangeMM(nextSonarIndex_);
-      sonarRanges_MM_[nextSonarIndex_] =
-          std::isfinite(range_MM) ? range_MM : -1.0;
-      sonarRangeValid_[nextSonarIndex_] =
-          std::isfinite(range_MM) &&
-          range_MM >= localization_config::SONAR_MIN_RANGE_MM &&
-          range_MM <= localization_config::SONAR_MAX_RANGE_MM;
-      sonarStatus_[nextSonarIndex_] = sonarRangeValid_[nextSonarIndex_]
-          ? "OK" : "Echo outside sensor range (20..4000 mm)";
-      if (started_ && sonarRangeValid_[nextSonarIndex_]) {
-        sonarCorrectionAccepted_[nextSonarIndex_] =
-            localization_.CorrectFromSonar(nextSonarIndex_, range_MM);
-      }
-      if (sonarCorrectionAccepted_[nextSonarIndex_]) {
-        lastSonarRange_MM_ = range_MM;
-        lastSonarIndex_ = nextSonarIndex_;
-      }
-    } else {
-      sonarRanges_MM_[nextSonarIndex_] = -1.0;
-      ++sonarTimeouts_[nextSonarIndex_];
-      sonarStatus_[nextSonarIndex_] = "No echo after trigger request";
-    }
-
-    nextSonarIndex_ = (nextSonarIndex_ + 1) % 4;
-    sonarAwaitingEcho_ = false;
-    lastSonarPingTime_ = nowSeconds;
-    return;
-  }
-
-  if (nowSeconds - lastSonarPingTime_ >=
-      localization_config::SONAR_PING_SPACING_S) {
+    const double age=now-sonarPingTime_;
+    if (age<localization_config::SONAR_ECHO_SETTLE_S) return;
+    const int i=nextSonarIndex_;
+    sonarReadTime_[i]=now;
+    const double range=hardware_.GetSonarRangeMM(i);
+    sonarRangeValid_[i]=hardware_.IsSonarRangeValid(i) && std::isfinite(range) &&
+        range>=localization_config::SONAR_MIN_RANGE_MM && range<=localization_config::SONAR_MAX_RANGE_MM;
+    sonarRanges_MM_[i]=sonarRangeValid_[i]?range:-1;
+    sonarCorrectionAccepted_[i]=false;
+    // Global wall correction is valid only after explicit arena initialization.
+    if (autoSession_ && autonomous_.IsRunning() && sonarRangeValid_[i] && slow && sonarSlowAtPing_ &&
+        age<=autonomous_config::SONAR_FUSION_MAX_AGE_S && autonomous_config::SONAR_MOUNTS_CONFIRMED)
+      sonarCorrectionAccepted_[i]=localization_.CorrectFromSonar(i,range);
+    nextSonarIndex_=(i+1)%4; sonarAwaitingEcho_=false; lastSonarPingTime_=now;
+  } else if (now-lastSonarPingTime_>=localization_config::SONAR_PING_SPACING_S) {
     hardware_.PingSonar(nextSonarIndex_);
-    ++sonarPingRequests_[nextSonarIndex_];
-    sonarStatus_[nextSonarIndex_] = "Waiting for echo";
-    sonarPingTime_ = nowSeconds;
-    sonarAwaitingEcho_ = true;
+    sonarPingTime_=now; sonarSlowAtPing_=slow; sonarAwaitingEcho_=true;
+  }
+}
+
+void LocalizationSubsystem::InitializeDashboard() {
+  auto& tab=frc::Shuffleboard::GetTab("Autonomous");
+  tab.AddString("Mission status",[this] { return autonomous_.GetStatus(); }).WithPosition(0,0).WithSize(8,1);
+  tab.AddBoolean("Enabled",[] { return frc::RobotState::IsEnabled(); }).WithPosition(8,0).WithSize(2,1);
+  tab.AddBoolean("Start",[this] { return hardware_.GetStartPressed(); }).WithPosition(10,0).WithSize(2,1);
+  tab.AddNumber("X (mm)",[this] { return localization_.GetPose().x_MM; }).WithPosition(0,1).WithSize(3,1);
+  tab.AddNumber("Y (mm)",[this] { return localization_.GetPose().y_MM; }).WithPosition(3,1).WithSize(3,1);
+  tab.AddNumber("Heading (deg)",[this] { return localization_.GetPose().headingRad*180/localization_config::PI; }).WithPosition(6,1).WithSize(3,1);
+  tab.AddNumber("Confirmed deliveries",[this] { return autonomous_.GetCompletedJobs(); }).WithPosition(9,1).WithSize(3,1);
+  const char* names[4]={"Rear left (mm)","Rear right (mm)","Left (mm)","Right (mm)"};
+  for (int i=0;i<4;++i)
+    tab.AddNumber(names[i],[this,i] { return sonarRanges_MM_[i]; }).WithPosition(i*3,2).WithSize(3,1);
+  tab.AddBoolean("Tape detected",[this] { return line_.valid; }).WithPosition(0,3).WithSize(2,1);
+  tab.AddNumber("Tape offset (mm)",[this] { return line_.valid?line_.leftErrorMM:0; }).WithPosition(2,3).WithSize(2,1);
+  tab.AddBoolean("IMU ready",[this] { return hardware_.IsImuConnected() && !hardware_.IsImuCalibrating(); }).WithPosition(4,3).WithSize(2,1);
+  tab.AddNumber("Position sigma (mm)",[this] { return localization_.GetPositionSigmaMM(); }).WithPosition(6,3).WithSize(2,1);
+  tab.AddString("Station",[this] { return std::string(autonomous_.GetStation().name); }).WithPosition(8,3).WithSize(2,1);
+  tab.AddNumber("Job",[this] { return autonomous_.GetJobNumber(); }).WithPosition(10,3).WithSize(2,1);
+
+  // A separate calibration tab keeps the operating screen uncluttered.
+  auto& calibration=frc::Shuffleboard::GetTab("Calibration");
+  calibration.AddString("Preflight",[this] { return PreflightError(); }).WithPosition(0,0).WithSize(12,1);
+  for (int i=0;i<4;++i)
+    calibration.AddNumber("Cobra "+std::to_string(i)+" (V)",[this,i] { return line_.volts[i]; }).WithPosition(i*3,1).WithSize(3,1);
+  calibration.AddNumber("IMU world X (g)",[this] { return hardware_.GetWorldAccelX_G(); }).WithPosition(0,2).WithSize(3,1);
+  calibration.AddNumber("IMU world Y (g)",[this] { return hardware_.GetWorldAccelY_G(); }).WithPosition(3,2).WithSize(3,1);
+  calibration.AddNumber("IMU yaw (deg)",[this] { return hardware_.GetYawDegrees(); }).WithPosition(6,2).WithSize(3,1);
+  calibration.AddNumber("Yaw rate (deg/s)",[this] { return hardware_.GetYawRateDegreesPerSecond(); }).WithPosition(9,2).WithSize(3,1);
+}
+
+void LocalizationSubsystem::InitializeTeleopDashboard() {
+  auto& tab=frc::Shuffleboard::GetTab("Teleop");
+  tab.AddString("Drive status",[this] { return std::string(teleopDrive_.GetStatus()); }).WithPosition(0,0).WithSize(6,1);
+  tab.AddBoolean("Enabled",[] { return frc::RobotState::IsEnabled(); }).WithPosition(6,0).WithSize(2,1);
+  tab.AddBoolean("Controller",[this] { return driverConnected_; }).WithPosition(8,0).WithSize(2,1);
+  tab.AddBoolean("Stick armed",[this] { return teleopDrive_.IsArmed(); }).WithPosition(10,0).WithSize(2,1);
+  tab.AddNumber("Left stick X",[this] { return driverRawX_; }).WithPosition(0,1).WithSize(3,1);
+  tab.AddNumber("Left stick Y",[this] { return driverRawY_; }).WithPosition(3,1).WithSize(3,1);
+  tab.AddNumber("Forward request (mm/s)",[this] { return teleopDrive_.GetForwardMMps(); }).WithPosition(6,1).WithSize(3,1);
+  tab.AddNumber("Left request (mm/s)",[this] { return teleopDrive_.GetLeftMMps(); }).WithPosition(9,1).WithSize(3,1);
+  for (int i=0;i<3;++i) {
+    const std::string port="M"+std::to_string(localization_config::WHEEL_TITAN_PORT[i]);
+    tab.AddNumber(port+" encoder (counts)",[this,i] { return hardware_.GetWheelEncoderRaw(i); }).WithPosition(i*2,2).WithSize(2,1);
+    tab.AddNumber(port+" output (%)",[this,i] { return hardware_.GetWheelCommand(i)*100; }).WithPosition(6+i*2,2).WithSize(2,1);
+  }
+  tab.AddBoolean("L2 - CW",[this] { return driverL2_; }).WithPosition(0,3).WithSize(3,1);
+  tab.AddBoolean("R2 - CCW",[this] { return driverR2_; }).WithPosition(3,3).WithSize(3,1);
+  tab.AddNumber("Rotation request (deg/s)",[this] { return teleopDrive_.GetYawRateRadps()*180/localization_config::PI; }).WithPosition(6,3).WithSize(3,1);
+  tab.AddNumber("Output limit (%)",[] { return localization_config::TELEOP_MAX_MOTOR_OUTPUT*100; }).WithPosition(9,3).WithSize(3,1);
+}
+
+void LocalizationSubsystem::InitializeCobraDashboard() {
+  auto& tab=frc::Shuffleboard::GetTab("Cobra check");
+  tab.AddString("Instructions",[this] { return cobraCheck_.Status(); })
+      .WithPosition(0,0).WithSize(6,1);
+  captureCobraWhite_=tab.Add("Capture white",false)
+      .WithWidget(frc::BuiltInWidgets::kToggleButton).WithPosition(6,0).WithSize(3,1).GetEntry();
+  captureCobraBlack_=tab.Add("Capture black",false)
+      .WithWidget(frc::BuiltInWidgets::kToggleButton).WithPosition(9,0).WithSize(3,1).GetEntry();
+  // Discard old dashboard requests on program restart.
+  captureCobraWhite_.SetBoolean(false); captureCobraBlack_.SetBoolean(false);
+  for (int i=0;i<4;++i) {
+    const std::string channel="CH"+std::to_string(i);
+    tab.AddNumber(channel+" live (V)",[this,i] { return line_.volts[i]; })
+        .WithPosition(i*3,1).WithSize(3,1);
+    tab.AddBoolean(channel+" BLACK",[this,i] { return cobraCheck_.IsBlack(i); })
+        .WithPosition(i*3,2).WithSize(3,1);
+    tab.AddNumber(channel+" white reference (V)",[this,i] { return cobraCheck_.White(i); })
+        .WithPosition(i*3,3).WithSize(3,1);
+    tab.AddNumber(channel+" black reference (V)",[this,i] { return cobraCheck_.Black(i); })
+        .WithPosition(i*3,4).WithSize(3,1);
   }
 }
 
 void LocalizationSubsystem::PublishDiagnostics() {
   if (!localization_config::ENABLE_DETAILED_TELEMETRY) return;
-
-  const bool imuConnected = hardware_.IsImuConnected();
-  const bool imuCalibrating = hardware_.IsImuCalibrating();
-  const bool startPressed = hardware_.GetStartPressed();
-  const bool robotEnabled = frc::RobotState::IsEnabled();
-  const double now = frc::Timer::GetFPGATimestamp();
-
-  frc::SmartDashboard::PutBoolean("Diagnostics/Status/code_alive", true);
-  frc::SmartDashboard::PutString("Diagnostics/Status/software_version",
-                                  "sonar-watchdog-v1");
-  frc::SmartDashboard::PutNumber("Diagnostics/Status/uptime_s", now);
-  frc::SmartDashboard::PutBoolean("Diagnostics/Status/robot_enabled",
-                                  robotEnabled);
-  frc::SmartDashboard::PutString("Diagnostics/Ultrasonic/status",
-      robotEnabled ? "Polling; start button not required"
-                   : "Enable robot in Control Station: VMX blocks triggers while disabled");
-  frc::SmartDashboard::PutString(
-      "Diagnostics/Status/localization",
-      started_ ? "Running" :
-          (!imuConnected ? "Waiting for IMU connection" :
-           (imuCalibrating ? "Waiting for IMU calibration" :
-                             "Waiting for start button")));
-  frc::SmartDashboard::PutBoolean("Diagnostics/Inputs/start_button_pressed",
-                                  startPressed);
-  frc::SmartDashboard::PutBoolean("Diagnostics/IMU/connected", imuConnected);
-  frc::SmartDashboard::PutBoolean("Diagnostics/IMU/calibrating",
-                                  imuCalibrating);
-  frc::SmartDashboard::PutNumber("Diagnostics/IMU/yaw_deg",
-                                  hardware_.GetYawDegrees());
-  frc::SmartDashboard::PutNumber("Diagnostics/IMU/yaw_rate_dps",
-                                  hardware_.GetYawRateDegreesPerSecond());
-  frc::SmartDashboard::PutNumber("Diagnostics/IMU/world_accel_x_g",
-                                  hardware_.GetWorldAccelX_G());
-  frc::SmartDashboard::PutNumber("Diagnostics/IMU/world_accel_y_g",
-                                  hardware_.GetWorldAccelY_G());
-  frc::SmartDashboard::PutNumber("Diagnostics/IMU/raw_accel_x_g",
-                                  hardware_.GetRawAccelX_G());
-  frc::SmartDashboard::PutNumber("Diagnostics/IMU/raw_accel_y_g",
-                                  hardware_.GetRawAccelY_G());
-  frc::SmartDashboard::PutNumber("Diagnostics/IMU/raw_accel_z_g",
-                                  hardware_.GetRawAccelZ_G());
-  frc::SmartDashboard::PutNumber("Diagnostics/IMU/raw_gyro_x_dps",
-                                  hardware_.GetRawGyroX_Dps());
-  frc::SmartDashboard::PutNumber("Diagnostics/IMU/raw_gyro_y_dps",
-                                  hardware_.GetRawGyroY_Dps());
-  frc::SmartDashboard::PutNumber("Diagnostics/IMU/raw_gyro_z_dps",
-                                  hardware_.GetRawGyroZ_Dps());
-
-  for (int wheel = 0; wheel < localization_config::WHEEL_COUNT; ++wheel) {
-    const std::string key = "Diagnostics/Encoders/wheel_" +
-                            std::to_string(wheel) + "_raw_count";
-    frc::SmartDashboard::PutNumber(key, hardware_.GetWheelEncoderRaw(wheel));
-    frc::SmartDashboard::PutNumber(
-        "Diagnostics/Motors/wheel_" + std::to_string(wheel) +
-            "_command_pct",
-        hardware_.GetWheelCommand(wheel) * 100.0);
-  }
-
-  for (int sensor = 0; sensor < 4; ++sensor) {
-    const std::string key = "Diagnostics/Ultrasonic/" +
-                            std::string(localization_config::SONARS[sensor].name);
-    frc::SmartDashboard::PutNumber(key + "_range_mm", sonarRanges_MM_[sensor]);
-    frc::SmartDashboard::PutBoolean(key + "_valid", sonarRangeValid_[sensor]);
-    frc::SmartDashboard::PutBoolean(key + "_echo_received",
-                                    sonarEchoReceived_[sensor]);
-    frc::SmartDashboard::PutString(key + "_status", sonarStatus_[sensor]);
-    // A request count proves the software called Ping(), not that a pulse
-    // has been measured electrically at the connector.
-    frc::SmartDashboard::PutNumber(key + "_ping_requests",
-                                   sonarPingRequests_[sensor]);
-    frc::SmartDashboard::PutNumber(key + "_echo_responses",
-                                   sonarEchoResponses_[sensor]);
-    frc::SmartDashboard::PutNumber(key + "_timeouts", sonarTimeouts_[sensor]);
-    frc::SmartDashboard::PutNumber(key + "_last_read_age_ms",
-        sonarLastReadTime_S_[sensor] < 0.0 ? -1.0 :
-            (now - sonarLastReadTime_S_[sensor]) * 1000.0);
-    frc::SmartDashboard::PutNumber(key + "_trigger_dio",
-        localization_config::SONARS[sensor].triggerDio);
-    frc::SmartDashboard::PutNumber(key + "_echo_dio",
-        localization_config::SONARS[sensor].echoDio);
-    frc::SmartDashboard::PutBoolean(
-        key + "_used_for_correction", sonarCorrectionAccepted_[sensor]);
-  }
+  for (int i=0;i<4;++i)
+    frc::SmartDashboard::PutBoolean("Diagnostics/Sonar/"+std::to_string(i)+"/fused",sonarCorrectionAccepted_[i]);
+  frc::SmartDashboard::PutNumber("Diagnostics/Auto/target_x_mm",autonomous_.GetTarget().x);
+  frc::SmartDashboard::PutNumber("Diagnostics/Auto/target_y_mm",autonomous_.GetTarget().y);
+  localization_.PublishTelemetry(-1,-1);
 }
