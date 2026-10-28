@@ -184,12 +184,8 @@ void LocalizationSubsystem::UpdateTeleopDrive(double dt) {
     hardware_.DriveRobotRelative(teleopDrive_.GetForwardMMps(),teleopDrive_.GetLeftMMps(),
         teleopDrive_.GetYawRateRadps(),localization_config::TELEOP_MAX_MOTOR_OUTPUT);
   else hardware_.StopDrive();
-  const bool driveControlsNeutral=std::isfinite(driverRawX_) && std::isfinite(driverRawY_) &&
-      std::hypot(driverRawX_,driverRawY_)<=localization_config::DRIVER_STICK_DEADBAND &&
-      !driverL2_ && !driverR2_ && teleopDrive_.GetForwardMMps()==0 &&
-      teleopDrive_.GetLeftMMps()==0 && teleopDrive_.GetYawRateRadps()==0;
   liftTeleop_.Update(allowed && teleopDrive_.IsArmed(),driverConnected_ && driverPovPresent_,
-      liftUp,liftDown,hardware_.GetLiftUpperLimit(),hardware_.GetLiftLowerLimit(),driveControlsNeutral);
+      liftUp,liftDown,hardware_.GetLiftUpperLimit(),hardware_.GetLiftLowerLimit());
   hardware_.SetLiftPwm(liftTeleop_.Output());
   const int cross=manipulator_config::SERVO_BUTTON[0];
   const int triangle=manipulator_config::SERVO_BUTTON[1];

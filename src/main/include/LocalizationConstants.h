@@ -26,7 +26,10 @@ static constexpr double DRIVER_STICK_DEADBAND = 0.12;
 // Button identities: L2 requests CW, R2 requests CCW in TeleopDriveController.
 static constexpr int DRIVER_L2_BUTTON = 7;
 static constexpr int DRIVER_R2_BUTTON = 8;
-static constexpr double TELEOP_ACCELERATION_MMPS2 = 1000.0;
+// Cap manual translation at half the estimated no-load wheel speed and ramp
+// the velocity vector gently to reduce sharp starts and diagonal changes.
+static constexpr double TELEOP_TRANSLATION_SPEED_SCALE = 0.50;
+static constexpr double TELEOP_ACCELERATION_MMPS2 = 400.0;
 static constexpr double TELEOP_MAX_MOTOR_OUTPUT = 0.90;
 static constexpr double TELEOP_MAX_YAW_RATE_DPS = 90.0;
 static constexpr double TELEOP_YAW_ACCELERATION_DPS2 = 180.0;
@@ -73,7 +76,8 @@ static constexpr double MAVERICK_NOMINAL_RATED_RPM = 80.0;
 static constexpr double MAX_WHEEL_SPEED_MMPS =
     2.0 * M_PI * WHEEL_RADIUS_MM * MAVERICK_MAX_NO_LOAD_RPM /
     (60.0 * MOTOR_TO_WHEEL_RATIO);
-static constexpr double TELEOP_SPEED_MMPS = MAX_WHEEL_SPEED_MMPS;
+static constexpr double TELEOP_SPEED_MMPS =
+    MAX_WHEEL_SPEED_MMPS * TELEOP_TRANSLATION_SPEED_SCALE;
 
 // Arena coordinates span X=[0,width], Y=[0,height].
 static constexpr double ARENA_WIDTH_MM = 2000.0;
