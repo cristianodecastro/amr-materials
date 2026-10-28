@@ -10,6 +10,8 @@
 #include "AutonomousController.h"
 #include "TeleopDriveController.h"
 #include "CobraCheck.h"
+#include "LiftTeleopController.h"
+#include "ServoTeleopController.h"
 
 class LocalizationSubsystem : public frc2::SubsystemBase {
  public:
@@ -38,6 +40,11 @@ class LocalizationSubsystem : public frc2::SubsystemBase {
   bool driverConnected_=false;
   double driverRawX_=0,driverRawY_=0;
   bool driverL2_=false,driverR2_=false;
+  bool driverPovPresent_=false;
+  int driverPov_=-1;
+  LiftTeleopController liftTeleop_;
+  ServoTeleopController servoTeleop_;
+  bool driverCross_=false,driverTriangle_=false;
   bool autoSession_=false;
   bool poseAnchored_=false;
   ObjectAction objectRequest_=ObjectAction::None;

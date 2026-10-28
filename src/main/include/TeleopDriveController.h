@@ -9,7 +9,8 @@
 class TeleopDriveController {
  public:
   constexpr void Update(bool motionAllowed, bool connected, double rawX,
-                        double rawY, bool l2, bool r2, double dt) {
+                        double rawY, bool l2, bool r2, double dt,
+                        bool liftControlsNeutral = true) {
     if (!connected) {
       Stop("Controller inputs missing - check connection/axes/buttons", true);
       return;
@@ -40,8 +41,8 @@ class TeleopDriveController {
     }
     const double magnitude = std::hypot(rawX, rawY);
     if (!armed_) {
-      if (magnitude > deadband || l2 || r2) {
-        Stop("Center left stick and release L2/R2 to arm", true);
+      if (magnitude > deadband || l2 || r2 || !liftControlsNeutral) {
+        Stop("Center stick; release L2/R2 and D-pad to arm", true);
         return;
       }
       armed_ = true;

@@ -20,6 +20,7 @@ LocalizationSubsystem::LocalizationSubsystem() {
 
 std::string LocalizationSubsystem::PreflightError() const {
   using namespace autonomous_config;
+  if (!AUTONOMOUS_ENABLED) return "Autonomous disabled by configuration; motors held at zero";
   std::string missing;
   auto require=[&missing](bool condition,const char* name) {
     if (!condition) { if (!missing.empty()) missing+=", "; missing+=name; }
@@ -37,6 +38,10 @@ std::string LocalizationSubsystem::PreflightError() const {
 
 void LocalizationSubsystem::EnterAutonomous() {
   StopAll();
+  if (!autonomous_config::AUTONOMOUS_ENABLED) {
+    autonomous_.Enter(frc::Timer::GetFPGATimestamp(),PreflightError());
+    return;
+  }
   autoSession_=true;
   poseAnchored_=false;
   // Snapshot encoder baselines and align existing AHRS yaw to the known arena
@@ -56,6 +61,8 @@ void LocalizationSubsystem::StopAll() {
   hardware_.StopObjectHandler();
   objectRequest_=ObjectAction::None;
   teleopDrive_.Update(false,false,0,0,false,false,localization_config::CONTROL_PERIOD_S);
+  liftTeleop_.Update(false,false,false,false,false,false);
+  servoTeleop_.Disarm();
   autonomous_.Abort();
   autoSession_=false;
 }
@@ -85,8 +92,9 @@ void LocalizationSubsystem::Periodic() {
   UpdateSonarPoll(now,enabled);
 
   if (enabled && autoMode) {
-    if (!autoSession_) {
+    if (!autonomous_config::AUTONOMOUS_ENABLED || !autoSession_) {
       hardware_.StopDrive(); // require explicit AutonomousInit, never resume
+      hardware_.StopObjectHandler();
     } else UpdateAutonomous(now,dt);
   } else {
     if (autoSession_) StopAll();
@@ -96,6 +104,7 @@ void LocalizationSubsystem::Periodic() {
 }
 
 void LocalizationSubsystem::UpdateAutonomous(double now,double dt) {
+  if (!autonomous_config::AUTONOMOUS_ENABLED) { StopAll(); return; }
   bool sonarReady=true;
   if (autonomous_.GetState()==AutonomousController::State::WaitingStart) {
     for (int i=0;i<4;++i)
@@ -162,13 +171,36 @@ void LocalizationSubsystem::UpdateTeleopDrive(double dt) {
   driverRawY_=axesPresent?driver_.GetRawAxis(yAxis):0;
   driverL2_=buttonsPresent && driver_.GetRawButton(l2);
   driverR2_=buttonsPresent && driver_.GetRawButton(r2);
+  const int povIndex=manipulator_config::DRIVER_POV_INDEX;
+  driverPovPresent_=attached && povIndex>=0 && driver_.GetPOVCount()>povIndex;
+  driverPov_=driverPovPresent_?driver_.GetPOV(povIndex):-1;
+  const bool liftUp=driverPov_==manipulator_config::DRIVER_POV_UP_DEG;
+  const bool liftDown=driverPov_==manipulator_config::DRIVER_POV_DOWN_DEG;
   const bool allowed=localization_config::TELEOP_DRIVE_ENABLED &&
       frc::RobotState::IsEnabled() && frc::RobotState::IsOperatorControl() && !frc::RobotState::IsTest();
-  teleopDrive_.Update(allowed,driverConnected_,driverRawX_,driverRawY_,driverL2_,driverR2_,dt);
+  teleopDrive_.Update(allowed,driverConnected_,driverRawX_,driverRawY_,driverL2_,driverR2_,dt,
+      driverPov_==-1);
   if (allowed && teleopDrive_.IsArmed())
     hardware_.DriveRobotRelative(teleopDrive_.GetForwardMMps(),teleopDrive_.GetLeftMMps(),
         teleopDrive_.GetYawRateRadps(),localization_config::TELEOP_MAX_MOTOR_OUTPUT);
   else hardware_.StopDrive();
+  const bool driveControlsNeutral=std::isfinite(driverRawX_) && std::isfinite(driverRawY_) &&
+      std::hypot(driverRawX_,driverRawY_)<=localization_config::DRIVER_STICK_DEADBAND &&
+      !driverL2_ && !driverR2_ && teleopDrive_.GetForwardMMps()==0 &&
+      teleopDrive_.GetLeftMMps()==0 && teleopDrive_.GetYawRateRadps()==0;
+  liftTeleop_.Update(allowed && teleopDrive_.IsArmed(),driverConnected_ && driverPovPresent_,
+      liftUp,liftDown,hardware_.GetLiftUpperLimit(),hardware_.GetLiftLowerLimit(),driveControlsNeutral);
+  hardware_.SetLiftPwm(liftTeleop_.Output());
+  const int cross=manipulator_config::SERVO_BUTTON[0];
+  const int triangle=manipulator_config::SERVO_BUTTON[1];
+  const bool servoButtonsPresent=cross>0 && triangle>0 && cross!=triangle &&
+      buttons>=std::max(cross,triangle);
+  driverCross_=servoButtonsPresent && driver_.GetRawButton(cross);
+  driverTriangle_=servoButtonsPresent && driver_.GetRawButton(triangle);
+  servoTeleop_.Update(allowed && teleopDrive_.IsArmed(),driverConnected_ && servoButtonsPresent,
+      driverCross_,driverTriangle_);
+  for (int i=0;i<2;++i)
+    hardware_.SetServoAngle(i,servoTeleop_.TargetDegrees(i),servoTeleop_.OutputEnabled(i));
 }
 
 void LocalizationSubsystem::UpdateSonarPoll(double now,bool enabled) {
@@ -206,7 +238,6 @@ void LocalizationSubsystem::InitializeDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Autonomous");
   tab.AddString("Mission status",[this] { return autonomous_.GetStatus(); }).WithPosition(0,0).WithSize(8,1);
   tab.AddBoolean("Enabled",[] { return frc::RobotState::IsEnabled(); }).WithPosition(8,0).WithSize(2,1);
-  tab.AddBoolean("Start",[this] { return hardware_.GetStartPressed(); }).WithPosition(10,0).WithSize(2,1);
   tab.AddNumber("X (mm)",[this] { return localization_.GetPose().x_MM; }).WithPosition(0,1).WithSize(3,1);
   tab.AddNumber("Y (mm)",[this] { return localization_.GetPose().y_MM; }).WithPosition(3,1).WithSize(3,1);
   tab.AddNumber("Heading (deg)",[this] { return localization_.GetPose().headingRad*180/localization_config::PI; }).WithPosition(6,1).WithSize(3,1);
@@ -243,7 +274,8 @@ void LocalizationSubsystem::InitializeTeleopDashboard() {
   tab.AddNumber("Forward request (mm/s)",[this] { return teleopDrive_.GetForwardMMps(); }).WithPosition(6,1).WithSize(3,1);
   tab.AddNumber("Left request (mm/s)",[this] { return teleopDrive_.GetLeftMMps(); }).WithPosition(9,1).WithSize(3,1);
   for (int i=0;i<3;++i) {
-    const std::string port="M"+std::to_string(localization_config::WHEEL_TITAN_PORT[i]);
+    const std::string port=std::string(localization_config::WHEEL_NAME[i])+" M"+
+        std::to_string(localization_config::WHEEL_TITAN_PORT[i]);
     tab.AddNumber(port+" encoder (counts)",[this,i] { return hardware_.GetWheelEncoderRaw(i); }).WithPosition(i*2,2).WithSize(2,1);
     tab.AddNumber(port+" output (%)",[this,i] { return hardware_.GetWheelCommand(i)*100; }).WithPosition(6+i*2,2).WithSize(2,1);
   }
@@ -251,6 +283,18 @@ void LocalizationSubsystem::InitializeTeleopDashboard() {
   tab.AddBoolean("R2 - CCW",[this] { return driverR2_; }).WithPosition(3,3).WithSize(3,1);
   tab.AddNumber("Rotation request (deg/s)",[this] { return teleopDrive_.GetYawRateRadps()*180/localization_config::PI; }).WithPosition(6,3).WithSize(3,1);
   tab.AddNumber("Output limit (%)",[] { return localization_config::TELEOP_MAX_MOTOR_OUTPUT*100; }).WithPosition(9,3).WithSize(3,1);
+  tab.AddString("Lift status",[this] { return std::string(liftTeleop_.Status()); })
+      .WithPosition(0,4).WithSize(4,1);
+  tab.AddNumber("D-pad POV (deg)",[this] { return driverPov_; }).WithPosition(4,4).WithSize(2,1);
+  tab.AddBoolean("D-pad present",[this] { return driverPovPresent_; }).WithPosition(6,4).WithSize(2,1);
+  tab.AddNumber("Lift M1 output (%)",[this] { return hardware_.GetLiftCommand()*100; }).WithPosition(8,4).WithSize(2,1);
+  tab.AddNumber("Lift encoder (counts)",[this] { return hardware_.GetLiftEncoderRaw(); }).WithPosition(10,4).WithSize(2,1);
+  tab.AddBoolean("X button",[this] { return driverCross_; }).WithPosition(0,5).WithSize(2,1);
+  tab.AddNumber("FlexDIO 8 target (deg)",[this] { return servoTeleop_.TargetDegrees(0); }).WithPosition(2,5).WithSize(2,1);
+  tab.AddBoolean("Servo 8 output enabled",[this] { return servoTeleop_.OutputEnabled(0); }).WithPosition(4,5).WithSize(2,1);
+  tab.AddBoolean("Triangle button",[this] { return driverTriangle_; }).WithPosition(6,5).WithSize(2,1);
+  tab.AddNumber("FlexDIO 9 target (deg)",[this] { return servoTeleop_.TargetDegrees(1); }).WithPosition(8,5).WithSize(2,1);
+  tab.AddBoolean("Servo 9 output enabled",[this] { return servoTeleop_.OutputEnabled(1); }).WithPosition(10,5).WithSize(2,1);
 }
 
 void LocalizationSubsystem::InitializeCobraDashboard() {

@@ -1,31 +1,59 @@
 #include "Hardware.h"
 #include "DriveKinematics.h"
+#include <frc/RobotState.h>
+#include <frc/DriverStation.h>
 
 #include <algorithm>
 #include <cmath>
 
+namespace {
+constexpr bool PortsValid() {
+  const int lift=manipulator_config::TITAN_MOTOR_PORT;
+  if (lift<0 || lift>3) return false;
+  for (int i=0;i<3;++i) {
+    const int port=localization_config::WHEEL_TITAN_PORT[i];
+    if (port<0 || port>3 || port==lift) return false;
+    for (int j=0;j<i;++j) if (port==localization_config::WHEEL_TITAN_PORT[j]) return false;
+  }
+  return true;
+}
+static_assert(PortsValid(),"Three distinct drive ports and a separate lift port must cover Titan 0..3");
+}
+
+bool Hardware::TeleopMotorMotionAllowed() {
+  return frc::DriverStation::GetInstance().IsDSAttached() &&
+      frc::RobotState::IsEnabled() && frc::RobotState::IsOperatorControl() &&
+      !frc::RobotState::IsTest();
+}
+
 Hardware::Hardware() {
+  StopServos();
   // Manual, staggered pings keep the four sonars from interfering. Ping()
   // resets the echo counter and sends WPILib's 10 us active-high pulse.
   // Do not also enable the global ultrasonic automatic-mode thread.
   frc::Ultrasonic::SetAutomaticMode(false);
   if (autonomous_config::COBRA_INSTALLED)
     cobra_.reset(new studica::Cobra(static_cast<float>(autonomous_config::COBRA_REFERENCE_V)));
+  if (manipulator_config::LIMIT_DIO[0]>=0)
+    liftUpperLimit_.reset(new frc::DigitalInput(manipulator_config::LIMIT_DIO[0]));
+  if (manipulator_config::LIMIT_DIO[1]>=0)
+    liftLowerLimit_.reset(new frc::DigitalInput(manipulator_config::LIMIT_DIO[1]));
   ResetDriveEncoders();
   StopDrive();
+  SetLiftPwm(0);
 }
 
 void Hardware::ResetDriveEncoders() {
-  encoder0_.Reset();
-  encoder1_.Reset();
-  encoder2_.Reset();
+  leftRearEncoder_.Reset();
+  rightRearEncoder_.Reset();
+  frontEncoder_.Reset();
 }
 
 double Hardware::GetWheelEncoderRaw(int wheel) {
   switch (wheel) {
-    case 0: return encoder0_.GetRaw();
-    case 1: return encoder1_.GetRaw();
-    case 2: return encoder2_.GetRaw();
+    case 0: return leftRearEncoder_.GetRaw();
+    case 1: return rightRearEncoder_.GetRaw();
+    case 2: return frontEncoder_.GetRaw();
     default: return 0.0;
   }
 }
@@ -33,13 +61,14 @@ double Hardware::GetWheelEncoderRaw(int wheel) {
 void Hardware::SetWheelPwm(int wheel, double output) {
   if (wheel < 0 || wheel >= localization_config::WHEEL_COUNT) return;
   if (!std::isfinite(output)) output = 0.0;
+  if (!TeleopMotorMotionAllowed()) output=0;
   const double limited = std::max(-1.0, std::min(1.0, output)) *
                          localization_config::WHEEL_MOTOR_SIGN[wheel];
   wheelCommands_[wheel] = limited;
   switch (wheel) {
-    case 0: motor0_.Set(limited); break;
-    case 1: motor1_.Set(limited); break;
-    case 2: motor2_.Set(limited); break;
+    case 0: leftRearMotor_.Set(limited); break;
+    case 1: rightRearMotor_.Set(limited); break;
+    case 2: frontMotor_.Set(limited); break;
     default: break;
   }
 }
@@ -83,6 +112,27 @@ void Hardware::StopDrive() {
     SetWheelPwm(wheel, 0.0);
 }
 
+bool Hardware::GetLiftUpperLimit() const {
+  return liftUpperLimit_ && (manipulator_config::LIMIT_ACTIVE_LOW?!liftUpperLimit_->Get():liftUpperLimit_->Get());
+}
+bool Hardware::GetLiftLowerLimit() const {
+  return liftLowerLimit_ && (manipulator_config::LIMIT_ACTIVE_LOW?!liftLowerLimit_->Get():liftLowerLimit_->Get());
+}
+double Hardware::GetLiftEncoderRaw() { return liftEncoder_.GetRaw(); }
+void Hardware::SetLiftPwm(double output) {
+  const double cap=manipulator_config::LIFT_OUTPUT;
+  if (!TeleopMotorMotionAllowed() || !std::isfinite(output) || !std::isfinite(cap) ||
+      cap<=0 || cap>1 || !std::isfinite(manipulator_config::LIFT_UP_SIGN) ||
+      std::fabs(manipulator_config::LIFT_UP_SIGN)!=1) output=0;
+  else {
+    output=std::max(-cap,std::min(cap,output));
+    const double direction=output*manipulator_config::LIFT_UP_SIGN;
+    if ((direction>0 && GetLiftUpperLimit()) || (direction<0 && GetLiftLowerLimit())) output=0;
+  }
+  liftCommand_=output;
+  liftMotor_.Set(output);
+}
+
 void Hardware::DriveRobotRelativeFeedback(double forward,double left,double yawRadps,
                                            double maxOutput,double dt) {
   if (!std::isfinite(forward) || !std::isfinite(left) || !std::isfinite(yawRadps) ||
@@ -122,8 +172,24 @@ void Hardware::DriveRobotRelativeFeedback(double forward,double left,double yawR
 }
 
 bool Hardware::GetStartPressed() const {
-  const bool raw = startButton_.Get();
-  return localization_config::START_BUTTON_ACTIVE_LOW ? !raw : raw;
+  return false; // Physical start button removed; never read servo FlexDIO 8 as an input.
+}
+
+void Hardware::SetServoAngle(int servo, double degrees, bool enabled) {
+  if (servo<0 || servo>=2) return;
+  auto& output=servo==0?crossServo_:triangleServo_;
+  if (!enabled || !TeleopMotorMotionAllowed() || !std::isfinite(degrees) ||
+      degrees<0 || degrees>300) {
+    output.SetOffline();
+    return;
+  }
+  // Studica's positional servo maps 0..300 degrees to 500..2500 us.
+  output.SetAngle(degrees);
+}
+
+void Hardware::StopServos() {
+  crossServo_.SetOffline();
+  triangleServo_.SetOffline();
 }
 
 void Hardware::ZeroYaw() { imu_.ZeroYaw(); }
@@ -186,5 +252,6 @@ ObjectActionStatus Hardware::GetObjectActionStatus() const {
   return ObjectActionStatus::Unavailable;
 }
 void Hardware::StopObjectHandler() {
-  // Add immediate motor/servo cancellation when integrating the actual gripper.
+  SetLiftPwm(0);
+  StopServos();
 }

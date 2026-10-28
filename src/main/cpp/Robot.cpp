@@ -19,7 +19,7 @@ void Robot::RobotInit() {
     ClearOldTelemetry(*dashboard->GetSubTable("Localization"));
   }
   frc::Shuffleboard::Update();
-  frc::Shuffleboard::SelectTab("Cobra check"); // current sensor commissioning view
+  frc::Shuffleboard::SelectTab("Teleop");
 }
 void Robot::RobotPeriodic() { frc2::CommandScheduler::GetInstance().Run(); }
 void Robot::DisabledInit() { container_.StopAll(); }

@@ -5,6 +5,9 @@
 // Drawing coordinates: bottom-left origin, X right, Y up, CCW heading.
 // Every value marked PLACEHOLDER must be measured before autonomous operation.
 namespace autonomous_config {
+// Explicit operator request: autonomous motion is disabled, regardless of
+// individual calibration flags or the physical Start button.
+static constexpr bool AUTONOMOUS_ENABLED = false;
 static constexpr bool ARENA_AND_FOOTPRINT_CONFIRMED = false;
 static constexpr bool DRIVE_AND_IMU_FRAME_CONFIRMED = false;
 static constexpr bool WHEEL_SPEED_CONTROL_CONFIRMED = false;

@@ -9,15 +9,17 @@ namespace localization_config {
 static constexpr bool ENABLE_DETAILED_TELEMETRY = false;
 
 // Left-stick translation and L2/R2 rotation in Control Station Teleoperated
-// mode. Autonomous selection is controlled by Control Station independently.
+// mode. Autonomous motion is currently explicitly disabled.
 static constexpr bool TELEOP_DRIVE_ENABLED = true;
 static constexpr int DRIVER_JOYSTICK_PORT = 0;
 // Common gamepad mapping; confirm with the Teleop tab/Windows game controller
 // panel because USB/Bluetooth operating modes can expose different axes.
 static constexpr int DRIVER_LEFT_X_AXIS = 0;
 static constexpr int DRIVER_LEFT_Y_AXIS = 1;
-static constexpr double DRIVER_LEFT_X_SIGN = 1.0;  // positive raw X = right
-static constexpr double DRIVER_LEFT_Y_SIGN = -1.0; // negative raw Y = forward
+// Reverse both translation axes following the installed robot's movement test.
+// These signs affect translation only; trigger rotation polarity is independent.
+static constexpr double DRIVER_LEFT_X_SIGN = -1.0;
+static constexpr double DRIVER_LEFT_Y_SIGN = 1.0;
 static constexpr double DRIVER_STICK_DEADBAND = 0.12;
 // PS-style digital trigger buttons, numbered from 1 by WPILib. Check the
 // L2/R2 dashboard lamps while Disabled; USB/Bluetooth host mappings can differ.
@@ -32,10 +34,9 @@ static constexpr double TELEOP_YAW_ACCELERATION_DPS2 = 180.0;
 // physical rotation check establishes opposite installed motor polarity.
 static constexpr double TELEOP_YAW_SIGN = 1.0;
 
-// Arena observation: the original +X command translated physically left.
-// Shared by command and inverse-odometry transforms. Confirm physically before
-// enabling autonomous. This preserves the existing manual driving direction.
-static constexpr double DRIVE_FORWARD_DIRECTION_DEG = -90.0;
+// Wheel angles below are now directly in the robot body frame: +X forward,
+// +Y left. The previous layout's -90 degree offset is therefore no longer used.
+static constexpr double DRIVE_FORWARD_DIRECTION_DEG = 0.0;
 static constexpr double TELEOP_FORWARD_DIRECTION_DEG = DRIVE_FORWARD_DIRECTION_DEG;
 static constexpr double START_BUTTON_DEBOUNCE_S = 0.060;
 
@@ -43,7 +44,10 @@ static constexpr int TITAN_CAN_ID = 42;
 static constexpr int TITAN_MOTOR_FREQUENCY_HZ = 15600;
 
 static constexpr int WHEEL_COUNT = 3;
-static constexpr int WHEEL_TITAN_PORT[WHEEL_COUNT] = {0, 1, 2};
+// Use the Titan Quad's printed M0..M3 labels directly as API port numbers.
+// Wheel order: left rear (M0), right rear (M2), front (M3). Lift uses M1.
+static constexpr int WHEEL_TITAN_PORT[WHEEL_COUNT] = {0, 2, 3};
+static constexpr const char* WHEEL_NAME[WHEEL_COUNT] = {"Left rear", "Right rear", "Front"};
 
 // Studica specifies 6 CPR * 61 gearbox ratio * 4 quadrature = 1464/output rev.
 static constexpr double ENCODER_COUNTS_PER_OUTPUT_REV = 1464.0;
@@ -54,11 +58,10 @@ static constexpr double WHEEL_RADIUS_MM = 51.0;
 static constexpr double WHEEL_CENTER_RADIUS_MM[WHEEL_COUNT] = {
     168.0, 168.0, 168.0};
 
-// Confirmed top-view radial positions: M0 in quadrant II (150 deg),
-// M1 in quadrant I (30 deg), M2 on -Y (270 deg) in the supplied layout frame.
-// DRIVE_FORWARD_DIRECTION_DEG aligns this layout with body +X forward.
+// Same 120-degree spacing, expressed relative to the robot front (+X):
+// left rear 120 degrees, right rear 240 degrees, front 0 degrees.
 // Positive rolling direction is tangent in the counterclockwise direction.
-static constexpr double WHEEL_ANGLE_DEG[WHEEL_COUNT] = {150.0, 30.0, 270.0};
+static constexpr double WHEEL_ANGLE_DEG[WHEEL_COUNT] = {120.0, 240.0, 0.0};
 static constexpr double WHEEL_ENCODER_SIGN[WHEEL_COUNT] = {1.0, 1.0, 1.0};
 static constexpr double WHEEL_MOTOR_SIGN[WHEEL_COUNT] = {1.0, 1.0, 1.0};
 // Maverick 75001 speeds are already at the 61:1 gearbox OUTPUT shaft.
@@ -103,8 +106,7 @@ static const SonarConfig SONARS[4] = {
     {4, 5, 0.0,  SIDE_SENSOR_Y_MM,  90.0, "sonar_left"},
     {6, 7, 0.0, -SIDE_SENSOR_Y_MM, -90.0, "sonar_right"}};
 
-static constexpr int START_BUTTON_DIO = 8;
-static constexpr bool START_BUTTON_ACTIVE_LOW = true;
+// No physical start button is installed. FlexDIO 8 is now a servo output.
 
 static constexpr double CONTROL_PERIOD_S = 0.020;
 // Quiet time after reading one sensor, before triggering the next.
