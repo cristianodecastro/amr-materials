@@ -24,9 +24,10 @@ static constexpr int DRIVER_RIGHT_X_AXIS = 2;
 static constexpr double DRIVER_LEFT_X_SIGN = -1.0;
 static constexpr double DRIVER_LEFT_Y_SIGN = 1.0;
 static constexpr double DRIVER_STICK_DEADBAND = 0.12;
-// Positive raw right X means stick-right: clockwise (negative model yaw).
+// Installed-controller polarity corrected after the physical rotation test:
+// negative raw right X means stick-right: clockwise (negative model yaw).
 // Check "Right stick X" while Disabled if the controller operating mode changes.
-static constexpr double DRIVER_RIGHT_X_SIGN = 1.0;
+static constexpr double DRIVER_RIGHT_X_SIGN = -1.0;
 // Cap manual translation at half the estimated no-load wheel speed and ramp
 // the translation vector gently, including changes between directions.
 static constexpr double TELEOP_TRANSLATION_SPEED_SCALE = 0.50;
