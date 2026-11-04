@@ -1,5 +1,5 @@
-#include "Localization.h"
-#include "DriveKinematics.h"
+#include "RobotControl.h"
+#include "TeleopControl.h"
 
 #include <frc/smartdashboard/SmartDashboard.h>
 
@@ -13,7 +13,7 @@ constexpr double kPositionProcessNoiseMM2PerSecond = 400.0;
 constexpr double kHeadingProcessNoiseRad2PerSecond = 0.0008;
 constexpr double kYawMeasurementStdDevRad = 0.035;
 constexpr double kJacobianPositionStepMM = 1.0;
-constexpr double kJacobianHeadingStepRad = 0.5 * localization_config::PI / 180.0;
+constexpr double kJacobianHeadingStepRad = 0.5 * robot_geometry::PI / 180.0;
 
 double Clamp(double value, double low, double high) {
   return std::max(low, std::min(high, value));
@@ -23,7 +23,7 @@ double Clamp(double value, double low, double high) {
 Localization::Localization(Hardware* hardware)
     : hardware_(hardware),
       pose_{localization_config::START_X_MM, localization_config::START_Y_MM,
-            DegreesToRadians(localization_config::START_HEADING_DEG)},
+            robot_geometry::Radians(localization_config::START_HEADING_DEG)},
       fusedWorldVelocityX_MMps_(0.0),
       fusedWorldVelocityY_MMps_(0.0),
       imuYawOffsetRad_(0.0),
@@ -47,9 +47,9 @@ Localization::Localization(Hardware* hardware)
 void Localization::Reset(double x_MM, double y_MM, double headingDeg) {
   pose_.x_MM = x_MM;
   pose_.y_MM = y_MM;
-  pose_.headingRad = WrapRadians(DegreesToRadians(headingDeg));
-  imuYawOffsetRad_ = WrapRadians(
-      pose_.headingRad - DegreesToRadians(hardware_->GetYawDegrees()));
+  pose_.headingRad = robot_geometry::Wrap(robot_geometry::Radians(headingDeg));
+  imuYawOffsetRad_ = robot_geometry::Wrap(
+      pose_.headingRad - robot_geometry::Radians(hardware_->GetYawDegrees()));
 
   for (int row = 0; row < 3; ++row) {
     for (int col = 0; col < 3; ++col) covariance_[row][col] = 0.0;
@@ -82,7 +82,7 @@ void Localization::UpdateOdometry(double dtSeconds) {
     previousEncoder_[wheel] = current;
 
     const double millimetresPerCount =
-        (2.0 * localization_config::PI * localization_config::WHEEL_RADIUS_MM) /
+        (2.0 * robot_geometry::PI * localization_config::WHEEL_RADIUS_MM) /
         (localization_config::ENCODER_COUNTS_PER_OUTPUT_REV * localization_config::MOTOR_TO_WHEEL_RATIO);
     wheelSpeed[wheel] = deltaCounts * millimetresPerCount / dt;
   }
@@ -91,7 +91,7 @@ void Localization::UpdateOdometry(double dtSeconds) {
   // around the robot centre. These are the inverse kinematics of that layout.
   double kinematics[3][4];
   for (int wheel = 0; wheel < localization_config::WHEEL_COUNT; ++wheel) {
-    const double alpha = DegreesToRadians(localization_config::WHEEL_ANGLE_DEG[wheel]);
+    const double alpha = robot_geometry::Radians(localization_config::WHEEL_ANGLE_DEG[wheel]);
     kinematics[wheel][0] = -std::sin(alpha);
     kinematics[wheel][1] =  std::cos(alpha);
     kinematics[wheel][2] = localization_config::WHEEL_CENTER_RADIUS_MM[wheel];
@@ -135,18 +135,18 @@ void Localization::UpdateOdometry(double dtSeconds) {
   lastRawGyroX_Dps_ = hardware_->GetRawGyroX_Dps();
   lastRawGyroY_Dps_ = hardware_->GetRawGyroY_Dps();
   lastRawGyroZ_Dps_ = hardware_->GetRawGyroZ_Dps();
-  const double gyroRateRadps = DegreesToRadians(lastYawRateDps_);
+  const double gyroRateRadps = robot_geometry::Radians(lastYawRateDps_);
   const double encoderYawWeight = localization_config::ENCODER_YAW_RATE_BLEND;
   const double yawRateRadps =
       (1.0 - encoderYawWeight) * gyroRateRadps +
       encoderYawWeight * wheelYawRate;
   const double gyroPrediction =
-      WrapRadians(pose_.headingRad + yawRateRadps * dt);
+      robot_geometry::Wrap(pose_.headingRad + yawRateRadps * dt);
   lastYawDegrees_ = hardware_->GetYawDegrees();
-  const double ahrsYaw = WrapRadians(
-      DegreesToRadians(lastYawDegrees_) + imuYawOffsetRad_);
-  const double yawInnovation = WrapRadians(ahrsYaw - gyroPrediction);
-  pose_.headingRad = WrapRadians(
+  const double ahrsYaw = robot_geometry::Wrap(
+      robot_geometry::Radians(lastYawDegrees_) + imuYawOffsetRad_);
+  const double yawInnovation = robot_geometry::Wrap(ahrsYaw - gyroPrediction);
+  pose_.headingRad = robot_geometry::Wrap(
       gyroPrediction + localization_config::YAW_AHRS_CORRECTION * yawInnovation);
 
   // Encoders supply translation. Acceleration is captured for observation;
@@ -215,7 +215,7 @@ ArenaRayHit Localization::PredictSonarHit(int sensorIndex,const RobotPose& pose,
   const double c=std::cos(pose.headingRad),s=std::sin(pose.headingRad);
   return arena_.Raycast({pose.x_MM+c*sensor.mountX_MM-s*sensor.mountY_MM,
       pose.y_MM+s*sensor.mountX_MM+c*sensor.mountY_MM},
-      pose.headingRad+DegreesToRadians(sensor.beamAngleDeg)+angleOffset);
+      pose.headingRad+robot_geometry::Radians(sensor.beamAngleDeg)+angleOffset);
 }
 
 void Localization::ApplyScalarCorrection(const double jacobian[3],
@@ -242,10 +242,10 @@ void Localization::ApplyScalarCorrection(const double jacobian[3],
   pose_.x_MM += gain[0] * innovation;
   pose_.y_MM += gain[1] * innovation;
   const double headingCorrection=gain[2]*innovation;
-  pose_.headingRad = WrapRadians(pose_.headingRad + headingCorrection);
+  pose_.headingRad = robot_geometry::Wrap(pose_.headingRad + headingCorrection);
   // Retain external wall/tape heading corrections relative to AHRS; otherwise
   // the next yaw update would pull the estimate back to its old reference.
-  imuYawOffsetRad_=WrapRadians(imuYawOffsetRad_+headingCorrection);
+  imuYawOffsetRad_=robot_geometry::Wrap(imuYawOffsetRad_+headingCorrection);
 
   double updated[3][3];
   for (int row = 0; row < 3; ++row) {
@@ -338,8 +338,8 @@ bool Localization::CorrectFromSonar(int sensorIndex, double measuredRange_MM) {
 bool Localization::CorrectFromLine(const autonomous_config::Station& station,double tapeLeftError_MM) {
   using namespace autonomous_config;
   if (!std::isfinite(tapeLeftError_MM)) return false;
-  const double h=DegreesToRadians(station.headingDeg),theta=pose_.headingRad;
-  if (std::fabs(WrapRadians(theta-h))>0.08 || std::fabs(tapeLeftError_MM)>30) return false;
+  const double h=robot_geometry::Radians(station.headingDeg),theta=pose_.headingRad;
+  if (std::fabs(robot_geometry::Wrap(theta-h))>0.08 || std::fabs(tapeLeftError_MM)>30) return false;
   const double sensorLeft=COBRA_LEFT_MM+tapeLeftError_MM;
   const double sensorX=pose_.x_MM+std::cos(theta)*COBRA_FORWARD_MM-std::sin(theta)*sensorLeft;
   const double sensorY=pose_.y_MM+std::sin(theta)*COBRA_FORWARD_MM+std::cos(theta)*sensorLeft;
@@ -363,15 +363,14 @@ bool Localization::IsHealthy() const {
       std::isfinite(lastBodyVelocityX_MMps_) && std::isfinite(lastBodyVelocityY_MMps_);
 }
 
-void Localization::PublishTelemetry(double sonarRange_MM,
-                                    int sonarIndex) const {
+void Localization::PublishTelemetry() const {
   if (!localization_config::ENABLE_DETAILED_TELEMETRY) return;
 
   frc::SmartDashboard::PutNumber("Localization/Pose/x_mm", pose_.x_MM);
   frc::SmartDashboard::PutNumber("Localization/Pose/y_mm", pose_.y_MM);
   frc::SmartDashboard::PutNumber(
       "Localization/Pose/heading_deg",
-      pose_.headingRad * 180.0 / localization_config::PI);
+      pose_.headingRad * 180.0 / robot_geometry::PI);
   frc::SmartDashboard::PutNumber("Localization/Velocity/body_vx_mmps",
                                   lastBodyVelocityX_MMps_);
   frc::SmartDashboard::PutNumber("Localization/Velocity/body_vy_mmps",
@@ -379,10 +378,6 @@ void Localization::PublishTelemetry(double sonarRange_MM,
   frc::SmartDashboard::PutNumber(
       "Localization/Velocity/wheel_yaw_rate_radps",
       lastAngularVelocityRadps_);
-  frc::SmartDashboard::PutNumber("Localization/Sonar/last_range_mm",
-                                  sonarRange_MM);
-  frc::SmartDashboard::PutNumber("Localization/Sonar/last_sensor_index",
-                                  sonarIndex);
   frc::SmartDashboard::PutNumber("Localization/Uncertainty/sigma_x_mm",
                                  std::sqrt(std::max(0.0, covariance_[0][0])));
   frc::SmartDashboard::PutNumber("Localization/Uncertainty/sigma_y_mm",
@@ -390,15 +385,5 @@ void Localization::PublishTelemetry(double sonarRange_MM,
   frc::SmartDashboard::PutNumber(
       "Localization/Uncertainty/sigma_heading_deg",
                                  std::sqrt(std::max(0.0, covariance_[2][2])) *
-                                     180.0 / localization_config::PI);
-}
-
-double Localization::WrapRadians(double angleRad) {
-  // atan2 safely propagates nonfinite input to the health checks; subtracting
-  // 2*pi repeatedly could otherwise loop forever on an infinite sensor value.
-  return robot_geometry::Wrap(angleRad);
-}
-
-double Localization::DegreesToRadians(double angleDeg) {
-  return angleDeg * localization_config::PI / 180.0;
+                                     180.0 / robot_geometry::PI);
 }

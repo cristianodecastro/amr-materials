@@ -13,6 +13,7 @@ void ClearOldTelemetry(nt::NetworkTable& table) {
 }
 void Robot::RobotInit() {
   frc::LiveWindow::GetInstance()->DisableAllTelemetry();
+  camera_.Start();
   if (!localization_config::ENABLE_DETAILED_TELEMETRY) {
     auto dashboard=nt::NetworkTableInstance::GetDefault().GetTable("SmartDashboard");
     ClearOldTelemetry(*dashboard->GetSubTable("Diagnostics"));
@@ -21,17 +22,20 @@ void Robot::RobotInit() {
   frc::Shuffleboard::Update();
   frc::Shuffleboard::SelectTab("Teleop");
 }
-void Robot::RobotPeriodic() { frc2::CommandScheduler::GetInstance().Run(); }
-void Robot::DisabledInit() { container_.StopAll(); }
+void Robot::RobotPeriodic() {
+  frc2::CommandScheduler::GetInstance().Run();
+  camera_.Periodic();
+}
+void Robot::DisabledInit() { subsystem_.StopAll(); }
 void Robot::AutonomousInit() {
-  container_.EnterAutonomous();
+  subsystem_.EnterAutonomous();
   frc::Shuffleboard::SelectTab("Autonomous");
 }
 void Robot::TeleopInit() {
-  container_.StopAll();
+  subsystem_.StopAll();
   frc::Shuffleboard::SelectTab("Teleop");
 }
-void Robot::TestInit() { container_.StopAll(); }
+void Robot::TestInit() { subsystem_.StopAll(); }
 
 #ifndef RUNNING_FRC_TESTS
 int main() { return frc::StartRobot<Robot>(); }

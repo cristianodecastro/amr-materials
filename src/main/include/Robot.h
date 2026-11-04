@@ -1,6 +1,7 @@
 #pragma once
 #include <frc/TimedRobot.h>
-#include "RobotContainer.h"
+#include "RobotControl.h"
+#include "CameraCapture.h"
 
 class Robot : public frc::TimedRobot {
  public:
@@ -11,5 +12,6 @@ class Robot : public frc::TimedRobot {
   void TeleopInit() override;
   void TestInit() override;
  private:
-  RobotContainer container_;
+  RobotSubsystem subsystem_;
+  CameraCapture camera_;
 };

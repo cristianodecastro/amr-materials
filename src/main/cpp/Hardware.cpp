@@ -1,5 +1,5 @@
-#include "Hardware.h"
-#include "DriveKinematics.h"
+#include "RobotControl.h"
+#include "TeleopControl.h"
 #include <frc/RobotState.h>
 #include <frc/DriverStation.h>
 
@@ -18,6 +18,9 @@ constexpr bool PortsValid() {
   return true;
 }
 static_assert(PortsValid(),"Three distinct drive ports and a separate lift port must cover Titan 0..3");
+static_assert(localization_config::TELEOP_LEFT_REAR_OUTPUT_SCALE > 0.0 &&
+              localization_config::TELEOP_LEFT_REAR_OUTPUT_SCALE <= 1.0,
+              "Left rear teleop output scale must be in (0, 1]");
 }
 
 bool Hardware::TeleopMotorMotionAllowed() {
@@ -62,8 +65,11 @@ void Hardware::SetWheelPwm(int wheel, double output) {
   if (wheel < 0 || wheel >= localization_config::WHEEL_COUNT) return;
   if (!std::isfinite(output)) output = 0.0;
   if (!TeleopMotorMotionAllowed()) output=0;
+  // All wheel writes pass here after smoothing. Apply the trim exactly once,
+  // including acceleration, reverse and rotation; publish the actual output.
+  const double scale=wheel==0?localization_config::TELEOP_LEFT_REAR_OUTPUT_SCALE:1.0;
   const double limited = std::max(-1.0, std::min(1.0, output)) *
-                         localization_config::WHEEL_MOTOR_SIGN[wheel];
+                         scale * localization_config::WHEEL_MOTOR_SIGN[wheel];
   wheelCommands_[wheel] = limited;
   switch (wheel) {
     case 0: leftRearMotor_.Set(limited); break;
@@ -78,36 +84,8 @@ double Hardware::GetWheelCommand(int wheel) const {
       ? wheelCommands_[wheel] : 0.0;
 }
 
-void Hardware::DriveRobotRelative(double vx_MMps, double vy_MMps,
-                                  double yawRate_Radps, double maxOutput) {
-  if (!std::isfinite(vx_MMps) || !std::isfinite(vy_MMps) ||
-      !std::isfinite(yawRate_Radps)) {
-    StopDrive();
-    return;
-  }
-  double wheelSpeed[3];
-  for (int wheel = 0; wheel < 3; ++wheel)
-    wheelSpeed[wheel] = drive_kinematics::WheelSpeedMMps(
-        wheel, drive_kinematics::LayoutVx(vx_MMps,vy_MMps),
-        drive_kinematics::LayoutVy(vx_MMps,vy_MMps), yawRate_Radps);
-  DriveWheelsMMps(wheelSpeed, maxOutput);
-}
-
-void Hardware::DriveWheelsMMps(const double (&wheelSpeed)[3], double maxOutput) {
-  const double denominator =
-      drive_kinematics::OutputDenominator(wheelSpeed, maxOutput);
-  if (denominator <= 0.0) {
-    StopDrive();
-    return;
-  }
-  for (int wheel = 0; wheel < localization_config::WHEEL_COUNT; ++wheel) {
-    SetWheelPwm(wheel, wheelSpeed[wheel] / denominator);
-  }
-}
-
 void Hardware::StopDrive() {
-  speedBaselineValid_=false;
-  for (auto& integral:speedIntegral_) integral=0;
+  wheelDrive_.Reset();
   for (int wheel = 0; wheel < localization_config::WHEEL_COUNT; ++wheel)
     SetWheelPwm(wheel, 0.0);
 }
@@ -133,53 +111,37 @@ void Hardware::SetLiftPwm(double output) {
   liftMotor_.Set(output);
 }
 
-void Hardware::DriveRobotRelativeFeedback(double forward,double left,double yawRadps,
+void Hardware::DriveRobotRelative(double forward,double left,double yawRadps,
                                            double maxOutput,double dt) {
-  if (!std::isfinite(forward) || !std::isfinite(left) || !std::isfinite(yawRadps) ||
-      !std::isfinite(dt) || dt<=0 || dt>autonomous_config::MAX_CONTROL_GAP_S ||
-      !std::isfinite(maxOutput) || maxOutput<=0 || maxOutput>1) { StopDrive(); return; }
-  double desired[3],counts[3],measured[3];
-  const double mmPerCount=2*localization_config::PI*localization_config::WHEEL_RADIUS_MM/
-      (localization_config::ENCODER_COUNTS_PER_OUTPUT_REV*localization_config::MOTOR_TO_WHEEL_RATIO);
+  if (!TeleopMotorMotionAllowed()) { StopDrive(); return; }
+  // Neutral is an immediate stop and the deliberate reset for a latched fault.
+  if (std::isfinite(forward) && std::isfinite(left) && std::isfinite(yawRadps) &&
+      std::fabs(forward)<0.01 && std::fabs(left)<0.01 && std::fabs(yawRadps)<0.0001) {
+    StopDrive(); return;
+  }
+  double desired[3],counts[3];
   for (int i=0;i<3;++i) {
     desired[i]=drive_kinematics::WheelSpeedMMps(i,drive_kinematics::LayoutVx(forward,left),
         drive_kinematics::LayoutVy(forward,left),yawRadps);
     counts[i]=GetWheelEncoderRaw(i);
-    if (!std::isfinite(counts[i])) { StopDrive(); return; }
-    measured[i]=speedBaselineValid_?(counts[i]-speedPreviousCounts_[i])*
-        localization_config::WHEEL_ENCODER_SIGN[i]*mmPerCount/dt:0;
   }
-  const double denominator=drive_kinematics::OutputDenominator(desired,maxOutput);
-  if (denominator<=0) { StopDrive(); return; }
-  const double scale=localization_config::MAX_WHEEL_SPEED_MMPS/denominator;
-  for (int i=0;i<3;++i) {
-    speedPreviousCounts_[i]=counts[i];
-    const double request=desired[i]*scale;
-    if (std::fabs(request)<1) { speedIntegral_[i]=0; SetWheelPwm(i,0); continue; }
-    const double error=request-measured[i];
-    const double candidate=std::max(-autonomous_config::WHEEL_INTEGRAL_LIMIT,
-        std::min(autonomous_config::WHEEL_INTEGRAL_LIMIT,
-          speedIntegral_[i]+autonomous_config::WHEEL_KI*error*dt));
-    const double feedforward=request/localization_config::MAX_WHEEL_SPEED_MMPS+
-        std::copysign(autonomous_config::WHEEL_KS,request);
-    const double output=feedforward+autonomous_config::WHEEL_KP*error+candidate;
-    // Conditional integration prevents accumulating error into saturation.
-    if (std::fabs(output)<=maxOutput || output*error<0) speedIntegral_[i]=candidate;
-    SetWheelPwm(i,std::max(-maxOutput,std::min(maxOutput,
-        feedforward+autonomous_config::WHEEL_KP*error+speedIntegral_[i])));
-  }
-  speedBaselineValid_=true;
+  wheelDrive_.Update(desired,counts,dt,maxOutput);
+  for (int i=0;i<3;++i) SetWheelPwm(i,wheelDrive_.Output(i));
 }
 
-bool Hardware::GetStartPressed() const {
-  return false; // Physical start button removed; never read servo FlexDIO 8 as an input.
+std::string Hardware::GetDriveStatus() const {
+  const int wheel=wheelDrive_.HasFault()?wheelDrive_.FaultWheel():wheelDrive_.WaitingWheel();
+  const std::string prefix=wheel>=0 && wheel<3?
+      std::string(localization_config::WHEEL_NAME[wheel])+" M"+
+      std::to_string(localization_config::WHEEL_TITAN_PORT[wheel])+": ":"";
+  return prefix+wheelDrive_.Status();
 }
 
 void Hardware::SetServoAngle(int servo, double degrees, bool enabled) {
   if (servo<0 || servo>=2) return;
-  auto& output=servo==0?crossServo_:triangleServo_;
+  auto& output=servo==0?manualServo_:triangleServo_;
   if (!enabled || !TeleopMotorMotionAllowed() || !std::isfinite(degrees) ||
-      degrees<0 || degrees>300) {
+      degrees<manipulator_config::SERVO_MIN_DEG || degrees>manipulator_config::SERVO_MAX_DEG) {
     output.SetOffline();
     return;
   }
@@ -188,11 +150,10 @@ void Hardware::SetServoAngle(int servo, double degrees, bool enabled) {
 }
 
 void Hardware::StopServos() {
-  crossServo_.SetOffline();
+  manualServo_.SetOffline();
   triangleServo_.SetOffline();
 }
 
-void Hardware::ZeroYaw() { imu_.ZeroYaw(); }
 // The navX reports clockwise-positive yaw and a board frame with +Y forward,
 // +X right. Localization uses CCW-positive yaw and +X forward, +Y left.
 double Hardware::GetYawDegrees() { return -imu_.GetYaw(); }
@@ -245,13 +206,7 @@ LineReading Hardware::ReadLine() {
   return TrackLine(volts);
 }
 
-void Hardware::BeginObjectAction(ObjectAction action) {
-  (void)action; // No invented motor ports or simulated completion.
-}
-ObjectActionStatus Hardware::GetObjectActionStatus() const {
-  return ObjectActionStatus::Unavailable;
-}
-void Hardware::StopObjectHandler() {
+void Hardware::StopManipulator() {
   SetLiftPwm(0);
   StopServos();
 }
