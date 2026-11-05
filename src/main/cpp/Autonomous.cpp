@@ -183,8 +183,7 @@ void ArenaTestController::Enter(double now) {
   Stop(); target_=at::SP; stateTime_=now; missionTime_=now; settleTime_=-1;
   travelHeadingRad_=robot_geometry::Radians(at::SP.headingDeg);
   stoppedHeadingTargetDeg_=at::SP.headingDeg;
-  opposedYawRad_=0; expectedYawDirection_=0;
-  referencesSkipped_=false; turnBraking_=false; lastReferenceReport_.clear();
+  referencesSkipped_=false; heading_.Reset(); lastReferenceReport_.clear();
   referenceReport_="No reference requested";
   for (int i=0;i<4;++i) { referenceSamples_[i]=0; previousCorrection_[i]=-1; }
   state_=at::ENABLED?State::WaitingStart:State::Disabled;
@@ -201,8 +200,7 @@ void ArenaTestController::Abort() {
   }
 }
 void ArenaTestController::Transition(State state,double now,const char* status) {
-  Stop(); state_=state; stateTime_=now; settleTime_=-1; status_=status; turnBraking_=false;
-  opposedYawRad_=0; expectedYawDirection_=0;
+  Stop(); state_=state; stateTime_=now; settleTime_=-1; status_=status; heading_.Reset();
   if (state==State::TravelMW) travelHeadingRad_=robot_geometry::Radians(at::SP.headingDeg);
   if (state==State::FinishMW) travelHeadingRad_=robot_geometry::Radians(at::MW.headingDeg);
   if (state==State::TravelRDW) travelHeadingRad_=robot_geometry::Radians(at::MW.headingDeg);
@@ -224,16 +222,16 @@ double ArenaTestController::GetHeadingTargetDeg() const {
     return travelHeadingRad_*180.0/robot_geometry::PI;
   return target_.headingDeg;
 }
-double ArenaTestController::HeadingRequest(double error,double oldYaw,double measuredYaw,double dt,bool hold) {
+double HeadingMotionControl::Request(double error,double oldYaw,double measuredYaw,double dt,bool hold) {
   const double deadband=hold?at::HOLD_HEADING_DEADBAND_RAD:at::HEADING_TOLERANCE_RAD;
   if (!hold) {
     const double stoppedRate=robot_geometry::Radians(at::STATIONARY_YAW_DPS);
     // Once braking, wait for the gyro to confirm the turn has stopped before
     // requesting another correction. Never carry a clockwise slew request
     // through a counterclockwise position error (or vice versa).
-    if (turnBraking_) {
+    if (braking_) {
       if (std::fabs(measuredYaw)>stoppedRate) return 0;
-      turnBraking_=false;
+      braking_=false;
     }
     const double toward=error<0?-measuredYaw:measuredYaw;
     const double remaining=std::max(0.0,std::fabs(error)-deadband);
@@ -242,7 +240,7 @@ double ArenaTestController::HeadingRequest(double error,double oldYaw,double mea
     if (std::fabs(error)<=deadband || oldYaw*error<0 ||
         (toward>stoppedRate && stoppingAngle>=remaining) ||
         toward< -stoppedRate) {
-      turnBraking_=true;
+      braking_=true;
       return 0;
     }
   }
@@ -323,17 +321,8 @@ void ArenaTestController::Update(const ArenaTestInput& in) {
   if (in.now-stateTime_>at::LEG_TIMEOUT_S) {
     Fail("Motion leg timeout during: "+status_+" - stopped"); return;
   }
-  if (std::fabs(oldYaw)>0.0001) expectedYawDirection_=oldYaw<0?-1:1;
-  if (expectedYawDirection_!=0 &&
-      std::fabs(in.yawRateRadps)>=at::YAW_DIRECTION_CHECK_MIN_RADPS) {
-    if (expectedYawDirection_*in.yawRateRadps<0) opposedYawRad_+=std::fabs(in.yawRateRadps)*in.dt;
-    else opposedYawRad_=0;
-    if (opposedYawRad_>=at::YAW_DIRECTION_ERROR_RAD) {
-      Fail(expectedYawDirection_<0?"Yaw direction mismatch: commanded CW, gyro reported CCW - stopped":
-          "Yaw direction mismatch: commanded CCW, gyro reported CW - stopped");
-      return;
-    }
-  }
+  const auto yawFault=heading_.CheckFeedback(oldYaw,in.yawRateRadps,in.dt);
+  if (!yawFault.empty()) { Fail(yawFault); return; }
   if (!map_.IsFree({in.pose.x_MM,in.pose.y_MM})) { Fail("Pose outside mapped center-path clearance"); return; }
   if (state_==State::ReferenceMW || state_==State::ReferenceRDW) { Reference(in); return; }
   if (state_==State::TravelMW || state_==State::FinishMW || state_==State::TravelRDW || state_==State::FinishRDW) {
@@ -345,7 +334,7 @@ void ArenaTestController::Update(const ArenaTestInput& in) {
     // Correct small disturbances around the travel heading. The planned turn
     // to the waypoint's new heading still waits until XY motion has finished.
     const double holdError=robot_geometry::Wrap(travelHeadingRad_-in.pose.headingRad);
-    yaw_=reached?0:HeadingRequest(holdError,oldYaw,in.yawRateRadps,in.dt,true);
+    yaw_=reached?0:heading_.Request(holdError,oldYaw,in.yawRateRadps,in.dt,true);
     // At the XY goal, stop and let the following turn state correct heading.
     // Do not stall here requesting tiny yaw outputs against static friction.
     if (Settled(reached && in.stationary,in.now)) {
@@ -403,8 +392,111 @@ void ArenaTestController::Update(const ArenaTestInput& in) {
     return;
   }
   if (reached) return;
-  yaw_=HeadingRequest(error,oldYaw,in.yawRateRadps,in.dt,false);
+  yaw_=heading_.Request(error,oldYaw,in.yawRateRadps,in.dt,false);
   // Deliberately no XY command while turning.
+}
+
+std::string HeadingMotionControl::CheckFeedback(double previousRequest,double measuredYaw,double dt) {
+  if (std::fabs(previousRequest)>0.0001) direction_=previousRequest<0?-1:1;
+  if (direction_!=0 && std::fabs(measuredYaw)>=at::YAW_DIRECTION_CHECK_MIN_RADPS) {
+    if (direction_*measuredYaw<0) opposed_+=std::fabs(measuredYaw)*dt;
+    else opposed_=0;
+    if (opposed_>=at::YAW_DIRECTION_ERROR_RAD)
+      return direction_<0?"Yaw direction mismatch: commanded CW, gyro reported CCW - stopped":
+          "Yaw direction mismatch: commanded CCW, gyro reported CW - stopped";
+  }
+  return {};
+}
+
+const char* SimpleTaskName(SimpleTask task) {
+  switch (task) {
+    case SimpleTask::Forward1000:return "Forward 1000 mm";
+    case SimpleTask::Backward1000:return "Backward 1000 mm";
+    case SimpleTask::Ccw90:return "Rotate CCW 90 deg";
+    case SimpleTask::Cw90:return "Rotate CW 90 deg";
+    case SimpleTask::Ccw180:return "Rotate CCW 180 deg";
+    case SimpleTask::Cw180:return "Rotate CW 180 deg";
+    case SimpleTask::Colour:return "Recognise object colour";
+    default:return "No task selected";
+  }
+}
+bool SimpleTaskController::Start(SimpleTask task,const ArenaTestInput& in) {
+  if (IsRunning()) return false;
+  if (task<=SimpleTask::None || task>SimpleTask::Colour) { Fail("Choose a task first"); return false; }
+  if (!std::isfinite(in.now) || (task!=SimpleTask::Colour &&
+      (!in.healthy || !in.stationary || !robot_geometry::Finite(in.pose)))) {
+    Fail("Start rejected - wait for healthy IMU/odometry and a stationary robot"); return false;
+  }
+  Stop(); heading_.Reset(); task_=task; start_=in.pose;
+  started_=in.now; settled_=-1; travel_=turned_=0; previousHeading_=in.pose.headingRad;
+  targetTurn_=task==SimpleTask::Ccw90?robot_geometry::PI/2:
+      (task==SimpleTask::Cw90?-robot_geometry::PI/2:
+      (task==SimpleTask::Ccw180?robot_geometry::PI:(task==SimpleTask::Cw180?-robot_geometry::PI:0)));
+  const double distance=task==SimpleTask::Forward1000?1000:(task==SimpleTask::Backward1000?-1000:0);
+  targetX_=start_.x_MM+distance*std::cos(start_.headingRad);
+  targetY_=start_.y_MM+distance*std::sin(start_.headingRad);
+  state_=task==SimpleTask::Colour?State::Photograph:(distance!=0?State::Driving:State::Turning);
+  status_=std::string("Running: ")+SimpleTaskName(task_);
+  return true;
+}
+void SimpleTaskController::Fail(const std::string& reason) { Stop(); state_=State::Fault; status_=reason; }
+void SimpleTaskController::Abort() {
+  if (IsRunning()) { Stop(); state_=State::Aborted; status_="Stopped - choose a task and Run to start a fresh task"; }
+}
+void SimpleTaskController::CompletePhoto(bool success,const std::string& result) {
+  if (state_!=State::Photograph) return;
+  Stop(); state_=success?State::Complete:State::Fault; status_=result;
+}
+void SimpleTaskController::Update(const ArenaTestInput& in) {
+  const double oldForward=forward_,oldLeft=left_,oldYaw=yaw_;
+  Stop();
+  if (!IsRunning()) return;
+  if (in.stopRequested) { Abort(); return; }
+  if (!std::isfinite(in.now) || !std::isfinite(in.dt) || in.dt<=0 || in.dt>autonomous_config::MAX_CONTROL_GAP_S) {
+    Fail("Invalid task timing - stopped"); return;
+  }
+  const double timeout=state_==State::Photograph?camera_config::REQUEST_TIMEOUT_S+5:at::LEG_TIMEOUT_S;
+  if (in.now-started_>timeout) { Fail(std::string("Task timeout: ")+SimpleTaskName(task_)); return; }
+  if (state_==State::Photograph) return;
+  if (!in.healthy || !robot_geometry::Finite(in.pose) || !std::isfinite(in.yawRateRadps)) {
+    Fail("IMU/odometry unhealthy - task stopped"); return;
+  }
+  const auto fault=heading_.CheckFeedback(oldYaw,in.yawRateRadps,in.dt);
+  if (!fault.empty()) { Fail(fault); return; }
+  // Accumulate signed increments, so CW/CCW 180 retain the requested direction
+  // even when signed yaw wraps at -180/+180 or the initial heading is arbitrary.
+  turned_+=robot_geometry::Wrap(in.pose.headingRad-previousHeading_);
+  previousHeading_=in.pose.headingRad;
+  travel_=(in.pose.x_MM-start_.x_MM)*std::cos(start_.headingRad)+
+      (in.pose.y_MM-start_.y_MM)*std::sin(start_.headingRad);
+  const double dx=targetX_-in.pose.x_MM,dy=targetY_-in.pose.y_MM,distance=std::hypot(dx,dy);
+  const bool translation=task_==SimpleTask::Forward1000 || task_==SimpleTask::Backward1000;
+  const double error=translation?robot_geometry::Wrap(start_.headingRad-in.pose.headingRad):targetTurn_-turned_;
+  bool reached=false;
+  if (state_==State::Driving) {
+    reached=distance<=at::POSITION_TOLERANCE_MM;
+    if (!reached) {
+      yaw_=heading_.Request(error,oldYaw,in.yawRateRadps,in.dt,true);
+      const double brake=std::sqrt(2*at::ACCEL_MMPS2*std::max(0.0,distance-at::POSITION_TOLERANCE_MM));
+      const double speed=std::min(at::SPEED_MMPS,std::max(at::MIN_APPROACH_MMPS,std::min(at::POSITION_KP*distance,brake)));
+      const double c=std::cos(in.pose.headingRad),s=std::sin(in.pose.headingRad);
+      forward_=(c*dx+s*dy)*speed/distance; left_=(-s*dx+c*dy)*speed/distance;
+      const double df=forward_-oldForward,dl=left_-oldLeft,delta=std::hypot(df,dl),step=at::ACCEL_MMPS2*in.dt;
+      if (delta>step) { forward_=oldForward+df*step/delta; left_=oldLeft+dl*step/delta; }
+    }
+  } else {
+    reached=std::fabs(error)<=at::HEADING_TOLERANCE_RAD;
+    if (!reached) yaw_=heading_.Request(error,oldYaw,in.yawRateRadps,in.dt,false);
+  }
+  if (!reached || !in.stationary) { settled_=-1; return; }
+  if (settled_<0) settled_=in.now;
+  if (in.now-settled_<at::SETTLE_S) return;
+  Stop(); settled_=-1; heading_.Reset();
+  if (state_==State::Driving) {
+    state_=State::Turning; status_="Distance reached - settling at starting heading";
+  } else if (translation && distance>at::POSITION_TOLERANCE_MM) {
+    state_=State::Driving; status_="Correcting position drift after heading adjustment";
+  } else { state_=State::Complete; status_=std::string("Complete: ")+SimpleTaskName(task_); }
 }
 
 // Future pickup/delivery mission (disabled in RobotConfig.h).

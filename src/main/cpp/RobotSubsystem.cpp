@@ -1,21 +1,24 @@
 #include "RobotControl.h"
+#include "CameraCapture.h"
 
 #include <frc/RobotState.h>
 #include <frc/DriverStation.h>
 #include <frc/shuffleboard/Shuffleboard.h>
 #include <frc/shuffleboard/BuiltInWidgets.h>
 #include <frc/shuffleboard/SimpleWidget.h>
+#include <frc/shuffleboard/ComplexWidget.h>
 #include <frc/smartdashboard/SmartDashboard.h>
 #include <algorithm>
 #include <cmath>
 #include <string>
 
-RobotSubsystem::RobotSubsystem() {
+RobotSubsystem::RobotSubsystem(CameraCapture* camera):camera_(camera) {
   lastLoopTime_=lastSonarPingTime_=frc::Timer::GetFPGATimestamp();
   hardware_.StopDrive();
   InitializeDashboard();
   InitializeTeleopDashboard();
   InitializeCobraDashboard();
+  InitializeTaskDashboard();
 }
 
 std::string RobotSubsystem::PreflightError() const {
@@ -42,6 +45,9 @@ std::string RobotSubsystem::PreflightError() const {
 
 void RobotSubsystem::EnterAutonomous() {
   StopAll();
+  // A task selection authorizes no movement; both interfaces still wait for
+  // an explicit Start/Run click after enabling Autonomous.
+  autoSession_=true;
   if (arena_test_config::ENABLED) {
     autoSession_=true; poseAnchored_=false;
     const double now=frc::Timer::GetFPGATimestamp();
@@ -78,6 +84,8 @@ void RobotSubsystem::StopAll() {
   servoTeleop_.Disarm();
   autonomous_.Abort();
   arenaTest_.Abort();
+  simpleTask_.Abort(); simpleSession_=false; colourRequest_=0;
+  runTask_.SetBoolean(false); stopTask_.SetBoolean(false);
   startRoutine_.SetBoolean(false); stopRoutine_.SetBoolean(false);
   autoSession_=false;
 }
@@ -91,7 +99,8 @@ void RobotSubsystem::Periodic() {
   // Pose remains observable in manual mode; only autonomous start anchors it
   // to an arena placement. Never use manual-mode pose as a global guarantee.
   if (hardware_.IsImuConnected() && !hardware_.IsImuCalibrating()) {
-    if (autoSession_ && !poseAnchored_ && !arena_test_config::ENABLED) {
+    if (autoSession_ && !simpleSession_ && !poseAnchored_ && !arena_test_config::ENABLED &&
+        autonomous_config::AUTONOMOUS_ENABLED) {
       localization_.Reset(localization_config::START_X_MM,localization_config::START_Y_MM,
           localization_config::START_HEADING_DEG);
       poseAnchored_=true;
@@ -116,6 +125,12 @@ void RobotSubsystem::Periodic() {
   stopRoutineRequested_=stopRoutine_.GetBoolean(false);
   if (startRoutineRequested_) startRoutine_.SetBoolean(false);
   if (stopRoutineRequested_) stopRoutine_.SetBoolean(false);
+  runTaskRequested_=runTask_.GetBoolean(false);
+  stopTaskRequested_=stopTask_.GetBoolean(false);
+  if (runTaskRequested_) runTask_.SetBoolean(false);
+  if (stopTaskRequested_) stopTask_.SetBoolean(false);
+  if (runTaskRequested_ && (!enabled || !autoMode))
+    taskNotice_="Run ignored - select Autonomous and enable, then press Run again";
   // Consume each capture request once; no dashboard entry commands movement.
   const bool captureWhite=captureCobraWhite_.GetBoolean(false);
   const bool captureBlack=captureCobraBlack_.GetBoolean(false);
@@ -125,7 +140,7 @@ void RobotSubsystem::Periodic() {
   UpdateSonarPoll(now,enabled);
 
   if (enabled && autoMode) {
-    if ((!autonomous_config::AUTONOMOUS_ENABLED && !arena_test_config::ENABLED) || !autoSession_) {
+    if (!autoSession_) {
       hardware_.StopDrive(); // require explicit AutonomousInit, never resume
       hardware_.StopManipulator();
     } else UpdateAutonomous(now,dt);
@@ -137,8 +152,48 @@ void RobotSubsystem::Periodic() {
 }
 
 void RobotSubsystem::UpdateAutonomous(double now,double dt) {
+  if (stopTaskRequested_ || (simpleSession_ && stopRoutineRequested_)) {
+    simpleTask_.Abort(); arenaTest_.Abort(); autonomous_.Abort();
+    hardware_.SetAutonomousDriveEnabled(false); hardware_.StopDrive(); hardware_.StopManipulator();
+    simpleSession_=true; taskNotice_="Stopped; Run starts a fresh selected task"; return;
+  }
+  if (runTaskRequested_ && startRoutineRequested_) {
+    taskNotice_="Start requests ignored - press only one Start button";
+    runTaskRequested_=startRoutineRequested_=false;
+  }
+  if (runTaskRequested_) {
+    if (simpleTask_.IsRunning() || arenaTest_.IsRunning() || autonomous_.IsRunning())
+      taskNotice_="Run ignored - a task/routine is already running; Stop or wait for completion";
+    else if (!frc::DriverStation::GetInstance().IsDSAttached()) taskNotice_="Run ignored - Control Station disconnected";
+    else {
+      const auto task=static_cast<SimpleTask>(taskChooser_.GetSelected());
+      const bool motion=task!=SimpleTask::Colour;
+      const bool imuReady=hardware_.IsImuConnected() && !hardware_.IsImuCalibrating();
+      const bool stationary=std::hypot(localization_.GetBodyVelocityX_MMps(),localization_.GetBodyVelocityY_MMps())
+          <=arena_test_config::STATIONARY_SPEED_MMPS &&
+          std::fabs(hardware_.GetYawRateDegreesPerSecond())<=arena_test_config::STATIONARY_YAW_DPS;
+      if (task==SimpleTask::None) taskNotice_="Choose a task first";
+      else if (motion && (!imuReady || !stationary)) taskNotice_="Run ignored - wait for calibrated IMU and a stationary robot";
+      else {
+        hardware_.SetAutonomousDriveEnabled(false); hardware_.StopDrive(); hardware_.StopManipulator();
+        if (motion) localization_.Reset(0,0,0); // relative to current physical front, not the arena SP
+        ArenaTestInput in={localization_.GetPose(),now,dt,imuReady,stationary,false,false,{}};
+        if (simpleTask_.Start(task,in)) {
+          simpleSession_=true; poseAnchored_=false; arenaTest_.Abort(); autonomous_.Abort();
+          taskNotice_=std::string("Started: ")+SimpleTaskName(task)+"; changing selection affects only the next Run";
+          if (task==SimpleTask::Colour) {
+            colourRequest_=camera_?camera_->RequestColourAnalysis():0;
+            if (!colourRequest_) simpleTask_.Fail("Camera unavailable or busy - wait and Run again");
+          }
+        }
+      }
+    }
+  }
+  if (simpleSession_) { UpdateSimpleTask(now,dt); return; }
   if (arena_test_config::ENABLED) { UpdateArenaTest(now,dt); return; }
-  if (!autonomous_config::AUTONOMOUS_ENABLED) { StopAll(); return; }
+  if (!autonomous_config::AUTONOMOUS_ENABLED) {
+    hardware_.SetAutonomousDriveEnabled(false); hardware_.StopDrive(); hardware_.StopManipulator(); return;
+  }
   bool sonarReady=true;
   if (autonomous_.GetState()==AutonomousController::State::WaitingStart) {
     for (int i=0;i<4;++i)
@@ -167,6 +222,32 @@ void RobotSubsystem::UpdateAutonomous(double now,double dt) {
     localization_.CorrectFromLine(autonomous_.GetStation(),line_.leftErrorMM);
     lastLineCorrection_=now;
   }
+}
+
+void RobotSubsystem::UpdateSimpleTask(double now,double dt) {
+  const bool stationary=std::hypot(localization_.GetBodyVelocityX_MMps(),localization_.GetBodyVelocityY_MMps())
+      <=arena_test_config::STATIONARY_SPEED_MMPS &&
+      std::fabs(hardware_.GetYawRateDegreesPerSecond())<=arena_test_config::STATIONARY_YAW_DPS;
+  ArenaTestInput in={localization_.GetPose(),now,dt,
+      hardware_.IsImuConnected() && !hardware_.IsImuCalibrating() &&
+          localization_.IsHealthy(arena_test_config::MAX_POSITION_SIGMA_MM) &&
+          frc::DriverStation::GetInstance().IsDSAttached(),
+      stationary,false,false,{},robot_geometry::Radians(hardware_.GetYawRateDegreesPerSecond())};
+  if (hardware_.HasDriveFault() && simpleTask_.IsMotionRunning()) simpleTask_.Fail(hardware_.GetDriveStatus());
+  simpleTask_.Update(in);
+  if (simpleTask_.GetState()==SimpleTaskController::State::Photograph && camera_) {
+    const auto result=camera_->GetColourResult();
+    if (result.request==colourRequest_ && result.ready) simpleTask_.CompletePhoto(result.success,result.status);
+  }
+  hardware_.SetAutonomousDriveEnabled(simpleTask_.IsMotionRunning());
+  if (simpleTask_.IsMotionRunning()) {
+    hardware_.DriveRobotRelative(simpleTask_.GetForwardMMps(),simpleTask_.GetLeftMMps(),
+        simpleTask_.GetYawRadps(),arena_test_config::MAX_OUTPUT,dt);
+    if (hardware_.HasDriveFault()) {
+      simpleTask_.Fail(hardware_.GetDriveStatus()); hardware_.SetAutonomousDriveEnabled(false); hardware_.StopDrive();
+    }
+  } else hardware_.StopDrive();
+  hardware_.StopManipulator();
 }
 
 void RobotSubsystem::UpdateArenaTest(double now,double dt) {
@@ -319,6 +400,40 @@ void RobotSubsystem::UpdateSonarPoll(double now,bool enabled) {
     hardware_.PingSonar(nextSonarIndex_);
     sonarPingTime_=now; sonarSlowAtPing_=slow; sonarAwaitingEcho_=true;
   }
+}
+
+void RobotSubsystem::InitializeTaskDashboard() {
+  auto& tab=frc::Shuffleboard::GetTab("Simple tasks");
+  taskChooser_.SetDefaultOption("Choose a task",static_cast<int>(SimpleTask::None));
+  for (auto task:{SimpleTask::Forward1000,SimpleTask::Backward1000,SimpleTask::Ccw90,
+      SimpleTask::Cw90,SimpleTask::Ccw180,SimpleTask::Cw180,SimpleTask::Colour})
+    taskChooser_.AddOption(SimpleTaskName(task),static_cast<int>(task));
+  tab.Add("Next task",taskChooser_).WithWidget(frc::BuiltInWidgets::kComboBoxChooser).WithPosition(0,0).WithSize(6,1);
+  runTask_=tab.Add("Run selected task",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
+      .WithPosition(6,0).WithSize(3,1).GetEntry();
+  stopTask_=tab.Add("Stop",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
+      .WithPosition(9,0).WithSize(3,1).GetEntry();
+  runTask_.SetBoolean(false); stopTask_.SetBoolean(false);
+  tab.AddString("Task status",[this] { return simpleTask_.GetStatus(); }).WithPosition(0,1).WithSize(8,1);
+  tab.AddBoolean("Enabled Autonomous",[] { return frc::RobotState::IsEnabled() && frc::RobotState::IsAutonomous(); })
+      .WithPosition(8,1).WithSize(2,1);
+  tab.AddBoolean("Task running",[this] { return simpleTask_.IsRunning(); }).WithPosition(10,1).WithSize(2,1);
+  tab.AddString("Active task",[this] { return SimpleTaskName(simpleTask_.GetTask()); }).WithPosition(0,2).WithSize(6,1);
+  tab.AddNumber("Travel (mm)",[this] { return simpleTask_.GetTravelMM(); }).WithPosition(6,2).WithSize(3,1);
+  tab.AddNumber("Rotation (deg)",[this] { return simpleTask_.GetTurnDegrees(); }).WithPosition(9,2).WithSize(3,1);
+  tab.AddString("Last colour",[this] { return camera_?PieceColourName(camera_->GetColourResult().estimate.colour):"Unavailable"; })
+      .WithPosition(0,3).WithSize(4,1);
+  tab.AddNumber("Colour dominance (%)",[this] { return camera_?100*camera_->GetColourResult().estimate.dominance:0; })
+      .WithPosition(4,3).WithSize(4,1);
+  tab.AddNumber("Colour coverage (%)",[this] { return camera_?100*camera_->GetColourResult().estimate.coverage:0; })
+      .WithPosition(8,3).WithSize(4,1);
+  tab.AddString("Request feedback",[this] { return taskNotice_; }).WithPosition(0,4).WithSize(12,1);
+  tab.AddString("How to run",[] {
+    return "Choose Next task; select Autonomous and enable (e); press Run selected task. "
+        "Each Run starts from the current pose. Selection changes affect the next Run only. "
+        "Stop/Disable cancels. Lift and servos stay off. Place one coloured piece in the central preview box. "
+        "Colour uses one fresh photo; camera stays off between requests. Re-select Autonomous to return to the arena route.";
+  }).WithPosition(8,5).WithSize(4,5);
 }
 
 void RobotSubsystem::InitializeDashboard() {

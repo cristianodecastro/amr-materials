@@ -1,6 +1,7 @@
 #include "CameraCapture.h"
 
 #include <cerrno>
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -78,6 +79,8 @@ void CameraCapture::Start() {
     lastPhoto_.SetFPS(camera_config::PREVIEW_FPS);
     tab.Add("Last captured photo",lastPhoto_)
         .WithWidget(frc::BuiltInWidgets::kCameraStream).WithPosition(0,3).WithSize(12,6);
+    frc::Shuffleboard::GetTab("Simple tasks").Add("Last task photo",lastPhoto_)
+        .WithWidget(frc::BuiltInWidgets::kCameraStream).WithPosition(0,5).WithSize(8,5);
     // Keep an actual image in the preview area before the first photograph.
     preview_=cv::Mat(camera_config::HEIGHT,camera_config::WIDTH,CV_8UC3,
         cv::Scalar(32,32,32));
@@ -98,22 +101,35 @@ void CameraCapture::Start() {
 void CameraCapture::Periodic() {
   if (!captureButton_.GetBoolean(false)) return;
   captureButton_.SetBoolean(false);
+  QueueCapture(false);
+}
+unsigned CameraCapture::RequestColourAnalysis() { return QueueCapture(true); }
+CameraCapture::ColourResult CameraCapture::GetColourResult() {
+  std::lock_guard<std::mutex> lock(mutex_); return colourResult_;
+}
+unsigned CameraCapture::QueueCapture(bool colour) {
+  unsigned request;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!worker_.joinable()) return;
+    if (!worker_.joinable()) return 0;
     if (busy_) {
       status_="Photo already in progress - wait for Saved PNG or Capture failed";
-      return; // one outstanding photograph; no unbounded queue
+      return 0; // one outstanding photograph; no unbounded queue
     }
+    request=++requestSequence_;
+    pendingAnalysis_=colour?request:0;
+    if (colour) { colourResult_=ColourResult{}; colourResult_.request=request; colourResult_.status="Capturing fresh colour photo..."; }
     busy_=pending_=true;
     status_="Opening camera for photo...";
   }
   wake_.notify_one();
+  return request;
 }
 
 void CameraCapture::Run() {
   for (;;) {
     bool capture=false;
+    unsigned analysis=0;
     {
       std::unique_lock<std::mutex> lock(mutex_);
       // Network camera widgets wait for new frames, including after reconnect.
@@ -122,10 +138,11 @@ void CameraCapture::Run() {
           [this] { return stopping_ || pending_; });
       if (stopping_) return;
       capture=pending_;
+      analysis=pendingAnalysis_;
       pending_=false;
     }
     if (capture) {
-      TakePhoto();
+      TakePhoto(analysis);
       std::lock_guard<std::mutex> lock(mutex_);
       busy_=false;
     }
@@ -142,7 +159,7 @@ void CameraCapture::CloseCamera() {
   cameraActive_=false;
 }
 
-void CameraCapture::TakePhoto() {
+void CameraCapture::TakePhoto(unsigned analysisRequest) {
   try {
     {
       std::lock_guard<std::mutex> lock(mutex_);
@@ -185,11 +202,38 @@ void CameraCapture::TakePhoto() {
       status_="Photo captured - USB camera off; saving PNG...";
     }
     // Replace the cached preview only after successfully saving this photo.
-    if (Capture(image)) preview_=image;
+    if (analysisRequest) {
+      const int width=std::max(1,static_cast<int>(image.cols*camera_config::COLOUR_ROI_FRACTION));
+      const int height=std::max(1,static_cast<int>(image.rows*camera_config::COLOUR_ROI_FRACTION));
+      const cv::Rect roi((image.cols-width)/2,(image.rows-height)/2,width,height);
+      cv::Mat hsv;
+      cv::cvtColor(image(roi),hsv,cv::COLOR_BGR2HSV);
+      ColourVotes votes;
+      for (int y=0;y<hsv.rows;++y) for (int x=0;x<hsv.cols;++x) {
+        const auto pixel=hsv.at<cv::Vec3b>(y,x);
+        votes.AddHsv(pixel[0],pixel[1],pixel[2],camera_config::COLOUR_MIN_SATURATION,camera_config::COLOUR_MIN_VALUE);
+      }
+      const auto estimate=votes.Estimate(camera_config::COLOUR_MIN_COVERAGE,camera_config::COLOUR_MIN_DOMINANCE);
+      const bool saved=Capture(image); // saved PNG keeps the unannotated image
+      preview_=image.clone();
+      cv::rectangle(preview_,roi,cv::Scalar(255,255,255),2);
+      cv::putText(preview_,PieceColourName(estimate.colour),cv::Point(20,35),
+          cv::FONT_HERSHEY_SIMPLEX,0.8,cv::Scalar(255,255,255),2);
+      std::lock_guard<std::mutex> lock(mutex_);
+      colourResult_.request=analysisRequest; colourResult_.ready=colourResult_.success=true;
+      colourResult_.estimate=estimate;
+      colourResult_.status=estimate.colour==PieceColour::Unknown?"Unknown - centre one piece inside the box; check lighting":
+          std::string("Detected ")+PieceColourName(estimate.colour);
+      if (!saved) colourResult_.status+="; PNG was not saved (see Camera status)";
+    } else if (Capture(image)) preview_=image;
   } catch (const std::exception& error) {
     CloseCamera();
     std::lock_guard<std::mutex> lock(mutex_);
     status_=std::string("Capture failed (camera off): ")+error.what();
+    if (analysisRequest) {
+      colourResult_.request=analysisRequest; colourResult_.ready=true; colourResult_.success=false;
+      colourResult_.status=status_;
+    }
   }
 }
 

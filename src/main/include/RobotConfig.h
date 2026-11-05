@@ -220,6 +220,13 @@ static constexpr double REQUEST_TIMEOUT_S = 8.0;
 // This does not acquire new USB frames or save additional files.
 static constexpr int PREVIEW_FPS = 1;
 static constexpr const char* CAPTURE_DIRECTORY = "/home/pi/SkillsChallenge/captures";
+// Initial colour thresholds; tune using photos under the arena lighting.
+// HSV hue uses OpenCV's 0..179 scale. Ignore neutral/dark background pixels.
+static constexpr int COLOUR_MIN_SATURATION = 80;
+static constexpr int COLOUR_MIN_VALUE = 50;
+static constexpr double COLOUR_ROI_FRACTION = 0.50;
+static constexpr double COLOUR_MIN_COVERAGE = 0.10;
+static constexpr double COLOUR_MIN_DOMINANCE = 0.65;
 }
 
 // Disabled autonomous arena, mission and correction settings.

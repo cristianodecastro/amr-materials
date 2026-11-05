@@ -31,6 +31,50 @@ struct ArenaTestInput {
   double correctionTime[4]; // timestamps of accepted, fresh sonar corrections
   double yawRateRadps=0; // signed CCW gyro rate, independent of the arena yaw offset
 };
+// Shared gyro turn profile and direction checks for routes and individual tasks.
+class HeadingMotionControl {
+ public:
+  void Reset() { braking_=false; opposed_=0; direction_=0; }
+  double Request(double error,double oldYaw,double measuredYaw,double dt,bool hold);
+  std::string CheckFeedback(double previousRequest,double measuredYaw,double dt);
+ private:
+  bool braking_=false;
+  double opposed_=0;
+  int direction_=0;
+};
+
+enum class SimpleTask { None, Forward1000, Backward1000, Ccw90, Cw90, Ccw180, Cw180, Colour };
+const char* SimpleTaskName(SimpleTask task);
+// Relative tasks snapshot their start; there are no arena/map prerequisites.
+class SimpleTaskController {
+ public:
+  enum class State { Idle, Driving, Turning, Photograph, Complete, Fault, Aborted };
+  bool Start(SimpleTask task,const ArenaTestInput& in);
+  void Update(const ArenaTestInput& in);
+  void CompletePhoto(bool success,const std::string& result);
+  void Abort();
+  void Fail(const std::string& reason);
+  bool IsRunning() const { return state_==State::Driving || state_==State::Turning || state_==State::Photograph; }
+  bool IsMotionRunning() const { return state_==State::Driving || state_==State::Turning; }
+  State GetState() const { return state_; }
+  const std::string& GetStatus() const { return status_; }
+  SimpleTask GetTask() const { return task_; }
+  double GetForwardMMps() const { return forward_; }
+  double GetLeftMMps() const { return left_; }
+  double GetYawRadps() const { return yaw_; }
+  double GetTravelMM() const { return travel_; }
+  double GetTurnDegrees() const { return turned_*180/robot_geometry::PI; }
+ private:
+  void Stop() { forward_=left_=yaw_=0; }
+  State state_=State::Idle;
+  SimpleTask task_=SimpleTask::None;
+  std::string status_="Choose a task, enable Autonomous, then Run selected task";
+  RobotPose start_{0,0,0};
+  double targetX_=0,targetY_=0,targetTurn_=0,turned_=0,previousHeading_=0;
+  double started_=0,settled_=-1,travel_=0;
+  double forward_=0,left_=0,yaw_=0;
+  HeadingMotionControl heading_;
+};
 class ArenaTestController {
  public:
   enum class State { Disabled, WaitingStart, TravelMW, TurnMW, ReferenceMW, FinishMW, FinishHeadingMW,
@@ -56,7 +100,6 @@ class ArenaTestController {
   void Stop();
   void Transition(State state,double now,const char* status);
   bool Settled(bool reached,double now);
-  double HeadingRequest(double error,double oldYaw,double measuredYaw,double dt,bool hold);
   void Reference(const ArenaTestInput& in);
   ArenaMap map_{false}; // this test uses the drawing's walls, not old station placeholders
   State state_=State::Disabled;
@@ -66,13 +109,11 @@ class ArenaTestController {
   double forward_=0,left_=0,yaw_=0;
   double travelHeadingRad_=0;
   double stoppedHeadingTargetDeg_=arena_test_config::SP.headingDeg;
-  double opposedYawRad_=0;
-  int expectedYawDirection_=0;
   double stateTime_=0, missionTime_=0, settleTime_=-1;
   double previousCorrection_[4]={-1,-1,-1,-1};
   int referenceSamples_[4]={0,0,0,0};
   bool referencesSkipped_=false;
-  bool turnBraking_=false;
+  HeadingMotionControl heading_;
 };
 
 // Disabled mission state machine.

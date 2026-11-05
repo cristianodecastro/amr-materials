@@ -9,6 +9,7 @@
 #include <frc/Joystick.h>
 #include <frc2/command/SubsystemBase.h>
 #include <networktables/NetworkTableEntry.h>
+#include <frc/smartdashboard/SendableChooser.h>
 #include <studica/TitanQuad.h>
 #include <studica/TitanQuadEncoder.h>
 #include <studica/Cobra.h>
@@ -168,19 +169,23 @@ class Localization {
 };
 
 // Robot scheduler, modes and dashboard integration.
+class CameraCapture;
 class RobotSubsystem : public frc2::SubsystemBase {
  public:
-  RobotSubsystem();
+  explicit RobotSubsystem(CameraCapture* camera=nullptr);
   void Periodic() override;
   // Explicit lifecycle entry/exit: no autonomous state survives a mode change.
   void EnterAutonomous();
   void StopAll();
+  bool HasSimpleTaskSelection() { return taskChooser_.GetSelected()!=static_cast<int>(SimpleTask::None); }
 
  private:
   std::string PreflightError() const;
   void InitializeDashboard();
   void InitializeTeleopDashboard();
   void InitializeCobraDashboard();
+  void InitializeTaskDashboard();
+  void UpdateSimpleTask(double now,double dt);
   void UpdateTeleopDrive(double dt);
   void UpdateSonarPoll(double now, bool enabled);
   void UpdateAutonomous(double now, double dt);
@@ -192,6 +197,13 @@ class RobotSubsystem : public frc2::SubsystemBase {
   Localization localization_{&hardware_};
   AutonomousController autonomous_;
   ArenaTestController arenaTest_;
+  SimpleTaskController simpleTask_;
+  CameraCapture* camera_;
+  frc::SendableChooser<int> taskChooser_;
+  nt::NetworkTableEntry runTask_,stopTask_;
+  bool runTaskRequested_=false,stopTaskRequested_=false,simpleSession_=false;
+  unsigned colourRequest_=0;
+  std::string taskNotice_="Choose a task; requests run only in enabled Autonomous";
   frc::Joystick driver_{localization_config::DRIVER_JOYSTICK_PORT};
   TeleopDriveController teleopDrive_;
   bool driverConnected_=false;

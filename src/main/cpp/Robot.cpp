@@ -29,7 +29,7 @@ void Robot::RobotPeriodic() {
 void Robot::DisabledInit() { subsystem_.StopAll(); }
 void Robot::AutonomousInit() {
   subsystem_.EnterAutonomous();
-  frc::Shuffleboard::SelectTab("Autonomous");
+  frc::Shuffleboard::SelectTab(subsystem_.HasSimpleTaskSelection()?"Simple tasks":"Autonomous");
 }
 void Robot::TeleopInit() {
   subsystem_.StopAll();

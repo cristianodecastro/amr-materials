@@ -15,14 +15,23 @@
 // the cached still for dashboard viewers, with no live camera feed.
 class CameraCapture {
  public:
+  struct ColourResult {
+    unsigned request=0;
+    bool ready=false,success=false;
+    ColourEstimate estimate;
+    std::string status="No colour photo taken";
+  };
   CameraCapture() = default;
   ~CameraCapture();
   void Start();
   void Periodic();
+  unsigned RequestColourAnalysis(); // zero if busy/unavailable; no request is queued
+  ColourResult GetColourResult();
 
  private:
   void Run();
-  void TakePhoto();
+  unsigned QueueCapture(bool colour);
+  void TakePhoto(unsigned analysisRequest);
   void CloseCamera();
   bool Capture(cv::Mat& image);
   cs::UsbCamera camera_;
@@ -36,4 +45,6 @@ class CameraCapture {
   bool stopping_=false, pending_=false, busy_=false, cameraActive_=false;
   std::string status_="Camera not started", lastFile_, lastSize_;
   unsigned saved_=0;
+  unsigned requestSequence_=0,pendingAnalysis_=0;
+  ColourResult colourResult_;
 };

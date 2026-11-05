@@ -12,6 +12,6 @@ class Robot : public frc::TimedRobot {
   void TeleopInit() override;
   void TestInit() override;
  private:
-  RobotSubsystem subsystem_;
   CameraCapture camera_;
+  RobotSubsystem subsystem_{&camera_};
 };

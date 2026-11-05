@@ -31,7 +31,7 @@ bool Hardware::TeleopMotorMotionAllowed() {
 
 bool Hardware::DriveMotorMotionAllowed() const {
   if (TeleopMotorMotionAllowed()) return true;
-  return autonomousDriveEnabled_ && arena_test_config::ENABLED &&
+  return autonomousDriveEnabled_ &&
       frc::DriverStation::GetInstance().IsDSAttached() && frc::RobotState::IsEnabled() &&
       frc::RobotState::IsAutonomous() && !frc::RobotState::IsTest();
 }

@@ -326,6 +326,103 @@ void Simulate(bool supplyReferences,bool repeatOldTimestamp=false,bool motorDead
   REQUIRE_ARENA(c.GetLastReferenceReport().find("MW:")!=std::string::npos);
   REQUIRE_ARENA(c.GetLastReferenceReport().find("RDW:")!=std::string::npos);
 }
+void SimulateSimpleTask(SimpleTask task,double startDegrees,bool disturbHeading=false) {
+  SimpleTaskController c;
+  auto in=Input();
+  in.pose={42,-300,robot_geometry::Radians(startDegrees)}; // no arena placement dependency
+  const auto start=in.pose;
+  REQUIRE_ARENA(c.Start(task,in));
+  REQUIRE_ARENA(!c.Start(SimpleTask::Forward1000,in)); // cannot replace a running task
+  const bool translation=task==SimpleTask::Forward1000 || task==SimpleTask::Backward1000;
+  double actualForward=0,actualLeft=0,actualYaw=0,totalTurn=0;
+  for (int tick=1;tick<2000 && c.IsRunning();++tick) {
+    const double vx=drive_kinematics::LayoutVx(c.GetForwardMMps(),c.GetLeftMMps());
+    const double vy=drive_kinematics::LayoutVy(c.GetForwardMMps(),c.GetLeftMMps());
+    double wheel[3];
+    for (int i=0;i<3;++i) wheel[i]=drive_kinematics::WheelSpeedMMps(i,vx,vy,c.GetYawRadps());
+    double forward=-(wheel[1]-wheel[0])/std::sqrt(3.0),left=-(2*wheel[2]-wheel[0]-wheel[1])/3;
+    double yaw=-(wheel[0]+wheel[1]+wheel[2])/(3*168.0);
+    if (std::hypot(forward,left)<100) {
+      forward=left=0;
+      if (std::fabs(yaw)<robot_geometry::Radians(25)) yaw=0;
+    }
+    const double response=in.dt/(0.08+in.dt);
+    actualForward+=response*(forward-actualForward); actualLeft+=response*(left-actualLeft);
+    actualYaw+=response*(yaw-actualYaw);
+    const double cosine=std::cos(in.pose.headingRad),sine=std::sin(in.pose.headingRad);
+    in.pose.x_MM+=(cosine*actualForward-sine*actualLeft)*in.dt;
+    in.pose.y_MM+=(sine*actualForward+cosine*actualLeft)*in.dt;
+    totalTurn+=actualYaw*in.dt;
+    in.pose.headingRad=robot_geometry::Wrap(in.pose.headingRad+actualYaw*in.dt);
+    if (disturbHeading && tick==60 && translation) {
+      in.pose.headingRad=robot_geometry::Wrap(in.pose.headingRad+robot_geometry::Radians(3));
+      totalTurn+=robot_geometry::Radians(3);
+    }
+    in.yawRateRadps=actualYaw; in.now=tick*in.dt;
+    in.stationary=std::hypot(actualForward,actualLeft)<=at::STATIONARY_SPEED_MMPS &&
+        std::fabs(actualYaw)<=robot_geometry::Radians(at::STATIONARY_YAW_DPS);
+    c.Update(in);
+    REQUIRE_ARENA(std::hypot(c.GetForwardMMps(),c.GetLeftMMps())<=at::SPEED_MMPS+1e-6);
+    REQUIRE_ARENA(std::fabs(c.GetYawRadps())<=at::MAX_YAW_RADPS+1e-6);
+    if (!translation) REQUIRE_ARENA(c.GetForwardMMps()==0 && c.GetLeftMMps()==0);
+  }
+  if (c.GetState()!=SimpleTaskController::State::Complete)
+    throw std::runtime_error(std::string(SimpleTaskName(task))+": "+c.GetStatus());
+  const double wanted=task==SimpleTask::Forward1000?1000:(task==SimpleTask::Backward1000?-1000:0);
+  REQUIRE_ARENA(std::hypot(in.pose.x_MM-start.x_MM-wanted*std::cos(start.headingRad),
+      in.pose.y_MM-start.y_MM-wanted*std::sin(start.headingRad))<=at::POSITION_TOLERANCE_MM);
+  const double wantedTurn=task==SimpleTask::Ccw90?robot_geometry::PI/2:(task==SimpleTask::Cw90?-robot_geometry::PI/2:
+      (task==SimpleTask::Ccw180?robot_geometry::PI:(task==SimpleTask::Cw180?-robot_geometry::PI:0)));
+  REQUIRE_ARENA(std::fabs(totalTurn-wantedTurn)<=at::HEADING_TOLERANCE_RAD);
+  c.Update(in); REQUIRE_ARENA(!c.IsRunning() && c.GetYawRadps()==0 && c.GetForwardMMps()==0);
+}
+void SimpleTaskStopHealthAndPhoto() {
+  SimpleTaskController c;
+  auto in=Input();
+  REQUIRE_ARENA(!c.Start(SimpleTask::None,in));
+  in.stationary=false; REQUIRE_ARENA(!c.Start(SimpleTask::Forward1000,in));
+  in.stationary=true; REQUIRE_ARENA(c.Start(SimpleTask::Forward1000,in));
+  in.now+=in.dt; c.Update(in); REQUIRE_ARENA(c.GetForwardMMps()>0);
+  in.stopRequested=true; c.Update(in); REQUIRE_ARENA(!c.IsRunning() && c.GetForwardMMps()==0);
+  in.stopRequested=false; REQUIRE_ARENA(c.Start(SimpleTask::Backward1000,in));
+  in.healthy=false; c.Update(in); REQUIRE_ARENA(c.GetState()==SimpleTaskController::State::Fault && c.GetForwardMMps()==0);
+  REQUIRE_ARENA(c.Start(SimpleTask::Colour,in)); // vision needs no IMU
+  c.Update(in); REQUIRE_ARENA(c.GetState()==SimpleTaskController::State::Photograph);
+  c.CompletePhoto(true,"Detected Red"); REQUIRE_ARENA(c.GetState()==SimpleTaskController::State::Complete);
+  REQUIRE_ARENA(c.Start(SimpleTask::Colour,in)); c.Abort();
+  c.CompletePhoto(true,"Old photo"); REQUIRE_ARENA(c.GetState()==SimpleTaskController::State::Aborted);
+  REQUIRE_ARENA(c.Start(SimpleTask::Colour,in)); c.CompletePhoto(false,"Camera timeout");
+  REQUIRE_ARENA(c.GetState()==SimpleTaskController::State::Fault);
+  in.healthy=true; REQUIRE_ARENA(c.Start(SimpleTask::Ccw90,in));
+  in.dt=0.2; c.Update(in);
+  REQUIRE_ARENA(c.GetState()==SimpleTaskController::State::Fault && c.GetYawRadps()==0);
+}
+void ColourVotingRejectsBackgroundAndAmbiguity() {
+  for (int h:{0,179,30,60,120}) {
+    ColourVotes votes;
+    for (int i=0;i<100;++i) votes.AddHsv(h,i<70?0:220,200,80,50);
+    const auto result=votes.Estimate(0.1,0.65);
+    const auto expected=h==0 || h==179?PieceColour::Red:(h==30?PieceColour::Yellow:
+        (h==60?PieceColour::Green:PieceColour::Blue));
+    REQUIRE_ARENA(result.colour==expected && Near(result.coverage,0.3) && Near(result.dominance,1));
+  }
+  ColourVotes white,dark,mixed,purple,speck;
+  for (int i=0;i<100;++i) {
+    white.AddHsv(0,0,255,80,50); dark.AddHsv(0,255,10,80,50);
+    mixed.AddHsv(i%2?0:120,220,200,80,50);
+    purple.AddHsv(i<10?0:150,220,200,80,50);
+    speck.AddHsv(0,i<5?220:0,200,80,50);
+  }
+  for (const auto& votes:{white,dark,mixed,purple,speck})
+    REQUIRE_ARENA(votes.Estimate(0.1,0.65).colour==PieceColour::Unknown);
+}
+void SimpleTasksAndColourChecks() {
+  for (auto task:{SimpleTask::Forward1000,SimpleTask::Backward1000,SimpleTask::Ccw90,
+      SimpleTask::Cw90,SimpleTask::Ccw180,SimpleTask::Cw180})
+    for (double heading:{0.0,170.0,-170.0,90.0}) SimulateSimpleTask(task,heading);
+  SimulateSimpleTask(SimpleTask::Forward1000,170,true);
+  SimpleTaskStopHealthAndPhoto(); ColourVotingRejectsBackgroundAndAmbiguity();
+}
 } // namespace
 
 #ifdef ARENA_TEST_STANDALONE
@@ -338,7 +435,8 @@ int main() {
     ReversedFeedbackStopsBeforeTimeout(false); ReversedFeedbackStopsBeforeTimeout(true);
     Simulate(true); Simulate(false); Simulate(true,true); Simulate(true,false,true); Simulate(true,false,true,true);
     Simulate(true,false,true,true,0.25);
-    std::cout<<"PASS: installed CW motor polarity vs CCW gyro, reversed-feedback faults before timeout, absolute -90 degree targets, gyro-rate turn braking, west route, motor dead zones/lag, heading hold, sensor references, 15 mm/1 degree completion\n";
+    SimpleTasksAndColourChecks();
+    std::cout<<"PASS: relative forward/backward, CW/CCW 90/180 across signed yaw wrap, task cancellation/health/photo results, HSV background/ambiguity rejection; arena route and gyro braking regressions\n";
   } catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }
 }
 #else
@@ -358,4 +456,5 @@ TEST(ArenaRoutine, StaleReferenceSimulation) { EXPECT_NO_THROW(Simulate(true,tru
 TEST(ArenaRoutine, MotorDeadZoneSimulation) { EXPECT_NO_THROW(Simulate(true,false,true)); }
 TEST(ArenaRoutine, MotorLagAndPoseCorrectionSimulation) { EXPECT_NO_THROW(Simulate(true,false,true,true)); }
 TEST(ArenaRoutine, SlowerMotorResponseSimulation) { EXPECT_NO_THROW(Simulate(true,false,true,true,0.25)); }
+TEST(SimpleTasks, MotionAndColour) { EXPECT_NO_THROW(SimpleTasksAndColourChecks()); }
 #endif
