@@ -19,6 +19,10 @@ RobotSubsystem::RobotSubsystem() {
 }
 
 std::string RobotSubsystem::PreflightError() const {
+  if (arena_test_config::ENABLED) {
+    const auto error=arenaTest_.ValidateGeometry();
+    return error.empty()?"SP -> ME -> RDE test ready; select Autonomous, enable, press Start routine":error;
+  }
   using namespace autonomous_config;
   if (!AUTONOMOUS_ENABLED) return "Autonomous disabled by configuration; motors held at zero";
   std::string missing;
@@ -38,6 +42,15 @@ std::string RobotSubsystem::PreflightError() const {
 
 void RobotSubsystem::EnterAutonomous() {
   StopAll();
+  if (arena_test_config::ENABLED) {
+    autoSession_=true; poseAnchored_=false;
+    const double now=frc::Timer::GetFPGATimestamp();
+    lastLoopTime_=now;
+    startRoutine_.SetBoolean(false); stopRoutine_.SetBoolean(false);
+    for (int i=0;i<4;++i) sonarCorrectionTime_[i]=-1;
+    arenaTest_.Enter(now);
+    return;
+  }
   if (!autonomous_config::AUTONOMOUS_ENABLED) {
     autonomous_.Enter(frc::Timer::GetFPGATimestamp(),PreflightError());
     return;
@@ -57,12 +70,15 @@ void RobotSubsystem::EnterAutonomous() {
 }
 
 void RobotSubsystem::StopAll() {
+  hardware_.SetAutonomousDriveEnabled(false);
   hardware_.StopDrive();
   hardware_.StopManipulator();
   teleopDrive_.Update(false,false,0,0,0,localization_config::CONTROL_PERIOD_S);
   liftTeleop_.Update(false,false,false,false,false,false);
   servoTeleop_.Disarm();
   autonomous_.Abort();
+  arenaTest_.Abort();
+  startRoutine_.SetBoolean(false); stopRoutine_.SetBoolean(false);
   autoSession_=false;
 }
 
@@ -75,13 +91,19 @@ void RobotSubsystem::Periodic() {
   // Pose remains observable in manual mode; only autonomous start anchors it
   // to an arena placement. Never use manual-mode pose as a global guarantee.
   if (hardware_.IsImuConnected() && !hardware_.IsImuCalibrating()) {
-    if (autoSession_ && !poseAnchored_) {
+    if (autoSession_ && !poseAnchored_ && !arena_test_config::ENABLED) {
       localization_.Reset(localization_config::START_X_MM,localization_config::START_Y_MM,
           localization_config::START_HEADING_DEG);
       poseAnchored_=true;
     } else localization_.UpdateOdometry(dt);
   }
   line_=hardware_.ReadLine();
+  // Consume dashboard button pulses in every mode. Disabled/Teleop presses
+  // cannot remain queued and start a routine when Autonomous is enabled later.
+  startRoutineRequested_=startRoutine_.GetBoolean(false);
+  stopRoutineRequested_=stopRoutine_.GetBoolean(false);
+  if (startRoutineRequested_) startRoutine_.SetBoolean(false);
+  if (stopRoutineRequested_) stopRoutine_.SetBoolean(false);
   // Consume each capture request once; no dashboard entry commands movement.
   const bool captureWhite=captureCobraWhite_.GetBoolean(false);
   const bool captureBlack=captureCobraBlack_.GetBoolean(false);
@@ -91,7 +113,7 @@ void RobotSubsystem::Periodic() {
   UpdateSonarPoll(now,enabled);
 
   if (enabled && autoMode) {
-    if (!autonomous_config::AUTONOMOUS_ENABLED || !autoSession_) {
+    if ((!autonomous_config::AUTONOMOUS_ENABLED && !arena_test_config::ENABLED) || !autoSession_) {
       hardware_.StopDrive(); // require explicit AutonomousInit, never resume
       hardware_.StopManipulator();
     } else UpdateAutonomous(now,dt);
@@ -103,6 +125,7 @@ void RobotSubsystem::Periodic() {
 }
 
 void RobotSubsystem::UpdateAutonomous(double now,double dt) {
+  if (arena_test_config::ENABLED) { UpdateArenaTest(now,dt); return; }
   if (!autonomous_config::AUTONOMOUS_ENABLED) { StopAll(); return; }
   bool sonarReady=true;
   if (autonomous_.GetState()==AutonomousController::State::WaitingStart) {
@@ -134,6 +157,41 @@ void RobotSubsystem::UpdateAutonomous(double now,double dt) {
   }
 }
 
+void RobotSubsystem::UpdateArenaTest(double now,double dt) {
+  const bool imuReady=hardware_.IsImuConnected() && !hardware_.IsImuCalibrating();
+  if (startRoutineRequested_ && !stopRoutineRequested_ && imuReady &&
+      arenaTest_.GetState()==ArenaTestController::State::WaitingStart) {
+    // The explicit start click anchors the manually placed robot to SP.
+    // Encoder baselines and IMU offset are sampled, without resetting hardware.
+    const auto& sp=arena_test_config::SP;
+    localization_.Reset(sp.x_MM,sp.y_MM,sp.headingDeg);
+    poseAnchored_=true;
+    for (int i=0;i<4;++i) sonarCorrectionTime_[i]=-1;
+  }
+  const bool stationary=std::hypot(localization_.GetBodyVelocityX_MMps(),
+      localization_.GetBodyVelocityY_MMps())<=arena_test_config::STATIONARY_SPEED_MMPS &&
+      std::fabs(hardware_.GetYawRateDegreesPerSecond())<=arena_test_config::STATIONARY_YAW_DPS;
+  ArenaTestInput in={localization_.GetPose(),now,dt,
+      imuReady && frc::DriverStation::GetInstance().IsDSAttached() &&
+          localization_.IsHealthy(arena_test_config::MAX_POSITION_SIGMA_MM),
+      stationary,startRoutineRequested_,stopRoutineRequested_,{}};
+  for (int i=0;i<4;++i) in.correctionTime[i]=sonarCorrectionTime_[i];
+  if (hardware_.HasDriveFault() && arenaTest_.IsRunning()) arenaTest_.Fail(hardware_.GetDriveStatus());
+  arenaTest_.Update(in);
+  hardware_.SetAutonomousDriveEnabled(arenaTest_.IsRunning());
+  if (arenaTest_.IsRunning()) {
+    hardware_.DriveRobotRelative(arenaTest_.GetForwardMMps(),arenaTest_.GetLeftMMps(),
+        arenaTest_.GetYawRadps(),arena_test_config::MAX_OUTPUT,dt);
+    if (hardware_.HasDriveFault()) {
+      arenaTest_.Fail(hardware_.GetDriveStatus());
+      hardware_.SetAutonomousDriveEnabled(false);
+      hardware_.StopDrive();
+    }
+  } else hardware_.StopDrive();
+  // This first test never actuates the lift or either servo.
+  hardware_.StopManipulator();
+}
+
 bool RobotSubsystem::SonarMotionSafe(double now) const {
   const double vx=autonomous_.GetForwardMMps(),vy=autonomous_.GetLeftMMps(),w=autonomous_.GetYawRadps();
   for (int i=0;i<4;++i) {
@@ -143,8 +201,7 @@ bool RobotSubsystem::SonarMotionSafe(double now) const {
     if (closing<=5) continue;
     if (!sonarRangeValid_[i] || now-sonarReadTime_[i]>autonomous_config::SONAR_STALE_S) return false;
     const double age=now-sonarReadTime_[i]+localization_config::SONAR_ECHO_SETTLE_S;
-    const double envelope=autonomous_config::ROBOT_ENVELOPE_RADIUS_MM+autonomous_config::CLEARANCE_MM-
-        (sensor.mountX_MM*c+sensor.mountY_MM*s);
+    const double envelope=autonomous_config::CLEARANCE_MM;
     const double stopDistance=closing*closing/(2*autonomous_config::ACCEL_MMPS2)+closing*age;
     if (sonarRanges_MM_[i]<envelope+stopDistance) return false;
   }
@@ -221,9 +278,28 @@ void RobotSubsystem::UpdateSonarPoll(double now,bool enabled) {
     sonarRanges_MM_[i]=sonarRangeValid_[i]?range:-1;
     sonarCorrectionAccepted_[i]=false;
     // Global wall correction is valid only after explicit arena initialization.
-    if (autoSession_ && autonomous_.IsRunning() && sonarRangeValid_[i] && slow && sonarSlowAtPing_ &&
-        age<=autonomous_config::SONAR_FUSION_MAX_AGE_S && autonomous_config::SONAR_MOUNTS_CONFIRMED)
-      sonarCorrectionAccepted_[i]=localization_.CorrectFromSonar(i,range);
+    if (autoSession_ && poseAnchored_ && sonarRangeValid_[i] && slow && sonarSlowAtPing_ &&
+        age<=autonomous_config::SONAR_FUSION_MAX_AGE_S) {
+      if (arena_test_config::ENABLED && (arenaTest_.ReferenceMask()&(1u<<i))) {
+        // Only stationary reference states may change the pose. Ignore invalid
+        // echoes, old pings, moving samples and a different wall association.
+        const auto& target=arena_test_config::ME;
+        const auto& reference=arenaTest_.GetState()==ArenaTestController::State::ReferenceME?
+            target:arena_test_config::RDE;
+        const bool stationary=std::hypot(localization_.GetBodyVelocityX_MMps(),
+            localization_.GetBodyVelocityY_MMps())<=arena_test_config::STATIONARY_SPEED_MMPS &&
+            std::fabs(hardware_.GetYawRateDegreesPerSecond())<=arena_test_config::STATIONARY_YAW_DPS;
+        const bool aligned=std::fabs(robot_geometry::Wrap(localization_.GetPose().headingRad-
+            robot_geometry::Radians(reference.headingDeg)))<=arena_test_config::HEADING_TOLERANCE_RAD;
+        const int wall=arenaTest_.ReferenceSurface(i);
+        if (stationary && aligned && wall>=0)
+          sonarCorrectionAccepted_[i]=localization_.CorrectFromSonar(i,range,wall);
+      } else if (!arena_test_config::ENABLED && autonomous_.IsRunning() &&
+          autonomous_config::SONAR_MOUNTS_CONFIRMED) {
+        sonarCorrectionAccepted_[i]=localization_.CorrectFromSonar(i,range);
+      }
+      if (sonarCorrectionAccepted_[i]) sonarCorrectionTime_[i]=now;
+    }
     nextSonarIndex_=(i+1)%4; sonarAwaitingEcho_=false; lastSonarPingTime_=now;
   } else if (now-lastSonarPingTime_>=localization_config::SONAR_PING_SPACING_S) {
     hardware_.PingSonar(nextSonarIndex_);
@@ -233,21 +309,35 @@ void RobotSubsystem::UpdateSonarPoll(double now,bool enabled) {
 
 void RobotSubsystem::InitializeDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Autonomous");
-  tab.AddString("Mission status",[this] { return autonomous_.GetStatus(); }).WithPosition(0,0).WithSize(8,1);
+  tab.AddString("Mission status",[this] {
+    return arena_test_config::ENABLED?arenaTest_.GetStatus():autonomous_.GetStatus();
+  }).WithPosition(0,0).WithSize(8,1);
   tab.AddBoolean("Enabled",[] { return frc::RobotState::IsEnabled(); }).WithPosition(8,0).WithSize(2,1);
   tab.AddNumber("X (mm)",[this] { return localization_.GetPose().x_MM; }).WithPosition(0,1).WithSize(3,1);
   tab.AddNumber("Y (mm)",[this] { return localization_.GetPose().y_MM; }).WithPosition(3,1).WithSize(3,1);
   tab.AddNumber("Heading (deg)",[this] { return localization_.GetPose().headingRad*180/robot_geometry::PI; }).WithPosition(6,1).WithSize(3,1);
-  tab.AddNumber("Confirmed deliveries",[this] { return autonomous_.GetCompletedJobs(); }).WithPosition(9,1).WithSize(3,1);
-  const char* names[4]={"Rear left (mm)","Rear right (mm)","Left (mm)","Right (mm)"};
-  for (int i=0;i<4;++i)
-    tab.AddNumber(names[i],[this,i] { return sonarRanges_MM_[i]; }).WithPosition(i*3,2).WithSize(3,1);
-  tab.AddBoolean("Tape detected",[this] { return line_.valid; }).WithPosition(0,3).WithSize(2,1);
-  tab.AddNumber("Tape offset (mm)",[this] { return line_.valid?line_.leftErrorMM:0; }).WithPosition(2,3).WithSize(2,1);
-  tab.AddBoolean("IMU ready",[this] { return hardware_.IsImuConnected() && !hardware_.IsImuCalibrating(); }).WithPosition(4,3).WithSize(2,1);
-  tab.AddNumber("Position sigma (mm)",[this] { return localization_.GetPositionSigmaMM(); }).WithPosition(6,3).WithSize(2,1);
-  tab.AddString("Station",[this] { return std::string(autonomous_.GetStation().name); }).WithPosition(8,3).WithSize(2,1);
-  tab.AddNumber("Job",[this] { return autonomous_.GetJobNumber(); }).WithPosition(10,3).WithSize(2,1);
+  tab.AddNumber("Position sigma (mm)",[this] { return localization_.GetPositionSigmaMM(); }).WithPosition(9,1).WithSize(3,1);
+  tab.AddString("Ultrasonic status",[] {
+    return frc::RobotState::IsEnabled()?"Polling - distances from sensor face; -1 = no valid echo":
+        "Paused while Disabled - VMX FlexDIO outputs require Enable";
+  }).WithPosition(0,4).WithSize(12,1);
+  for (int i=0;i<4;++i) {
+    const std::string name=localization_config::SONARS[i].name;
+    tab.AddNumber(name+" (mm)",[this,i] { return sonarRanges_MM_[i]; }).WithPosition(i*3,2).WithSize(3,1);
+    tab.AddBoolean(name+" valid",[this,i] { return sonarRangeValid_[i]; }).WithPosition(i*3,5).WithSize(3,1);
+  }
+  startRoutine_=tab.Add("Start routine",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
+      .WithPosition(0,3).WithSize(3,1).GetEntry();
+  stopRoutine_=tab.Add("Stop routine",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
+      .WithPosition(3,3).WithSize(3,1).GetEntry();
+  startRoutine_.SetBoolean(false); stopRoutine_.SetBoolean(false);
+  tab.AddNumber("Target X (mm)",[this] { return arenaTest_.GetTarget().x; }).WithPosition(6,3).WithSize(3,1);
+  tab.AddNumber("Target Y (mm)",[this] { return arenaTest_.GetTarget().y; }).WithPosition(9,3).WithSize(3,1);
+  tab.AddString("Reference progress",[this] { return arenaTest_.GetReferenceReport(); }).WithPosition(0,6).WithSize(12,1);
+  tab.AddString("Reference results",[this] { return arenaTest_.GetLastReferenceReport(); }).WithPosition(0,7).WithSize(12,1);
+  tab.AddString("Test instructions",[] {
+    return "Place at SP; select Autonomous, enable, then Start routine. Disable/Stop aborts; reselect Autonomous to restart.";
+  }).WithPosition(0,8).WithSize(12,1);
 
   // A separate calibration tab keeps the operating screen uncluttered.
   auto& calibration=frc::Shuffleboard::GetTab("Calibration");
@@ -335,7 +425,8 @@ void RobotSubsystem::InitializeCobraDashboard() {
 void RobotSubsystem::PublishDiagnostics() {
   if (!localization_config::ENABLE_DETAILED_TELEMETRY) return;
   for (int i=0;i<4;++i)
-    frc::SmartDashboard::PutBoolean("Diagnostics/Sonar/"+std::to_string(i)+"/fused",sonarCorrectionAccepted_[i]);
+    frc::SmartDashboard::PutBoolean(std::string("Diagnostics/Sonar/")+
+        localization_config::SONARS[i].name+"/fused",sonarCorrectionAccepted_[i]);
   frc::SmartDashboard::PutNumber("Diagnostics/Auto/target_x_mm",autonomous_.GetTarget().x);
   frc::SmartDashboard::PutNumber("Diagnostics/Auto/target_y_mm",autonomous_.GetTarget().y);
   localization_.PublishTelemetry();

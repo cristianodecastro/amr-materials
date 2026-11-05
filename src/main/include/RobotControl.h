@@ -35,6 +35,7 @@ class Hardware {
   bool IsDriveStarting() const { return wheelDrive_.IsStarting(); }
   std::string GetDriveStatus() const;
   void StopDrive();
+  void SetAutonomousDriveEnabled(bool enabled) { autonomousDriveEnabled_=enabled; }
   void SetLiftPwm(double output);
   double GetLiftCommand() const { return liftCommand_; }
   double GetLiftEncoderRaw();
@@ -64,6 +65,8 @@ class Hardware {
 
  private:
   static bool TeleopMotorMotionAllowed();
+  bool DriveMotorMotionAllowed() const;
+  bool autonomousDriveEnabled_=false;
   double liftCommand_=0;
   std::unique_ptr<frc::DigitalInput> liftUpperLimit_,liftLowerLimit_;
   std::unique_ptr<studica::Cobra> cobra_;
@@ -102,14 +105,14 @@ class Hardware {
           (localization_config::ENCODER_COUNTS_PER_OUTPUT_REV *
            localization_config::MOTOR_TO_WHEEL_RATIO)};
 
-  frc::Ultrasonic backLeftSonar_{localization_config::SONARS[0].triggerDio,
-                                  localization_config::SONARS[0].echoDio};
-  frc::Ultrasonic backRightSonar_{localization_config::SONARS[1].triggerDio,
-                                   localization_config::SONARS[1].echoDio};
-  frc::Ultrasonic leftSonar_{localization_config::SONARS[2].triggerDio,
-                              localization_config::SONARS[2].echoDio};
-  frc::Ultrasonic rightSonar_{localization_config::SONARS[3].triggerDio,
-                               localization_config::SONARS[3].echoDio};
+  frc::Ultrasonic leftSonar_{localization_config::SONARS[0].triggerDio,
+                           localization_config::SONARS[0].echoDio};
+  frc::Ultrasonic rearSonar_{localization_config::SONARS[1].triggerDio,
+                           localization_config::SONARS[1].echoDio};
+  frc::Ultrasonic rightSonar_{localization_config::SONARS[2].triggerDio,
+                            localization_config::SONARS[2].echoDio};
+  frc::Ultrasonic frontSonar_{localization_config::SONARS[3].triggerDio,
+                            localization_config::SONARS[3].echoDio};
 
   AHRS imu_{frc::SPI::Port::kMXP};
 };
@@ -121,9 +124,9 @@ class Localization {
 
   void Reset(double x_MM, double y_MM, double headingDeg);
   void UpdateOdometry(double dtSeconds);
-  bool CorrectFromSonar(int sensorIndex, double measuredRange_MM);
+  bool CorrectFromSonar(int sensorIndex, double measuredRange_MM, int expectedSurface=-1);
   bool CorrectFromLine(const autonomous_config::Station& station, double tapeLeftError_MM);
-  bool IsHealthy() const;
+  bool IsHealthy(double maxPositionSigmaMM=autonomous_config::MAX_POSITION_SIGMA_MM) const;
   double GetPositionSigmaMM() const;
   void PublishTelemetry() const;
 
@@ -138,7 +141,7 @@ class Localization {
                              double variance);
 
   Hardware* hardware_;
-  ArenaMap arena_;
+  ArenaMap arena_{false}; // current reference test uses the measured wall geometry
   RobotPose pose_;
   double covariance_[3][3];
   double previousEncoder_[localization_config::WHEEL_COUNT];
@@ -177,12 +180,14 @@ class RobotSubsystem : public frc2::SubsystemBase {
   void UpdateTeleopDrive(double dt);
   void UpdateSonarPoll(double now, bool enabled);
   void UpdateAutonomous(double now, double dt);
+  void UpdateArenaTest(double now, double dt);
   void PublishDiagnostics();
   bool SonarMotionSafe(double now) const;
 
   Hardware hardware_;
   Localization localization_{&hardware_};
   AutonomousController autonomous_;
+  ArenaTestController arenaTest_;
   frc::Joystick driver_{localization_config::DRIVER_JOYSTICK_PORT};
   TeleopDriveController teleopDrive_;
   bool driverConnected_=false;
@@ -199,6 +204,9 @@ class RobotSubsystem : public frc2::SubsystemBase {
   LineReading line_;
   CobraCheck cobraCheck_;
   nt::NetworkTableEntry captureCobraWhite_,captureCobraBlack_;
+  nt::NetworkTableEntry startRoutine_,stopRoutine_;
+  bool startRoutineRequested_=false,stopRoutineRequested_=false;
+  double sonarCorrectionTime_[4]={-1,-1,-1,-1};
   double lastLineCorrection_=0;
   double lastLoopTime_=0;
   int nextSonarIndex_=0;

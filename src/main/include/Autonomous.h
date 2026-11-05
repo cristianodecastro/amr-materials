@@ -12,13 +12,59 @@ struct ArenaRayHit { double range = -1.0; int surface = -1; bool trustedWall = f
 // central start square and tape are floor markings, not solid obstacles.
 class ArenaMap {
  public:
-  ArenaMap();
+  explicit ArenaMap(bool includeStations = true);
   bool IsFree(ArenaPoint p) const;
   bool SegmentFree(ArenaPoint a, ArenaPoint b) const;
   bool Plan(ArenaPoint start, ArenaPoint goal, std::vector<ArenaPoint>& path) const;
   ArenaRayHit Raycast(ArenaPoint origin, double angle) const;
+  ArenaRayHit SonarHit(int sensor, const RobotPose& pose, double beamOffset=0) const;
  private:
   std::vector<ArenaRect> obstacles_;
+};
+
+// Independent SP -> ME -> RDE test. Travel, turning and stationary wall
+// observations are separate states; no pickup/line calibration is required.
+struct ArenaTestInput {
+  RobotPose pose;
+  double now, dt;
+  bool healthy, stationary, startRequested, stopRequested;
+  double correctionTime[4]; // timestamps of accepted, fresh sonar corrections
+};
+class ArenaTestController {
+ public:
+  enum class State { Disabled, WaitingStart, TravelME, TurnME, ReferenceME,
+    TravelRDE, TurnRDE, ReferenceRDE, FinishRDE, FinishHeadingRDE, Complete, Fault, Aborted };
+  void Enter(double now);
+  void Abort();
+  void Fail(const std::string& reason);
+  void Update(const ArenaTestInput& in);
+  bool IsRunning() const;
+  State GetState() const { return state_; }
+  const std::string& GetStatus() const { return status_; }
+  const std::string& GetReferenceReport() const { return referenceReport_; }
+  const std::string& GetLastReferenceReport() const { return lastReferenceReport_; }
+  double GetForwardMMps() const { return forward_; }
+  double GetLeftMMps() const { return left_; }
+  double GetYawRadps() const { return yaw_; }
+  ArenaPoint GetTarget() const { return {target_.x_MM,target_.y_MM}; }
+  unsigned ReferenceMask() const;
+  int ReferenceSurface(int sensor) const;
+  std::string ValidateGeometry() const;
+ private:
+  void Stop();
+  void Transition(State state,double now,const char* status);
+  bool Settled(bool reached,double now);
+  void Reference(const ArenaTestInput& in);
+  ArenaMap map_{false}; // this test uses the drawing's walls, not old station placeholders
+  State state_=State::Disabled;
+  arena_test_config::Waypoint target_=arena_test_config::SP;
+  std::string status_="Select Autonomous, enable, then press Start routine";
+  std::string referenceReport_="No reference requested", lastReferenceReport_;
+  double forward_=0,left_=0,yaw_=0;
+  double stateTime_=0, missionTime_=0, settleTime_=-1;
+  double previousCorrection_[4]={-1,-1,-1,-1};
+  int referenceSamples_[4]={0,0,0,0};
+  bool referencesSkipped_=false;
 };
 
 // Disabled mission state machine.

@@ -59,7 +59,7 @@ void CameraCapture::Start() {
     std::lock_guard<std::mutex> lock(mutex_); return lastSize_;
   }).WithPosition(3,2).WithSize(3,1);
   tab.AddString("Instructions",[] {
-    return "Press Take photo. Camera stays off between requests. Photo is rotated 180 degrees.";
+    return "Press Take photo once; allow up to 8 seconds. Preview holds the last saved photo; USB camera is off between requests.";
   }).WithPosition(6,2).WithSize(6,1);
 
   try {
@@ -75,7 +75,14 @@ void CameraCapture::Start() {
     sink_.SetSource(camera_);
     lastPhoto_=server->PutVideo("Last captured photo",
         camera_config::WIDTH,camera_config::HEIGHT);
-    tab.Add("Last captured photo",lastPhoto_).WithPosition(0,3).WithSize(12,6);
+    lastPhoto_.SetFPS(camera_config::PREVIEW_FPS);
+    tab.Add("Last captured photo",lastPhoto_)
+        .WithWidget(frc::BuiltInWidgets::kCameraStream).WithPosition(0,3).WithSize(12,6);
+    // Keep an actual image in the preview area before the first photograph.
+    preview_=cv::Mat(camera_config::HEIGHT,camera_config::WIDTH,CV_8UC3,
+        cv::Scalar(32,32,32));
+    cv::putText(preview_,"Press Take photo",cv::Point(40,camera_config::HEIGHT/2),
+        cv::FONT_HERSHEY_SIMPLEX,1.0,cv::Scalar(255,255,255),2);
     {
       std::lock_guard<std::mutex> lock(mutex_);
       status_=preferredMode?"Camera off - press Take photo":
@@ -94,7 +101,10 @@ void CameraCapture::Periodic() {
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!worker_.joinable()) return;
-    if (busy_) return; // one outstanding photograph; no unbounded queue
+    if (busy_) {
+      status_="Photo already in progress - wait for Saved PNG or Capture failed";
+      return; // one outstanding photograph; no unbounded queue
+    }
     busy_=pending_=true;
     status_="Opening camera for photo...";
   }
@@ -103,15 +113,24 @@ void CameraCapture::Periodic() {
 
 void CameraCapture::Run() {
   for (;;) {
+    bool capture=false;
     {
       std::unique_lock<std::mutex> lock(mutex_);
-      wake_.wait(lock,[this] { return stopping_ || pending_; });
+      // Network camera widgets wait for new frames, including after reconnect.
+      // Repeat the cached still at 1 fps; never reopen USB for preview updates.
+      wake_.wait_for(lock,std::chrono::milliseconds(1000/camera_config::PREVIEW_FPS),
+          [this] { return stopping_ || pending_; });
       if (stopping_) return;
+      capture=pending_;
       pending_=false;
     }
-    TakePhoto();
-    std::lock_guard<std::mutex> lock(mutex_);
-    busy_=false;
+    if (capture) {
+      TakePhoto();
+      std::lock_guard<std::mutex> lock(mutex_);
+      busy_=false;
+    }
+    // Encoding/serving occurs only when someone views the still-photo source.
+    if (lastPhoto_.IsEnabled() && !preview_.empty()) lastPhoto_.PutFrame(preview_);
   }
 }
 
@@ -134,6 +153,7 @@ void CameraCapture::TakePhoto() {
     const auto start=std::chrono::steady_clock::now();
     auto firstFrame=start;
     bool haveFrame=false,ready=false;
+    std::string cameraError;
     cv::Mat image;
     while (std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count()<
            camera_config::REQUEST_TIMEOUT_S) {
@@ -142,7 +162,10 @@ void CameraCapture::TakePhoto() {
         if (stopping_) break;
       }
       const auto timestamp=sink_.GrabFrame(image,0.25);
-      if (timestamp==0 || image.empty()) continue;
+      if (timestamp==0 || image.empty()) {
+        cameraError=sink_.GetError();
+        continue;
+      }
       const auto now=std::chrono::steady_clock::now();
       if (!haveFrame) { firstFrame=now; haveFrame=true; }
       // Brief warmup lets a freshly reopened camera adjust exposure. This loop
@@ -152,11 +175,17 @@ void CameraCapture::TakePhoto() {
       }
     }
     CloseCamera(); // USB capture is already stopped before rotation/PNG encoding
-    if (!ready) throw std::runtime_error("No fresh camera photo; check USB connection and device index");
+    if (!ready) throw std::runtime_error("No fresh photo from /dev/video"+
+        std::to_string(camera_config::DEVICE)+" within "+
+        std::to_string(camera_config::REQUEST_TIMEOUT_S)+" s"+
+        (cameraError.empty()?"":": "+cameraError));
     cv::flip(image,image,-1);
-    // Publish exactly one corrected image per request. No idle PutFrame loop.
-    lastPhoto_.PutFrame(image);
-    Capture(image);
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      status_="Photo captured - USB camera off; saving PNG...";
+    }
+    // Replace the cached preview only after successfully saving this photo.
+    if (Capture(image)) preview_=image;
   } catch (const std::exception& error) {
     CloseCamera();
     std::lock_guard<std::mutex> lock(mutex_);
@@ -164,7 +193,7 @@ void CameraCapture::TakePhoto() {
   }
 }
 
-void CameraCapture::Capture(cv::Mat& image) {
+bool CameraCapture::Capture(cv::Mat& image) {
   std::string temporaryFile;
   try {
     EnsureDirectory("/home/pi/SkillsChallenge");
@@ -197,9 +226,11 @@ void CameraCapture::Capture(cv::Mat& image) {
     lastFile_=file;
     lastSize_=std::to_string(image.cols)+" x "+std::to_string(image.rows);
     status_="Saved PNG - camera off; copy Last saved file from the robot";
+    return true;
   } catch (const std::exception& error) {
     if (!temporaryFile.empty()) ::unlink(temporaryFile.c_str());
     std::lock_guard<std::mutex> lock(mutex_);
     status_=std::string("Capture failed: ")+error.what();
+    return false;
   }
 }

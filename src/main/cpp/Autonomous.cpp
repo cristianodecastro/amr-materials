@@ -6,7 +6,7 @@
 // Arena geometry and route planning.
 namespace {
 constexpr double kInfinity = std::numeric_limits<double>::infinity();
-double Padding() { return autonomous_config::ROBOT_ENVELOPE_RADIUS_MM + autonomous_config::CLEARANCE_MM; }
+double Padding() { return autonomous_config::CLEARANCE_MM; }
 ArenaRect Inflate(ArenaRect r) {
   const double p=Padding();
   return {r.x0-p,r.y0-p,r.x1+p,r.y1+p,r.trustedWall};
@@ -30,10 +30,11 @@ bool Intersect(ArenaPoint p, ArenaPoint d, const ArenaRect& r, double& lo, doubl
 }
 }
 
-ArenaMap::ArenaMap() {
+ArenaMap::ArenaMap(bool includeStations) {
   using namespace autonomous_config;
   obstacles_.push_back({DIVIDER_X_MIN_MM,0,DIVIDER_X_MAX_MM,LOWER_DIVIDER_END_Y_MM,true});
   obstacles_.push_back({DIVIDER_X_MIN_MM,UPPER_DIVIDER_START_Y_MM,DIVIDER_X_MAX_MM,localization_config::ARENA_HEIGHT_MM,true});
+  if (!includeStations) return;
   const double h=STATION_SIDE_MM/2.0;
   for (const auto& s:STORAGES) obstacles_.push_back({s.center.x-h,s.center.y-h,s.center.x+h,s.center.y+h,false});
   for (const auto& s:DELIVERIES) obstacles_.push_back({s.center.x-h,s.center.y-h,s.center.x+h,s.center.y+h,false});
@@ -136,7 +137,180 @@ ArenaRayHit ArenaMap::Raycast(ArenaPoint origin, double angle) const {
   return hit;
 }
 
-// Mission state machine (disabled in RobotConfig.h).
+ArenaRayHit ArenaMap::SonarHit(int sensor,const RobotPose& pose,double offset) const {
+  if (sensor<0 || sensor>=4 || !robot_geometry::Finite(pose)) return {};
+  const auto& mount=localization_config::SONARS[sensor];
+  const double c=std::cos(pose.headingRad),s=std::sin(pose.headingRad);
+  return Raycast({pose.x_MM+c*mount.mountX_MM-s*mount.mountY_MM,
+      pose.y_MM+s*mount.mountX_MM+c*mount.mountY_MM},
+      pose.headingRad+robot_geometry::Radians(mount.beamAngleDeg)+offset);
+}
+
+// SP -> ME -> RDE test routine.
+namespace at = arena_test_config;
+void ArenaTestController::Stop() { forward_=left_=yaw_=0; }
+bool ArenaTestController::IsRunning() const {
+  return state_>=State::TravelME && state_<=State::FinishHeadingRDE;
+}
+void ArenaTestController::Fail(const std::string& reason) {
+  Stop(); state_=State::Fault; status_=reason;
+}
+std::string ArenaTestController::ValidateGeometry() const {
+  for (const auto& p:{at::SP,at::ME,at::RDE}) {
+    if (!std::isfinite(p.headingDeg) || !map_.IsFree({p.x_MM,p.y_MM}))
+      return "Invalid waypoint: outside arena or mapped center-path clearance";
+  }
+  if (!map_.SegmentFree({at::SP.x_MM,at::SP.y_MM},{at::ME.x_MM,at::ME.y_MM}) ||
+      !map_.SegmentFree({at::ME.x_MM,at::ME.y_MM},{at::RDE.x_MM,at::RDE.y_MM}))
+    return "SP -> ME -> RDE crosses a mapped wall";
+  if (!(at::SPEED_MMPS>0 && at::ACCEL_MMPS2>0 && at::MAX_OUTPUT>0 && at::MAX_OUTPUT<=1 &&
+        at::MAX_YAW_RADPS>0 && at::YAW_ACCEL_RADPS2>0 && at::POSITION_KP>0 && at::HEADING_KP>0 &&
+        at::POSITION_TOLERANCE_MM>0 && at::HEADING_TOLERANCE_RAD>0 && at::SETTLE_S>=0 &&
+        at::REFERENCE_TIMEOUT_S>at::SETTLE_S && at::REFERENCE_SAMPLES>0 &&
+        at::LEG_TIMEOUT_S>0 && at::ROUTINE_TIMEOUT_S>0))
+    return "Invalid test speed, tolerance or timing configuration";
+  return {};
+}
+void ArenaTestController::Enter(double now) {
+  Stop(); target_=at::SP; stateTime_=now; missionTime_=now; settleTime_=-1;
+  referencesSkipped_=false; lastReferenceReport_.clear();
+  referenceReport_="No reference requested";
+  for (int i=0;i<4;++i) { referenceSamples_[i]=0; previousCorrection_[i]=-1; }
+  state_=at::ENABLED?State::WaitingStart:State::Disabled;
+  status_=at::ENABLED?"Ready at SP - press Start routine":"Arena test disabled in configuration";
+  const auto error=ValidateGeometry();
+  if (at::ENABLED && !error.empty()) Fail(error);
+}
+void ArenaTestController::Abort() {
+  Stop();
+  if (IsRunning() || state_==State::WaitingStart) {
+    state_=State::Aborted;
+    status_="Stopped - select Autonomous again and place robot at SP before restart";
+  }
+}
+void ArenaTestController::Transition(State state,double now,const char* status) {
+  Stop(); state_=state; stateTime_=now; settleTime_=-1; status_=status;
+  for (int i=0;i<4;++i) { referenceSamples_[i]=0; previousCorrection_[i]=-1; }
+}
+bool ArenaTestController::Settled(bool reached,double now) {
+  if (!reached) { settleTime_=-1; return false; }
+  if (settleTime_<0) settleTime_=now;
+  return now-settleTime_>=at::SETTLE_S;
+}
+unsigned ArenaTestController::ReferenceMask() const {
+  return state_==State::ReferenceME?at::ME_REFERENCE_MASK:
+      (state_==State::ReferenceRDE?at::RDE_REFERENCE_MASK:0u);
+}
+int ArenaTestController::ReferenceSurface(int sensor) const {
+  if (sensor<0 || sensor>=4 || !(ReferenceMask()&(1u<<sensor))) return -1;
+  const RobotPose p={target_.x_MM,target_.y_MM,robot_geometry::Radians(target_.headingDeg)};
+  const auto hit=map_.SonarHit(sensor,p);
+  return hit.trustedWall?hit.surface:-1;
+}
+void ArenaTestController::Reference(const ArenaTestInput& in) {
+  const unsigned mask=ReferenceMask();
+  if (in.stationary && in.now-stateTime_>=at::SETTLE_S) {
+    for (int i=0;i<4;++i) if ((mask&(1u<<i)) &&
+        std::isfinite(in.correctionTime[i]) && in.correctionTime[i]>stateTime_+at::SETTLE_S &&
+        in.correctionTime[i]>previousCorrection_[i] && in.correctionTime[i]<=in.now &&
+        in.now-in.correctionTime[i]<=autonomous_config::SONAR_STALE_S) {
+      previousCorrection_[i]=in.correctionTime[i];
+      if (referenceSamples_[i]<at::REFERENCE_SAMPLES) ++referenceSamples_[i];
+    }
+  }
+  bool done=true;
+  referenceReport_=state_==State::ReferenceME?"ME: ":"RDE: ";
+  for (int i=0;i<4;++i) if (mask&(1u<<i)) {
+    done=done && referenceSamples_[i]>=at::REFERENCE_SAMPLES;
+    referenceReport_+=std::string(localization_config::SONARS[i].name)+" "+
+        std::to_string(referenceSamples_[i])+"/"+std::to_string(at::REFERENCE_SAMPLES)+" accepted; ";
+  }
+  if (!done && in.now-stateTime_<at::REFERENCE_TIMEOUT_S) return;
+  if (!done) {
+    referencesSkipped_=true;
+    referenceReport_+="Incomplete/invalid references skipped; retain odometry on those axes";
+  }
+  if (!lastReferenceReport_.empty()) lastReferenceReport_+=" | ";
+  lastReferenceReport_+=referenceReport_;
+  if (state_==State::ReferenceME) {
+    target_=at::RDE;
+    Transition(State::TravelRDE,in.now,"ME observed - XY to RDE; rotation disabled during travel");
+  } else {
+    Transition(State::FinishRDE,in.now,"RDE observed - finish XY using the corrected pose");
+  }
+}
+void ArenaTestController::Update(const ArenaTestInput& in) {
+  const double oldForward=forward_,oldLeft=left_,oldYaw=yaw_;
+  Stop();
+  if (in.stopRequested) { Abort(); return; }
+  if (!IsRunning() && state_!=State::WaitingStart) return;
+  if (!robot_geometry::Finite(in.pose) || !std::isfinite(in.now) || !std::isfinite(in.dt) ||
+      in.dt<=0 || in.dt>autonomous_config::MAX_CONTROL_GAP_S) {
+    Fail("Invalid pose or stale control timing - stopped"); return;
+  }
+  if (!in.healthy) {
+    if (IsRunning()) Fail("IMU/odometry unhealthy - stopped");
+    else status_="Wait for IMU calibration/healthy odometry, then press Start routine";
+    return;
+  }
+  if (state_==State::WaitingStart) {
+    status_="Ready at SP - press Start routine";
+    if (in.startRequested) {
+      missionTime_=in.now; target_=at::ME;
+      Transition(State::TravelME,in.now,"XY: SP -> ME; rotation disabled during travel");
+    }
+    return;
+  }
+  if (in.now-missionTime_>at::ROUTINE_TIMEOUT_S) { Fail("Routine timeout - stopped"); return; }
+  if (in.now-stateTime_>at::LEG_TIMEOUT_S) { Fail("Motion leg timeout - stopped"); return; }
+  if (!map_.IsFree({in.pose.x_MM,in.pose.y_MM})) { Fail("Pose outside mapped center-path clearance"); return; }
+  if (state_==State::ReferenceME || state_==State::ReferenceRDE) { Reference(in); return; }
+  if (state_==State::TravelME || state_==State::TravelRDE || state_==State::FinishRDE) {
+    const ArenaPoint current={in.pose.x_MM,in.pose.y_MM};
+    if (!map_.SegmentFree(current,{target_.x_MM,target_.y_MM})) { Fail("XY route crosses a mapped wall"); return; }
+    const double dx=target_.x_MM-in.pose.x_MM,dy=target_.y_MM-in.pose.y_MM;
+    const double distance=std::hypot(dx,dy);
+    const bool reached=distance<=at::POSITION_TOLERANCE_MM;
+    if (Settled(reached && in.stationary,in.now)) {
+      const State next=state_==State::TravelME?State::TurnME:
+          (state_==State::FinishRDE?State::FinishHeadingRDE:State::TurnRDE);
+      Transition(next,in.now,
+          state_==State::TravelME?"ME XY complete - turn to ME heading":"RDE XY complete - turn to RDE heading");
+      return;
+    }
+    if (reached) return;
+    const double speed=std::min(at::SPEED_MMPS,std::min(distance*at::POSITION_KP,
+        std::sqrt(2*at::ACCEL_MMPS2*std::max(0.0,distance-at::POSITION_TOLERANCE_MM))));
+    const double c=std::cos(in.pose.headingRad),s=std::sin(in.pose.headingRad);
+    forward_=(c*dx+s*dy)*speed/distance;
+    left_=(-s*dx+c*dy)*speed/distance;
+    const double df=forward_-oldForward,dl=left_-oldLeft;
+    const double delta=std::hypot(df,dl),step=at::ACCEL_MMPS2*in.dt;
+    if (delta>step) { forward_=oldForward+df*step/delta; left_=oldLeft+dl*step/delta; }
+    // Deliberately no heading hold or rotation request during XY travel.
+    return;
+  }
+  const double error=robot_geometry::Wrap(robot_geometry::Radians(target_.headingDeg)-in.pose.headingRad);
+  const bool reached=std::fabs(error)<=at::HEADING_TOLERANCE_RAD;
+  if (Settled(reached && in.stationary,in.now)) {
+    if (state_==State::FinishHeadingRDE) {
+      Transition(State::Complete,in.now,referencesSkipped_?
+          "SP -> ME -> RDE complete; some sensor corrections were unavailable":
+          "SP -> ME -> RDE complete; ME and RDE references accepted");
+      return;
+    }
+    Transition(state_==State::TurnME?State::ReferenceME:State::ReferenceRDE,in.now,
+        state_==State::TurnME?"ME: stationary left-sensor reference":"RDE: stationary left/rear reference");
+    return;
+  }
+  if (reached) return;
+  const double request=std::max(-at::MAX_YAW_RADPS,std::min(at::MAX_YAW_RADPS,error*at::HEADING_KP));
+  const double step=at::YAW_ACCEL_RADPS2*in.dt;
+  yaw_=oldYaw+std::max(-step,std::min(step,request-oldYaw));
+  // Deliberately no XY command while turning.
+}
+
+// Future pickup/delivery mission (disabled in RobotConfig.h).
 using namespace autonomous_config;
 using robot_geometry::Radians;
 using robot_geometry::Wrap;
@@ -158,10 +332,9 @@ void AutonomousController::Enter(double now,const std::string& error) {
   status_=blocked.empty()?"Release Start, then press to begin":blocked;
 }
 std::string AutonomousController::ValidateMissionGeometry() const {
-  if (!std::isfinite(ROBOT_ENVELOPE_RADIUS_MM) || ROBOT_ENVELOPE_RADIUS_MM<=0 ||
-      !std::isfinite(CLEARANCE_MM) || CLEARANCE_MM<0 || !std::isfinite(STATION_SIDE_MM) || STATION_SIDE_MM<=0 ||
+  if (!std::isfinite(CLEARANCE_MM) || CLEARANCE_MM<0 || !std::isfinite(STATION_SIDE_MM) || STATION_SIDE_MM<=0 ||
       !(STAGING_DISTANCE_MM>DOCK_DISTANCE_MM) || !(DOCK_DISTANCE_MM>0) ||
-      UPPER_DIVIDER_START_Y_MM-LOWER_DIVIDER_END_Y_MM<=2*(ROBOT_ENVELOPE_RADIUS_MM+CLEARANCE_MM))
+      UPPER_DIVIDER_START_Y_MM-LOWER_DIVIDER_END_Y_MM<=2*CLEARANCE_MM)
     return "Blocked: invalid dimensions or robot cannot fit through divider opening";
   ArenaPoint previous={localization_config::START_X_MM,localization_config::START_Y_MM};
   std::vector<ArenaPoint> route;
@@ -311,7 +484,7 @@ void AutonomousController::Update(const AutonomousInput& in) {
     } else Fault("Unhealthy odometry or IMU");
     return;
   }
-  if (!map_.IsFree(Point(in.pose))) { Fault("Estimated robot envelope intersects map"); return; }
+  if (!map_.IsFree(Point(in.pose))) { Fault("Estimated center leaves mapped path clearance"); return; }
   if (state_==State::WaitingStart) {
     status_="Release Start, then press to begin";
     if (!in.startPressed) { startReleased_=true; pressTime_=-1; }

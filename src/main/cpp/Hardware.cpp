@@ -29,6 +29,13 @@ bool Hardware::TeleopMotorMotionAllowed() {
       !frc::RobotState::IsTest();
 }
 
+bool Hardware::DriveMotorMotionAllowed() const {
+  if (TeleopMotorMotionAllowed()) return true;
+  return autonomousDriveEnabled_ && arena_test_config::ENABLED &&
+      frc::DriverStation::GetInstance().IsDSAttached() && frc::RobotState::IsEnabled() &&
+      frc::RobotState::IsAutonomous() && !frc::RobotState::IsTest();
+}
+
 Hardware::Hardware() {
   StopServos();
   // Manual, staggered pings keep the four sonars from interfering. Ping()
@@ -64,9 +71,10 @@ double Hardware::GetWheelEncoderRaw(int wheel) {
 void Hardware::SetWheelPwm(int wheel, double output) {
   if (wheel < 0 || wheel >= localization_config::WHEEL_COUNT) return;
   if (!std::isfinite(output)) output = 0.0;
-  if (!TeleopMotorMotionAllowed()) output=0;
+  if (!DriveMotorMotionAllowed()) output=0;
   // All wheel writes pass here after smoothing. Apply the trim exactly once,
-  // including acceleration, reverse and rotation; publish the actual output.
+  // including acceleration, reverse and rotation in either drive mode.
+  // Keep the installed left-rear trim and publish the actual output.
   const double scale=wheel==0?localization_config::TELEOP_LEFT_REAR_OUTPUT_SCALE:1.0;
   const double limited = std::max(-1.0, std::min(1.0, output)) *
                          scale * localization_config::WHEEL_MOTOR_SIGN[wheel];
@@ -113,7 +121,7 @@ void Hardware::SetLiftPwm(double output) {
 
 void Hardware::DriveRobotRelative(double forward,double left,double yawRadps,
                                            double maxOutput,double dt) {
-  if (!TeleopMotorMotionAllowed()) { StopDrive(); return; }
+  if (!DriveMotorMotionAllowed()) { StopDrive(); return; }
   // Neutral is an immediate stop and the deliberate reset for a latched fault.
   if (std::isfinite(forward) && std::isfinite(left) && std::isfinite(yawRadps) &&
       std::fabs(forward)<0.01 && std::fabs(left)<0.01 && std::fabs(yawRadps)<0.0001) {
@@ -171,30 +179,30 @@ bool Hardware::IsImuCalibrating() { return imu_.IsCalibrating(); }
 
 void Hardware::PingSonar(int index) {
   switch (index) {
-    case 0: backLeftSonar_.Ping(); break;
-    case 1: backRightSonar_.Ping(); break;
-    case 2: leftSonar_.Ping(); break;
-    case 3: rightSonar_.Ping(); break;
+    case 0: leftSonar_.Ping(); break;
+    case 1: rearSonar_.Ping(); break;
+    case 2: rightSonar_.Ping(); break;
+    case 3: frontSonar_.Ping(); break;
     default: break;
   }
 }
 
 double Hardware::GetSonarRangeMM(int index) const {
   switch (index) {
-    case 0: return backLeftSonar_.GetRangeMM();
-    case 1: return backRightSonar_.GetRangeMM();
-    case 2: return leftSonar_.GetRangeMM();
-    case 3: return rightSonar_.GetRangeMM();
+    case 0: return leftSonar_.GetRangeMM();
+    case 1: return rearSonar_.GetRangeMM();
+    case 2: return rightSonar_.GetRangeMM();
+    case 3: return frontSonar_.GetRangeMM();
     default: return -1.0;
   }
 }
 
 bool Hardware::IsSonarRangeValid(int index) const {
   switch (index) {
-    case 0: return backLeftSonar_.IsRangeValid();
-    case 1: return backRightSonar_.IsRangeValid();
-    case 2: return leftSonar_.IsRangeValid();
-    case 3: return rightSonar_.IsRangeValid();
+    case 0: return leftSonar_.IsRangeValid();
+    case 1: return rearSonar_.IsRangeValid();
+    case 2: return rightSonar_.IsRangeValid();
+    case 3: return frontSonar_.IsRangeValid();
     default: return false;
   }
 }

@@ -210,12 +210,7 @@ double Localization::PredictSonarRange(int sensorIndex,
 }
 
 ArenaRayHit Localization::PredictSonarHit(int sensorIndex,const RobotPose& pose,double angleOffset) const {
-  if (sensorIndex<0 || sensorIndex>=4 || !robot_geometry::Finite(pose)) return {};
-  const auto& sensor=localization_config::SONARS[sensorIndex];
-  const double c=std::cos(pose.headingRad),s=std::sin(pose.headingRad);
-  return arena_.Raycast({pose.x_MM+c*sensor.mountX_MM-s*sensor.mountY_MM,
-      pose.y_MM+s*sensor.mountX_MM+c*sensor.mountY_MM},
-      pose.headingRad+robot_geometry::Radians(sensor.beamAngleDeg)+angleOffset);
+  return arena_.SonarHit(sensorIndex,pose,angleOffset);
 }
 
 void Localization::ApplyScalarCorrection(const double jacobian[3],
@@ -258,7 +253,7 @@ void Localization::ApplyScalarCorrection(const double jacobian[3],
   }
 }
 
-bool Localization::CorrectFromSonar(int sensorIndex, double measuredRange_MM) {
+bool Localization::CorrectFromSonar(int sensorIndex, double measuredRange_MM, int expectedSurface) {
   if (sensorIndex < 0 || sensorIndex >= 4 ||
       !std::isfinite(measuredRange_MM) ||
       measuredRange_MM < localization_config::SONAR_MIN_RANGE_MM ||
@@ -272,6 +267,9 @@ bool Localization::CorrectFromSonar(int sensorIndex, double measuredRange_MM) {
     return false;
   }
   const auto centerHit=PredictSonarHit(sensorIndex,pose_);
+  // A known reference must hit the associated physical wall, never a different
+  // divider/outer wall selected after pose drift or an unexpected heading.
+  if (expectedSurface>=0 && (!centerHit.trustedWall || centerHit.surface!=expectedSurface)) return false;
   // Reject corners, occluders and broad-cone ambiguity. The sensor returns the
   // nearest echo within a cone, not necessarily the center-ray intersection.
   for (const double offset : {-autonomous_config::SONAR_CONE_HALF_ANGLE_RAD,
@@ -355,9 +353,9 @@ bool Localization::CorrectFromLine(const autonomous_config::Station& station,dou
 double Localization::GetPositionSigmaMM() const {
   return std::sqrt(std::max(covariance_[0][0],covariance_[1][1]));
 }
-bool Localization::IsHealthy() const {
+bool Localization::IsHealthy(double maxPositionSigmaMM) const {
   return robot_geometry::Finite(pose_) && std::isfinite(GetPositionSigmaMM()) &&
-      GetPositionSigmaMM()<=autonomous_config::MAX_POSITION_SIGMA_MM &&
+      GetPositionSigmaMM()<=maxPositionSigmaMM &&
       std::isfinite(covariance_[2][2]) && covariance_[2][2]>=0 &&
       std::sqrt(covariance_[2][2])<=autonomous_config::MAX_HEADING_SIGMA_RAD &&
       std::isfinite(lastBodyVelocityX_MMps_) && std::isfinite(lastBodyVelocityY_MMps_);

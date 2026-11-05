@@ -6,12 +6,13 @@
 #include <thread>
 
 #include <cscore_cv.h>
+#include <opencv2/core/mat.hpp>
 #include <networktables/NetworkTableEntry.h>
 #include "RobotConfig.h"
 
 
-// The worker sleeps and the USB camera is closed between photo requests.
-// CameraServer publishes only the requested still photo, with no live feed.
+// The USB camera is closed between photo requests. The worker repeats only
+// the cached still for dashboard viewers, with no live camera feed.
 class CameraCapture {
  public:
   CameraCapture() = default;
@@ -23,10 +24,11 @@ class CameraCapture {
   void Run();
   void TakePhoto();
   void CloseCamera();
-  void Capture(cv::Mat& image);
+  bool Capture(cv::Mat& image);
   cs::UsbCamera camera_;
   cs::CvSink sink_;
   cs::CvSource lastPhoto_;
+  cv::Mat preview_; // accessed only by the worker after Start()
   nt::NetworkTableEntry captureButton_;
   std::thread worker_;
   std::mutex mutex_;

@@ -11,7 +11,7 @@ namespace localization_config {
 static constexpr bool ENABLE_DETAILED_TELEMETRY = false;
 
 // Left-stick translation (including diagonals) and right-stick rotation in Teleoperated
-// mode. Autonomous motion is currently explicitly disabled.
+// mode. The SP -> ME -> RDE autonomous test has its own enable/start gate below.
 static constexpr bool TELEOP_DRIVE_ENABLED = true;
 static constexpr int DRIVER_JOYSTICK_PORT = 0;
 // Common gamepad mapping; confirm with the Teleop tab/Windows game controller
@@ -89,15 +89,16 @@ static constexpr double TELEOP_SPEED_MMPS =
 // Arena coordinates span X=[0,width], Y=[0,height].
 static constexpr double ARENA_WIDTH_MM = 2000.0;
 static constexpr double ARENA_HEIGHT_MM = 2000.0;
-static constexpr double START_X_MM = 1000.0;       // PLACEHOLDER center of start square
-static constexpr double START_Y_MM = 900.0;        // PLACEHOLDER center of start square
-static constexpr double START_HEADING_DEG = 90.0;  // PLACEHOLDER facing upper arena
+static constexpr double START_X_MM = 950.0;
+static constexpr double START_Y_MM = 900.0;
+static constexpr double START_HEADING_DEG = 90.0; // editable SP heading
 
-// At heading zero, robot +X points toward arena +X and +Y points left.
-// Sensor positions are their sensing-face coordinates from robot center.
-static constexpr double REAR_SENSOR_X_MM = -100.0;  // PLACEHOLDER
-static constexpr double REAR_SENSOR_HALF_SPACING_MM = 80.0;  // PLACEHOLDER
-static constexpr double SIDE_SENSOR_Y_MM = 120.0;  // PLACEHOLDER
+// Body frame: +X forward, +Y left. User-provided center-to-sensor distances
+// are treated as sensing-face offsets on the four cardinal centerlines.
+static constexpr double FRONT_SENSOR_OFFSET_MM = 160.0;
+static constexpr double REAR_SENSOR_OFFSET_MM = 175.0;
+static constexpr double LEFT_SENSOR_OFFSET_MM = 150.0;
+static constexpr double RIGHT_SENSOR_OFFSET_MM = 150.0;
 
 struct SonarConfig {
   int triggerDio;
@@ -108,14 +109,14 @@ struct SonarConfig {
   const char* name;
 };
 
-// Studica ultrasonic trigger/echo DIO pairs are 0/1, 2/3, 4/5, and 6/7.
-static const SonarConfig SONARS[4] = {
-    {0, 1, REAR_SENSOR_X_MM,  REAR_SENSOR_HALF_SPACING_MM, 180.0,
-     "sonar_back_left"},
-    {2, 3, REAR_SENSOR_X_MM, -REAR_SENSOR_HALF_SPACING_MM, 180.0,
-     "sonar_back_right"},
-    {4, 5, 0.0,  SIDE_SENSOR_Y_MM,  90.0, "sonar_left"},
-    {6, 7, 0.0, -SIDE_SENSOR_Y_MM, -90.0, "sonar_right"}};
+// FlexDIO lower/even channel = trigger (A), upper/odd channel = echo (B).
+// Index order follows physical pairs: left, rear, right, front. All beams
+// point outward, with angles measured CCW from robot-forward.
+static constexpr SonarConfig SONARS[4] = {
+    {0, 1, 0.0, LEFT_SENSOR_OFFSET_MM, 90.0, "Left"},
+    {2, 3, -REAR_SENSOR_OFFSET_MM, 0.0, 180.0, "Rear"},
+    {4, 5, 0.0, -RIGHT_SENSOR_OFFSET_MM, -90.0, "Right"},
+    {6, 7, FRONT_SENSOR_OFFSET_MM, 0.0, 0.0, "Front"}};
 
 // No physical start button is installed. FlexDIO 8 is now a servo output.
 
@@ -201,7 +202,10 @@ static constexpr int HEIGHT = 480;
 static constexpr int FPS = 15;
 // Camera open/auto-exposure time is paid only after a photo request.
 static constexpr double WARMUP_S = 0.30;
-static constexpr double REQUEST_TIMEOUT_S = 2.0;
+static constexpr double REQUEST_TIMEOUT_S = 8.0;
+// Repeat the cached still at low rate for dashboard viewers/reconnections.
+// This does not acquire new USB frames or save additional files.
+static constexpr int PREVIEW_FPS = 1;
 static constexpr const char* CAPTURE_DIRECTORY = "/home/pi/SkillsChallenge/captures";
 }
 
@@ -224,8 +228,7 @@ static constexpr double DIVIDER_X_MIN_MM = 990.0;
 static constexpr double DIVIDER_X_MAX_MM = 1010.0; // PLACEHOLDER thickness interpretation
 static constexpr double LOWER_DIVIDER_END_Y_MM = 600.0;
 static constexpr double UPPER_DIVIDER_START_Y_MM = 1220.0; // 2000 - 780
-// Circular envelope MUST contain wheels, chassis, gripper AND carried object.
-static constexpr double ROBOT_ENVELOPE_RADIUS_MM = 225.0; // PLACEHOLDER
+// Center-path clearance only; no assumed circular robot footprint.
 static constexpr double CLEARANCE_MM = 40.0;
 static constexpr double STATION_SIDE_MM = 100.0; // PLACEHOLDER; not dimensioned in drawing
 static constexpr double STAGING_DISTANCE_MM = 480.0; // center to center; PLACEHOLDER
@@ -250,8 +253,9 @@ struct Job { int storage; int delivery; };
 static constexpr Job JOBS[4] = {{0,0},{1,1},{2,2},{3,3}}; // PLACEHOLDER assignment/order
 static constexpr int JOB_COUNT = 4;
 
-// Legacy Cobra + analog module API supplied by Studica 1.1.28. No I2C access
-// is attempted when absent. Confirm Cobra generation before enabling.
+// Installed Cobra analog module J1 uses VMX I2C through Studica 1.1.28.
+// Raw CH0..3 readings and the session calibration screen work immediately;
+// autonomous line tracking still requires measured calibration below.
 static constexpr bool COBRA_INSTALLED = true; // user connected analog module J1 to VMX I2C
 static constexpr bool COBRA_CALIBRATED = false;
 static constexpr double COBRA_REFERENCE_V = 5.0;
@@ -305,4 +309,38 @@ inline ArenaPoint Approach(const Station& s, double distance) {
   const double a = robot_geometry::Radians(s.headingDeg);
   return {s.center.x-distance*std::cos(a), s.center.y-distance*std::sin(a)};
 }
-}
+} // namespace autonomous_config
+
+// First autonomous test; independent of the future pickup/delivery mission.
+namespace arena_test_config {
+static constexpr bool ENABLED = true;
+struct Waypoint { double x_MM, y_MM, headingDeg; };
+static constexpr Waypoint SP = {950.0,900.0,90.0};
+static constexpr Waypoint ME = {1820.0,900.0,180.0};
+static constexpr Waypoint RDE = {1820.0,1820.0,180.0};
+// Travel SP -> ME at SP heading, then turn to ME heading. Travel ME -> RDE
+// at ME heading, then settle at RDE heading. All coordinates are millimeters.
+// Share the tested teleop limits instead of maintaining slower duplicate values.
+// The autonomous position controller still slows down when approaching a target.
+static constexpr double SPEED_MMPS = localization_config::TELEOP_SPEED_MMPS;
+static constexpr double ACCEL_MMPS2 = localization_config::TELEOP_ACCELERATION_MMPS2;
+static constexpr double MAX_OUTPUT = localization_config::TELEOP_MAX_MOTOR_OUTPUT;
+static constexpr double MAX_YAW_RADPS = localization_config::TELEOP_MAX_YAW_RATE_DPS *
+    robot_geometry::PI / 180.0;
+static constexpr double YAW_ACCEL_RADPS2 = localization_config::TELEOP_YAW_ACCELERATION_DPS2 *
+    robot_geometry::PI / 180.0;
+static constexpr double POSITION_KP = 1.0;
+static constexpr double HEADING_KP = 1.5;
+static constexpr double POSITION_TOLERANCE_MM = 12.0;
+static constexpr double HEADING_TOLERANCE_RAD = 0.035;
+static constexpr double SETTLE_S = 0.40;
+static constexpr double LEG_TIMEOUT_S = 40.0;
+static constexpr double REFERENCE_TIMEOUT_S = 3.0;
+static constexpr double ROUTINE_TIMEOUT_S = 120.0;
+static constexpr double STATIONARY_SPEED_MMPS = 8.0;
+static constexpr double STATIONARY_YAW_DPS = 2.0;
+static constexpr double MAX_POSITION_SIGMA_MM = 250.0;
+static constexpr int REFERENCE_SAMPLES = 3;
+static constexpr unsigned ME_REFERENCE_MASK = 1u<<0; // left
+static constexpr unsigned RDE_REFERENCE_MASK = (1u<<0)|(1u<<1); // left + rear
+} // namespace arena_test_config
