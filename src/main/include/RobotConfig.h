@@ -91,7 +91,7 @@ static constexpr double ARENA_WIDTH_MM = 2000.0;
 static constexpr double ARENA_HEIGHT_MM = 2000.0;
 static constexpr double START_X_MM = 950.0;
 static constexpr double START_Y_MM = 900.0;
-static constexpr double START_HEADING_DEG = 90.0; // editable SP heading
+static constexpr double START_HEADING_DEG = 180.0; // editable SP heading
 
 // Body frame: +X forward, +Y left. User-provided center-to-sensor distances
 // are treated as sensing-face offsets on the four cardinal centerlines.
@@ -315,9 +315,10 @@ inline ArenaPoint Approach(const Station& s, double distance) {
 namespace arena_test_config {
 static constexpr bool ENABLED = true;
 struct Waypoint { double x_MM, y_MM, headingDeg; };
-static constexpr Waypoint SP = {950.0,900.0,90.0};
+static constexpr Waypoint SP = {950.0,900.0,180.0};
 static constexpr Waypoint ME = {1820.0,900.0,180.0};
-static constexpr Waypoint RDE = {1820.0,1820.0,180.0};
+static constexpr Waypoint RDE = {1820.0,1820.0,-90.0};
+// Headings use [-180, 180] degrees: 180 faces west, -90 faces south.
 // Travel SP -> ME at SP heading, then turn to ME heading. Travel ME -> RDE
 // at ME heading, then settle at RDE heading. All coordinates are millimeters.
 // Share the tested teleop limits instead of maintaining slower duplicate values.

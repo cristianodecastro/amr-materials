@@ -34,8 +34,11 @@ void GeometryAndWallAssociation() {
   REQUIRE_ARENA(left.trustedWall && left.surface==2); // south wall
   REQUIRE_ARENA(Near(left.range+localization_config::LEFT_SENSOR_OFFSET_MM,me.y_MM));
   const RobotPose rde={at::RDE.x_MM,at::RDE.y_MM,robot_geometry::Radians(at::RDE.headingDeg)};
-  REQUIRE_ARENA(map.SonarHit(0,rde).surface==2);
-  REQUIRE_ARENA(map.SonarHit(1,rde).surface==1); // east wall
+  REQUIRE_ARENA(map.SonarHit(0,rde).surface==1); // left sensor -> east wall
+  REQUIRE_ARENA(map.SonarHit(1,rde).surface==3); // rear sensor -> north wall
+  // Cross the signed-angle boundary with a +90-degree CCW turn, not -270.
+  REQUIRE_ARENA(Near(robot_geometry::Wrap(robot_geometry::Radians(at::RDE.headingDeg-at::ME.headingDeg)),
+      robot_geometry::PI/2));
   // A changed heading must see the real divider instead of the far west wall.
   const auto divider=map.SonarHit(1,{at::RDE.x_MM,at::RDE.y_MM,0});
   REQUIRE_ARENA(divider.trustedWall && divider.surface==5);
@@ -82,6 +85,7 @@ void Simulate(bool supplyReferences,bool repeatOldTimestamp=false) {
   auto in=Input(); c.Enter(0);
   in.startRequested=true; c.Update(in); in.startRequested=false;
   bool sawTurnME=false,sawTurnRDE=false,sawReferenceME=false,sawReferenceRDE=false;
+  bool sawPositiveRDEYaw=false;
   bool disturbedFinalPose=false;
   for (int tick=1;tick<6000 && c.GetState()!=State::Complete;++tick) {
     const double forward=c.GetForwardMMps(),left=c.GetLeftMMps(),yaw=c.GetYawRadps();
@@ -112,6 +116,7 @@ void Simulate(bool supplyReferences,bool repeatOldTimestamp=false) {
         if (!repeatOldTimestamp || in.correctionTime[sensor]<0) in.correctionTime[sensor]=in.now;
       }
     c.Update(in);
+    if (c.GetState()==State::TurnRDE && c.GetYawRadps()>0) sawPositiveRDEYaw=true;
     REQUIRE_ARENA(c.GetState()!=State::Fault);
     REQUIRE_ARENA(!(std::hypot(c.GetForwardMMps(),c.GetLeftMMps())>1e-9 && std::fabs(c.GetYawRadps())>1e-9));
     REQUIRE_ARENA(std::hypot(c.GetForwardMMps(),c.GetLeftMMps())<=at::SPEED_MMPS+1e-6);
@@ -123,6 +128,7 @@ void Simulate(bool supplyReferences,bool repeatOldTimestamp=false) {
   }
   REQUIRE_ARENA(c.GetState()==State::Complete && Stopped(c));
   REQUIRE_ARENA(sawTurnME && sawTurnRDE && sawReferenceME && sawReferenceRDE);
+  REQUIRE_ARENA(sawPositiveRDEYaw);
   REQUIRE_ARENA(std::hypot(in.pose.x_MM-at::RDE.x_MM,in.pose.y_MM-at::RDE.y_MM)<=at::POSITION_TOLERANCE_MM+1e-5);
   REQUIRE_ARENA(std::fabs(robot_geometry::Wrap(in.pose.headingRad-robot_geometry::Radians(at::RDE.headingDeg)))<=at::HEADING_TOLERANCE_RAD+1e-5);
   const bool skipped=c.GetStatus().find("unavailable")!=std::string::npos;
