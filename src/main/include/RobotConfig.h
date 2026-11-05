@@ -345,6 +345,10 @@ static constexpr double HEADING_KP = 1.5;
 // outside the completion tolerances, and never bypass startup slew limits.
 static constexpr double MIN_APPROACH_MMPS = 120.0;
 static constexpr double MIN_TURN_YAW_RADPS = 30.0*robot_geometry::PI/180.0;
+// Gyro-based turn stopping prediction: use the angular acceleration limit as
+// the braking deceleration, plus a short allowance for sampling/motor response.
+// A minimum moving request must never override the need to stop near the goal.
+static constexpr double TURN_BRAKE_RESPONSE_S = 0.10;
 static constexpr double POSITION_TOLERANCE_MM = autonomous_config::POSITION_TOLERANCE_MM;
 static constexpr double HEADING_TOLERANCE_RAD = autonomous_config::HEADING_TOLERANCE_RAD;
 static constexpr double HOLD_HEADING_DEADBAND_RAD = HEADING_TOLERANCE_RAD;

@@ -170,6 +170,7 @@ std::string ArenaTestController::ValidateGeometry() const {
         at::HOLD_HEADING_MAX_YAW_RADPS>0 &&
         at::MIN_APPROACH_MMPS>0 && at::MIN_APPROACH_MMPS<=at::SPEED_MMPS &&
         at::MIN_TURN_YAW_RADPS>0 && at::MIN_TURN_YAW_RADPS<=at::MAX_YAW_RADPS &&
+        at::TURN_BRAKE_RESPONSE_S>=0 &&
         at::REFERENCE_TIMEOUT_S>at::SETTLE_S && at::REFERENCE_SAMPLES>0 &&
         at::LEG_TIMEOUT_S>0 && at::ROUTINE_TIMEOUT_S>0))
     return "Invalid test speed, tolerance or timing configuration";
@@ -178,7 +179,7 @@ std::string ArenaTestController::ValidateGeometry() const {
 void ArenaTestController::Enter(double now) {
   Stop(); target_=at::SP; stateTime_=now; missionTime_=now; settleTime_=-1;
   travelHeadingRad_=robot_geometry::Radians(at::SP.headingDeg);
-  referencesSkipped_=false; lastReferenceReport_.clear();
+  referencesSkipped_=false; turnBraking_=false; lastReferenceReport_.clear();
   referenceReport_="No reference requested";
   for (int i=0;i<4;++i) { referenceSamples_[i]=0; previousCorrection_[i]=-1; }
   state_=at::ENABLED?State::WaitingStart:State::Disabled;
@@ -194,7 +195,7 @@ void ArenaTestController::Abort() {
   }
 }
 void ArenaTestController::Transition(State state,double now,const char* status) {
-  Stop(); state_=state; stateTime_=now; settleTime_=-1; status_=status;
+  Stop(); state_=state; stateTime_=now; settleTime_=-1; status_=status; turnBraking_=false;
   if (state==State::TravelMW) travelHeadingRad_=robot_geometry::Radians(at::SP.headingDeg);
   if (state==State::FinishMW) travelHeadingRad_=robot_geometry::Radians(at::MW.headingDeg);
   if (state==State::TravelRDW) travelHeadingRad_=robot_geometry::Radians(at::MW.headingDeg);
@@ -215,13 +216,38 @@ double ArenaTestController::GetHeadingTargetDeg() const {
     return travelHeadingRad_*180.0/robot_geometry::PI;
   return target_.headingDeg;
 }
-double ArenaTestController::HeadingRequest(double error,double oldYaw,double dt,bool hold) const {
+double ArenaTestController::HeadingRequest(double error,double oldYaw,double measuredYaw,double dt,bool hold) {
   const double deadband=hold?at::HOLD_HEADING_DEADBAND_RAD:at::HEADING_TOLERANCE_RAD;
+  if (!hold) {
+    const double stoppedRate=robot_geometry::Radians(at::STATIONARY_YAW_DPS);
+    // Once braking, wait for the gyro to confirm the turn has stopped before
+    // requesting another correction. Never carry a clockwise slew request
+    // through a counterclockwise position error (or vice versa).
+    if (turnBraking_) {
+      if (std::fabs(measuredYaw)>stoppedRate) return 0;
+      turnBraking_=false;
+    }
+    const double toward=error<0?-measuredYaw:measuredYaw;
+    const double remaining=std::max(0.0,std::fabs(error)-deadband);
+    const double stoppingAngle=toward*toward/(2*at::YAW_ACCEL_RADPS2)+
+        std::max(0.0,toward)*(at::TURN_BRAKE_RESPONSE_S+dt);
+    if (std::fabs(error)<=deadband || oldYaw*error<0 ||
+        (toward>stoppedRate && stoppingAngle>=remaining) ||
+        toward< -stoppedRate) {
+      turnBraking_=true;
+      return 0;
+    }
+  }
   if (std::fabs(error)<=deadband) return 0;
   const double limit=hold?std::min(at::MAX_YAW_RADPS,at::HOLD_HEADING_MAX_YAW_RADPS):at::MAX_YAW_RADPS;
   double request=std::max(-limit,std::min(limit,error*at::HEADING_KP));
-  if (!hold && std::fabs(request)<at::MIN_TURN_YAW_RADPS)
-    request=error<0?-at::MIN_TURN_YAW_RADPS:at::MIN_TURN_YAW_RADPS;
+  if (!hold) {
+    const double brakingLimit=std::sqrt(2*at::YAW_ACCEL_RADPS2*
+        std::max(0.0,std::fabs(error)-deadband));
+    const double magnitude=std::max(at::MIN_TURN_YAW_RADPS,
+        std::min(std::fabs(request),brakingLimit));
+    request=error<0?-magnitude:magnitude;
+  }
   const double step=at::YAW_ACCEL_RADPS2*dt;
   return oldYaw+std::max(-step,std::min(step,request-oldYaw));
 }
@@ -267,7 +293,8 @@ void ArenaTestController::Update(const ArenaTestInput& in) {
   Stop();
   if (in.stopRequested) { Abort(); return; }
   if (!IsRunning() && state_!=State::WaitingStart) return;
-  if (!robot_geometry::Finite(in.pose) || !std::isfinite(in.now) || !std::isfinite(in.dt) ||
+  if (!robot_geometry::Finite(in.pose) || !std::isfinite(in.yawRateRadps) ||
+      !std::isfinite(in.now) || !std::isfinite(in.dt) ||
       in.dt<=0 || in.dt>autonomous_config::MAX_CONTROL_GAP_S) {
     Fail("Invalid pose or stale control timing - stopped"); return;
   }
@@ -297,7 +324,7 @@ void ArenaTestController::Update(const ArenaTestInput& in) {
     // Correct small disturbances around the travel heading. The planned turn
     // to the waypoint's new heading still waits until XY motion has finished.
     const double holdError=robot_geometry::Wrap(travelHeadingRad_-in.pose.headingRad);
-    yaw_=reached?0:HeadingRequest(holdError,oldYaw,in.dt,true);
+    yaw_=reached?0:HeadingRequest(holdError,oldYaw,in.yawRateRadps,in.dt,true);
     // At the XY goal, stop and let the following turn state correct heading.
     // Do not stall here requesting tiny yaw outputs against static friction.
     if (Settled(reached && in.stationary,in.now)) {
@@ -355,7 +382,7 @@ void ArenaTestController::Update(const ArenaTestInput& in) {
     return;
   }
   if (reached) return;
-  yaw_=HeadingRequest(error,oldYaw,in.dt,false);
+  yaw_=HeadingRequest(error,oldYaw,in.yawRateRadps,in.dt,false);
   // Deliberately no XY command while turning.
 }
 

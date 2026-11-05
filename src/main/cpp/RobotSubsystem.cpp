@@ -187,7 +187,8 @@ void RobotSubsystem::UpdateArenaTest(double now,double dt) {
   ArenaTestInput in={localization_.GetPose(),now,dt,
       imuReady && frc::DriverStation::GetInstance().IsDSAttached() &&
           localization_.IsHealthy(arena_test_config::MAX_POSITION_SIGMA_MM),
-      stationary,startRoutineRequested_,stopRoutineRequested_,{}};
+      stationary,startRoutineRequested_,stopRoutineRequested_,{},
+      robot_geometry::Radians(hardware_.GetYawRateDegreesPerSecond())};
   for (int i=0;i<4;++i) in.correctionTime[i]=sonarCorrectionTime_[i];
   if (hardware_.HasDriveFault() && arenaTest_.IsRunning()) arenaTest_.Fail(hardware_.GetDriveStatus());
   arenaTest_.Update(in);

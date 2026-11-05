@@ -29,6 +29,7 @@ struct ArenaTestInput {
   double now, dt;
   bool healthy, stationary, startRequested, stopRequested;
   double correctionTime[4]; // timestamps of accepted, fresh sonar corrections
+  double yawRateRadps=0; // signed CCW gyro rate, independent of the arena yaw offset
 };
 class ArenaTestController {
  public:
@@ -55,7 +56,7 @@ class ArenaTestController {
   void Stop();
   void Transition(State state,double now,const char* status);
   bool Settled(bool reached,double now);
-  double HeadingRequest(double error,double oldYaw,double dt,bool hold) const;
+  double HeadingRequest(double error,double oldYaw,double measuredYaw,double dt,bool hold);
   void Reference(const ArenaTestInput& in);
   ArenaMap map_{false}; // this test uses the drawing's walls, not old station placeholders
   State state_=State::Disabled;
@@ -68,6 +69,7 @@ class ArenaTestController {
   double previousCorrection_[4]={-1,-1,-1,-1};
   int referenceSamples_[4]={0,0,0,0};
   bool referencesSkipped_=false;
+  bool turnBraking_=false;
 };
 
 // Disabled mission state machine.

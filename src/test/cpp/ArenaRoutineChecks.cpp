@@ -83,6 +83,10 @@ void TimingAndBounds() {
   auto in=Input(); c.Enter(0); in.startRequested=true; c.Update(in);
   in.startRequested=false; in.pose={1000,400,0}; in.now+=in.dt; c.Update(in);
   REQUIRE_ARENA(c.GetState()==State::Fault && Stopped(c));
+  c.Enter(0); in=Input(); in.startRequested=true; c.Update(in);
+  in.yawRateRadps=std::numeric_limits<double>::quiet_NaN();
+  c.Update(in);
+  REQUIRE_ARENA(c.GetState()==State::Fault && Stopped(c));
 }
 void HeadingHoldCorrectsDriftDuringXY() {
   ArenaTestController c;
@@ -140,7 +144,46 @@ void TurnDriftIsReacquiredBeforeReference() {
   for (int tick=0;tick<60 && c.GetState()!=State::ReferenceMW;++tick) { in.now+=in.dt; c.Update(in); }
   REQUIRE_ARENA(c.GetState()==State::ReferenceMW);
 }
-void Simulate(bool supplyReferences,bool repeatOldTimestamp=false,bool motorDeadZone=false,bool motorLag=false) {
+void TurnBrakesBeforeTargetAndStopsBeforeReversing() {
+  ArenaTestController c;
+  auto in=Input(); c.Enter(0); in.startRequested=true; c.Update(in); in.startRequested=false;
+  in.pose.x_MM=at::MW.x_MM; in.pose.y_MM=at::MW.y_MM;
+  for (int tick=0;tick<25 && c.GetState()==State::TravelMW;++tick) { in.now+=in.dt; c.Update(in); }
+  REQUIRE_ARENA(c.GetState()==State::TurnMW);
+  REQUIRE_ARENA(Near(c.GetHeadingTargetDeg(),-90));
+  // Build up a clockwise request, then approach -90 with real angular speed.
+  in.stationary=false;
+  for (int tick=0;tick<45;++tick) { in.now+=in.dt; c.Update(in); }
+  REQUIRE_ARENA(c.GetYawRadps()< -robot_geometry::Radians(30));
+  in.pose.headingRad=robot_geometry::Radians(-82);
+  in.yawRateRadps=robot_geometry::Radians(-30);
+  in.now+=in.dt; c.Update(in);
+  REQUIRE_ARENA(c.GetYawRadps()==0); // stop BEFORE crossing -90
+  in.pose.headingRad=robot_geometry::Radians(-87);
+  in.yawRateRadps=robot_geometry::Radians(-15);
+  in.now+=in.dt; c.Update(in);
+  REQUIRE_ARENA(c.GetYawRadps()==0); // stay off while coasting
+  in.pose.headingRad=robot_geometry::Radians(-92);
+  in.yawRateRadps=robot_geometry::Radians(-3);
+  in.now+=in.dt; c.Update(in);
+  REQUIRE_ARENA(c.GetYawRadps()==0); // do not reverse against ongoing motion
+  in.yawRateRadps=0;
+  in.now+=in.dt; c.Update(in);
+  REQUIRE_ARENA(c.GetYawRadps()>0); // correct overshoot CCW once stopped
+  // If the pose crosses the target between samples, an old clockwise request
+  // must disappear immediately instead of slewing clockwise beyond the goal.
+  in.pose.headingRad=robot_geometry::Radians(-88);
+  in.now+=in.dt; c.Update(in);
+  REQUIRE_ARENA(c.GetYawRadps()==0);
+  in.now+=in.dt; c.Update(in);
+  REQUIRE_ARENA(c.GetYawRadps()<0);
+  in.pose.headingRad=robot_geometry::Radians(-92);
+  in.now+=in.dt; c.Update(in);
+  REQUIRE_ARENA(c.GetYawRadps()==0);
+  REQUIRE_ARENA(Near(c.GetHeadingTargetDeg(),-90)); // absolute, never another -90 turn
+}
+void Simulate(bool supplyReferences,bool repeatOldTimestamp=false,bool motorDeadZone=false,bool motorLag=false,
+              double responseTime=0.08) {
   ArenaTestController c;
   auto in=Input(); c.Enter(0);
   in.startRequested=true; c.Update(in); in.startRequested=false;
@@ -168,7 +211,7 @@ void Simulate(bool supplyReferences,bool repeatOldTimestamp=false,bool motorDead
       if (std::fabs(yaw)<25*robot_geometry::PI/180) yaw=0;
     }
     if (motorLag) {
-      const double response=in.dt/(0.08+in.dt);
+      const double response=in.dt/(responseTime+in.dt);
       actualForward+=response*(forward-actualForward);
       actualLeft+=response*(left-actualLeft);
       actualYaw+=response*(yaw-actualYaw);
@@ -178,6 +221,7 @@ void Simulate(bool supplyReferences,bool repeatOldTimestamp=false,bool motorDead
     in.pose.x_MM+=(cosine*forward-sine*left)*in.dt;
     in.pose.y_MM+=(sine*forward+cosine*left)*in.dt;
     in.pose.headingRad=robot_geometry::Wrap(in.pose.headingRad+yaw*in.dt);
+    in.yawRateRadps=yaw;
     in.now=tick*in.dt;
     in.stationary=std::hypot(forward,left)<=at::STATIONARY_SPEED_MMPS &&
         std::fabs(yaw)*180/robot_geometry::PI<=at::STATIONARY_YAW_DPS;
@@ -190,6 +234,8 @@ void Simulate(bool supplyReferences,bool repeatOldTimestamp=false,bool motorDead
       sawTurnMW=true;
       REQUIRE_ARENA(std::hypot(in.pose.x_MM-at::MW.x_MM,in.pose.y_MM-at::MW.y_MM)<=at::POSITION_TOLERANCE_MM+1e-5);
     }
+    if (sawTurnMW)
+      REQUIRE_ARENA(in.pose.headingRad>=robot_geometry::Radians(at::MW.headingDeg-1));
     if (state==State::TurnRDW) sawTurnRDW=true;
     if (state==State::ReferenceMW) {
       sawReferenceMW=true; REQUIRE_ARENA(c.ReferenceMask()==at::MW_REFERENCE_MASK);
@@ -246,8 +292,10 @@ int main() {
   try {
     GeometryAndWallAssociation(); StartStopAndHealth(); TimingAndBounds(); HeadingHoldCorrectsDriftDuringXY();
     ApproachRequestsRemainUsable(); TurnDriftIsReacquiredBeforeReference();
+    TurnBrakesBeforeTargetAndStopsBeforeReversing();
     Simulate(true); Simulate(false); Simulate(true,true); Simulate(true,false,true); Simulate(true,false,true,true);
-    std::cout<<"PASS: west route, post-turn and post-reference pose checks, motor dead zones/lag, heading hold, sensor references, 15 mm/1 degree completion\n";
+    Simulate(true,false,true,true,0.25);
+    std::cout<<"PASS: absolute -90 degree targets, gyro-rate turn braking and reversal, west route, pose checks, motor dead zones/lag, heading hold, sensor references, 15 mm/1 degree completion\n";
   } catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }
 }
 #else
@@ -257,9 +305,11 @@ TEST(ArenaRoutine, TimingAndBounds) { EXPECT_NO_THROW(TimingAndBounds()); }
 TEST(ArenaRoutine, HeadingHoldCorrectsDriftDuringXY) { EXPECT_NO_THROW(HeadingHoldCorrectsDriftDuringXY()); }
 TEST(ArenaRoutine, ApproachRequestsRemainUsable) { EXPECT_NO_THROW(ApproachRequestsRemainUsable()); }
 TEST(ArenaRoutine, TurnDriftIsReacquiredBeforeReference) { EXPECT_NO_THROW(TurnDriftIsReacquiredBeforeReference()); }
+TEST(ArenaRoutine, TurnBrakesBeforeTargetAndStopsBeforeReversing) { EXPECT_NO_THROW(TurnBrakesBeforeTargetAndStopsBeforeReversing()); }
 TEST(ArenaRoutine, ValidReferenceSimulation) { EXPECT_NO_THROW(Simulate(true)); }
 TEST(ArenaRoutine, MissingReferenceSimulation) { EXPECT_NO_THROW(Simulate(false)); }
 TEST(ArenaRoutine, StaleReferenceSimulation) { EXPECT_NO_THROW(Simulate(true,true)); }
 TEST(ArenaRoutine, MotorDeadZoneSimulation) { EXPECT_NO_THROW(Simulate(true,false,true)); }
 TEST(ArenaRoutine, MotorLagAndPoseCorrectionSimulation) { EXPECT_NO_THROW(Simulate(true,false,true,true)); }
+TEST(ArenaRoutine, SlowerMotorResponseSimulation) { EXPECT_NO_THROW(Simulate(true,false,true,true,0.25)); }
 #endif
