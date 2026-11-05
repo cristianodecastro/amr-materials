@@ -25,10 +25,9 @@ static constexpr int DRIVER_RIGHT_X_AXIS = 2;
 static constexpr double DRIVER_LEFT_X_SIGN = 1.0;
 static constexpr double DRIVER_LEFT_Y_SIGN = -1.0;
 static constexpr double DRIVER_STICK_DEADBAND = 0.12;
-// Installed-controller polarity corrected after the physical rotation test:
-// negative raw right X means stick-right: clockwise (negative model yaw).
-// Check "Right stick X" while Disabled if the controller operating mode changes.
-static constexpr double DRIVER_RIGHT_X_SIGN = -1.0;
+// Paired with DRIVE_YAW_DIRECTION_SIGN below so the existing tested Teleop
+// motor outputs are preserved while yaw requests use the actual CCW frame.
+static constexpr double DRIVER_RIGHT_X_SIGN = 1.0;
 // Cap manual translation at half the estimated no-load wheel speed and ramp
 // the translation vector gently, including changes between directions.
 static constexpr double TELEOP_TRANSLATION_SPEED_SCALE = 0.50;
@@ -40,14 +39,18 @@ static constexpr double TELEOP_LEFT_REAR_OUTPUT_SCALE = 0.80;
 static constexpr double TELEOP_MAX_YAW_RATE_DPS = 90.0;
 // Start at zero and take two seconds to reach the 90 degree/s yaw limit.
 static constexpr double TELEOP_YAW_ACCELERATION_DPS2 = 45.0;
-// The tangent wheel model is counterclockwise-positive. Flip only if a
-// physical rotation check establishes opposite installed motor polarity.
+// Joystick-side yaw multiplier, separate from installed wheel yaw polarity.
 static constexpr double TELEOP_YAW_SIGN = 1.0;
 
 // Installed wheel-layout translation is reversed relative to robot +X forward,
 // +Y left. Apply this same rotation to commands AND inverse encoder odometry.
 // It is a wheel-frame calibration, never an offset added to the gyro heading.
 static constexpr double DRIVE_FORWARD_DIRECTION_DEG = 180.0;
+// The arena run showed negative wheel yaw producing increasing gyro heading.
+// Installed positive wheel rotation is therefore CW. Apply this polarity once
+// in BOTH the wheel command model and its encoder inverse; never invert the
+// already verified CCW gyro heading or change the -90 degree waypoint targets.
+static constexpr double DRIVE_YAW_DIRECTION_SIGN = -1.0;
 static constexpr double START_BUTTON_DEBOUNCE_S = 0.060;
 
 static constexpr int TITAN_CAN_ID = 42;
@@ -70,7 +73,8 @@ static constexpr double WHEEL_CENTER_RADIUS_MM[WHEEL_COUNT] = {
 
 // Same 120-degree spacing in the wheel-layout frame (see shared rotation above):
 // left rear 120 degrees, right rear 240 degrees, front 0 degrees.
-// Positive rolling direction is tangent in the counterclockwise direction.
+// These angles parameterize the translation layout. Installed motor rotation
+// uses DRIVE_YAW_DIRECTION_SIGN rather than assuming a CCW tangent polarity.
 static constexpr double WHEEL_ANGLE_DEG[WHEEL_COUNT] = {120.0, 240.0, 0.0};
 static constexpr double WHEEL_ENCODER_SIGN[WHEEL_COUNT] = {1.0, 1.0, 1.0};
 static constexpr double WHEEL_MOTOR_SIGN[WHEEL_COUNT] = {1.0, 1.0, 1.0};
@@ -349,6 +353,11 @@ static constexpr double MIN_TURN_YAW_RADPS = 30.0*robot_geometry::PI/180.0;
 // the braking deceleration, plus a short allowance for sampling/motor response.
 // A minimum moving request must never override the need to stop near the goal.
 static constexpr double TURN_BRAKE_RESPONSE_S = 0.10;
+// Stop a reversed feedback loop after accumulated opposing gyro rotation,
+// including short attempts separated by braking. No extra rotation is issued
+// for this check, and no automatic sign changes are made while running.
+static constexpr double YAW_DIRECTION_ERROR_RAD = 5.0*robot_geometry::PI/180.0;
+static constexpr double YAW_DIRECTION_CHECK_MIN_RADPS = 0.1*robot_geometry::PI/180.0;
 static constexpr double POSITION_TOLERANCE_MM = autonomous_config::POSITION_TOLERANCE_MM;
 static constexpr double HEADING_TOLERANCE_RAD = autonomous_config::HEADING_TOLERANCE_RAD;
 static constexpr double HOLD_HEADING_DEADBAND_RAD = HEADING_TOLERANCE_RAD;

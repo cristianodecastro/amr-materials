@@ -65,6 +65,9 @@ class ArenaTestController {
   std::string referenceReport_="No reference requested", lastReferenceReport_;
   double forward_=0,left_=0,yaw_=0;
   double travelHeadingRad_=0;
+  double stoppedHeadingTargetDeg_=arena_test_config::SP.headingDeg;
+  double opposedYawRad_=0;
+  int expectedYawDirection_=0;
   double stateTime_=0, missionTime_=0, settleTime_=-1;
   double previousCorrection_[4]={-1,-1,-1,-1};
   int referenceSamples_[4]={0,0,0,0};

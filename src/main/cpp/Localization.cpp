@@ -116,7 +116,8 @@ void Localization::UpdateOdometry(double dtSeconds) {
     const double alpha = robot_geometry::Radians(localization_config::WHEEL_ANGLE_DEG[wheel]);
     kinematics[wheel][0] = -std::sin(alpha);
     kinematics[wheel][1] =  std::cos(alpha);
-    kinematics[wheel][2] = localization_config::WHEEL_CENTER_RADIUS_MM[wheel];
+    kinematics[wheel][2] = localization_config::DRIVE_YAW_DIRECTION_SIGN *
+        localization_config::WHEEL_CENTER_RADIUS_MM[wheel];
     kinematics[wheel][3] = wheelSpeed[wheel];
   }
 

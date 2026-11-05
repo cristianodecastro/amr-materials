@@ -153,6 +153,7 @@ bool ArenaTestController::IsRunning() const {
   return state_>=State::TravelMW && state_<=State::FinishHeadingRDW;
 }
 void ArenaTestController::Fail(const std::string& reason) {
+  stoppedHeadingTargetDeg_=GetHeadingTargetDeg();
   Stop(); state_=State::Fault; status_=reason;
 }
 std::string ArenaTestController::ValidateGeometry() const {
@@ -171,6 +172,8 @@ std::string ArenaTestController::ValidateGeometry() const {
         at::MIN_APPROACH_MMPS>0 && at::MIN_APPROACH_MMPS<=at::SPEED_MMPS &&
         at::MIN_TURN_YAW_RADPS>0 && at::MIN_TURN_YAW_RADPS<=at::MAX_YAW_RADPS &&
         at::TURN_BRAKE_RESPONSE_S>=0 &&
+        std::fabs(localization_config::DRIVE_YAW_DIRECTION_SIGN)==1 &&
+        at::YAW_DIRECTION_ERROR_RAD>0 && at::YAW_DIRECTION_CHECK_MIN_RADPS>0 &&
         at::REFERENCE_TIMEOUT_S>at::SETTLE_S && at::REFERENCE_SAMPLES>0 &&
         at::LEG_TIMEOUT_S>0 && at::ROUTINE_TIMEOUT_S>0))
     return "Invalid test speed, tolerance or timing configuration";
@@ -179,6 +182,8 @@ std::string ArenaTestController::ValidateGeometry() const {
 void ArenaTestController::Enter(double now) {
   Stop(); target_=at::SP; stateTime_=now; missionTime_=now; settleTime_=-1;
   travelHeadingRad_=robot_geometry::Radians(at::SP.headingDeg);
+  stoppedHeadingTargetDeg_=at::SP.headingDeg;
+  opposedYawRad_=0; expectedYawDirection_=0;
   referencesSkipped_=false; turnBraking_=false; lastReferenceReport_.clear();
   referenceReport_="No reference requested";
   for (int i=0;i<4;++i) { referenceSamples_[i]=0; previousCorrection_[i]=-1; }
@@ -190,12 +195,14 @@ void ArenaTestController::Enter(double now) {
 void ArenaTestController::Abort() {
   Stop();
   if (IsRunning() || state_==State::WaitingStart) {
+    stoppedHeadingTargetDeg_=GetHeadingTargetDeg();
     state_=State::Aborted;
     status_="Stopped - select Autonomous again and place robot at SP before restart";
   }
 }
 void ArenaTestController::Transition(State state,double now,const char* status) {
   Stop(); state_=state; stateTime_=now; settleTime_=-1; status_=status; turnBraking_=false;
+  opposedYawRad_=0; expectedYawDirection_=0;
   if (state==State::TravelMW) travelHeadingRad_=robot_geometry::Radians(at::SP.headingDeg);
   if (state==State::FinishMW) travelHeadingRad_=robot_geometry::Radians(at::MW.headingDeg);
   if (state==State::TravelRDW) travelHeadingRad_=robot_geometry::Radians(at::MW.headingDeg);
@@ -212,6 +219,7 @@ unsigned ArenaTestController::ReferenceMask() const {
       (state_==State::ReferenceRDW?at::RDW_REFERENCE_MASK:0u);
 }
 double ArenaTestController::GetHeadingTargetDeg() const {
+  if (state_==State::Fault || state_==State::Aborted) return stoppedHeadingTargetDeg_;
   if (state_==State::TravelMW || state_==State::FinishMW || state_==State::TravelRDW || state_==State::FinishRDW)
     return travelHeadingRad_*180.0/robot_geometry::PI;
   return target_.headingDeg;
@@ -312,7 +320,20 @@ void ArenaTestController::Update(const ArenaTestInput& in) {
     return;
   }
   if (in.now-missionTime_>at::ROUTINE_TIMEOUT_S) { Fail("Routine timeout - stopped"); return; }
-  if (in.now-stateTime_>at::LEG_TIMEOUT_S) { Fail("Motion leg timeout - stopped"); return; }
+  if (in.now-stateTime_>at::LEG_TIMEOUT_S) {
+    Fail("Motion leg timeout during: "+status_+" - stopped"); return;
+  }
+  if (std::fabs(oldYaw)>0.0001) expectedYawDirection_=oldYaw<0?-1:1;
+  if (expectedYawDirection_!=0 &&
+      std::fabs(in.yawRateRadps)>=at::YAW_DIRECTION_CHECK_MIN_RADPS) {
+    if (expectedYawDirection_*in.yawRateRadps<0) opposedYawRad_+=std::fabs(in.yawRateRadps)*in.dt;
+    else opposedYawRad_=0;
+    if (opposedYawRad_>=at::YAW_DIRECTION_ERROR_RAD) {
+      Fail(expectedYawDirection_<0?"Yaw direction mismatch: commanded CW, gyro reported CCW - stopped":
+          "Yaw direction mismatch: commanded CCW, gyro reported CW - stopped");
+      return;
+    }
+  }
   if (!map_.IsFree({in.pose.x_MM,in.pose.y_MM})) { Fail("Pose outside mapped center-path clearance"); return; }
   if (state_==State::ReferenceMW || state_==State::ReferenceRDW) { Reference(in); return; }
   if (state_==State::TravelMW || state_==State::FinishMW || state_==State::TravelRDW || state_==State::FinishRDW) {

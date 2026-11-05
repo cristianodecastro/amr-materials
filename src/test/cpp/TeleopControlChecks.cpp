@@ -69,14 +69,17 @@ static_assert(CanonicalTranslationWithoutReversingYaw(),
               "Stick requests use canonical forward/left; wheel calibration is shared with odometry");
 
 constexpr bool ExistingTeleopWheelOutputsPreserved() {
-  for (int x=-1;x<=1;++x) for (int y=-1;y<=1;++y) {
-    const auto c=Settled(x,y,kCwRawX);
+  for (int x=-1;x<=1;++x) for (int y=-1;y<=1;++y) for (int right=-1;right<=1;++right) {
+    const auto c=Settled(x,y,right);
     const double magnitude=std::hypot(x,y);
     const double speed=magnitude==0?0:localization_config::TELEOP_SPEED_MMPS/magnitude;
-    // Previous bindings produced layout vx=raw Y, vy=raw X. The corrected
-    // body frame must leave every installed teleop motor command unchanged.
+    // Independent legacy model: layout vx=raw Y, vy=raw X; raw right X
+    // contributes positive wheel yaw. Check both rotations and mixed moves.
+    const double oldYaw=right*localization_config::TELEOP_MAX_YAW_RATE_DPS*robot_geometry::PI/180;
     for (int wheel=0;wheel<3;++wheel) {
-      const double old=drive_kinematics::WheelSpeedMMps(wheel,y*speed,x*speed,c.GetYawRateRadps());
+      const double a=localization_config::WHEEL_ANGLE_DEG[wheel]*robot_geometry::PI/180;
+      const double old=-std::sin(a)*y*speed+std::cos(a)*x*speed+
+          oldYaw*localization_config::WHEEL_CENTER_RADIUS_MM[wheel];
       const double now=drive_kinematics::WheelSpeedMMps(wheel,
           drive_kinematics::LayoutVx(c.GetForwardMMps(),c.GetLeftMMps()),
           drive_kinematics::LayoutVy(c.GetForwardMMps(),c.GetLeftMMps()),c.GetYawRateRadps());
@@ -85,7 +88,7 @@ constexpr bool ExistingTeleopWheelOutputsPreserved() {
   }
   return true;
 }
-static_assert(ExistingTeleopWheelOutputsPreserved(),"Shared wheel-frame fix must preserve all teleop wheel outputs");
+static_assert(ExistingTeleopWheelOutputsPreserved(),"Shared translation/yaw calibration must preserve all teleop wheel outputs");
 
 constexpr bool TriangleToggleIsIndependentOfManualServo() {
   ServoTeleopController servos;
@@ -346,13 +349,13 @@ constexpr bool DriveAndYawUseSeparateFrames() {
       !Near(drive_kinematics::LayoutVy(forward.GetForwardMMps(),forward.GetLeftMMps()), 0.0)) return false;
   for (int wheel = 0; wheel < 3; ++wheel) {
     if (drive_kinematics::WheelSpeedMMps(wheel, 0.0, 0.0,
-            ccw.GetYawRateRadps()) <= 0.0) return false;
+            ccw.GetYawRateRadps()) >= 0.0) return false;
     if (drive_kinematics::WheelSpeedMMps(wheel, 0.0, 0.0,
-            cw.GetYawRateRadps()) >= 0.0) return false;
+            cw.GetYawRateRadps()) <= 0.0) return false;
   }
   return true;
 }
-static_assert(DriveAndYawUseSeparateFrames(), "Body-aligned translation must preserve CCW yaw mixing");
+static_assert(DriveAndYawUseSeparateFrames(), "Positive wheel yaw is installed CW; body CCW requests need negative wheels");
 
 constexpr bool MixedOutputsRespectLimit() {
   const auto controller = Settled(kLeftRawX,kForwardRawY,kCwRawX);

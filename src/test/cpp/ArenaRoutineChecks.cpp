@@ -182,6 +182,46 @@ void TurnBrakesBeforeTargetAndStopsBeforeReversing() {
   REQUIRE_ARENA(c.GetYawRadps()==0);
   REQUIRE_ARENA(Near(c.GetHeadingTargetDeg(),-90)); // absolute, never another -90 turn
 }
+void InstalledYawPolarityMatchesGyroFrame() {
+  for (double command:{-0.5,0.5}) {
+    double wheels[3];
+    for (int i=0;i<3;++i) wheels[i]=drive_kinematics::WheelSpeedMMps(i,0,0,command);
+    // Independent installation observation: positive motor/encoder rotation
+    // decreases the already calibrated CCW-positive gyro heading.
+    const double measured=-(wheels[0]+wheels[1]+wheels[2])/(3*168.0);
+    REQUIRE_ARENA(Near(command,measured));
+  }
+}
+void ReversedFeedbackStopsBeforeTimeout(bool duringTravel) {
+  ArenaTestController c;
+  auto in=Input(); c.Enter(0); in.startRequested=true; c.Update(in); in.startRequested=false;
+  if (duringTravel) {
+    in.pose.headingRad=robot_geometry::Radians(5);
+  } else {
+    in.pose.x_MM=at::MW.x_MM; in.pose.y_MM=at::MW.y_MM;
+    for (int tick=0;tick<25 && c.GetState()==State::TravelMW;++tick) { in.now+=in.dt; c.Update(in); }
+    REQUIRE_ARENA(c.GetState()==State::TurnMW);
+  }
+  const double started=in.now;
+  double rate=0;
+  for (int tick=0;tick<1900 && c.GetState()!=State::Fault;++tick) {
+    // Deliberately reverse the motor response. Include lag and neutral braking
+    // intervals so a succession of short wrong-way attempts also gets caught.
+    rate+=in.dt/(0.08+in.dt)*(-c.GetYawRadps()-rate);
+    in.pose.headingRad=robot_geometry::Wrap(in.pose.headingRad+rate*in.dt);
+    in.yawRateRadps=rate;
+    in.stationary=std::fabs(rate)<=robot_geometry::Radians(at::STATIONARY_YAW_DPS);
+    in.now+=in.dt; c.Update(in);
+  }
+  REQUIRE_ARENA(c.GetState()==State::Fault && Stopped(c));
+  REQUIRE_ARENA(c.GetStatus().find("Yaw direction mismatch: commanded CW")!=std::string::npos);
+  REQUIRE_ARENA(Near(c.GetHeadingTargetDeg(),duringTravel?at::SP.headingDeg:at::MW.headingDeg));
+  REQUIRE_ARENA(in.now-started<at::LEG_TIMEOUT_S);
+  if (in.pose.headingRad>=robot_geometry::Radians(duringTravel?13:8))
+    throw std::runtime_error("Reversed yaw exceeded excursion bound: heading="+
+        std::to_string(in.pose.headingRad*180/robot_geometry::PI)+
+        ", duringTravel="+std::to_string(duringTravel));
+}
 void Simulate(bool supplyReferences,bool repeatOldTimestamp=false,bool motorDeadZone=false,bool motorLag=false,
               double responseTime=0.08) {
   ArenaTestController c;
@@ -201,11 +241,12 @@ void Simulate(bool supplyReferences,bool repeatOldTimestamp=false,bool motorDead
     double wheel[3];
     for (int i=0;i<3;++i) wheel[i]=drive_kinematics::WheelSpeedMMps(i,vx,vy,commandYaw);
     // Independent plant from the reported installation: positive layout
-    // translation moves opposite the physical front/left axes. Do not use the
-    // production inverse-frame helper here or a matching sign bug could hide.
+    // translation moves opposite the physical front/left axes, and positive
+    // wheel yaw gives decreasing gyro heading. Do not use production inverse
+    // calibration helpers here or a matching sign bug could hide.
     double forward=-(wheel[1]-wheel[0])/std::sqrt(3.0);
     double left=-(2*wheel[2]-wheel[0]-wheel[1])/3.0;
-    double yaw=(wheel[0]+wheel[1]+wheel[2])/(3*localization_config::WHEEL_CENTER_RADIUS_MM[0]);
+    double yaw=-(wheel[0]+wheel[1]+wheel[2])/(3*localization_config::WHEEL_CENTER_RADIUS_MM[0]);
     if (motorDeadZone && std::hypot(forward,left)<100) {
       forward=left=0;
       if (std::fabs(yaw)<25*robot_geometry::PI/180) yaw=0;
@@ -293,9 +334,11 @@ int main() {
     GeometryAndWallAssociation(); StartStopAndHealth(); TimingAndBounds(); HeadingHoldCorrectsDriftDuringXY();
     ApproachRequestsRemainUsable(); TurnDriftIsReacquiredBeforeReference();
     TurnBrakesBeforeTargetAndStopsBeforeReversing();
+    InstalledYawPolarityMatchesGyroFrame();
+    ReversedFeedbackStopsBeforeTimeout(false); ReversedFeedbackStopsBeforeTimeout(true);
     Simulate(true); Simulate(false); Simulate(true,true); Simulate(true,false,true); Simulate(true,false,true,true);
     Simulate(true,false,true,true,0.25);
-    std::cout<<"PASS: absolute -90 degree targets, gyro-rate turn braking and reversal, west route, pose checks, motor dead zones/lag, heading hold, sensor references, 15 mm/1 degree completion\n";
+    std::cout<<"PASS: installed CW motor polarity vs CCW gyro, reversed-feedback faults before timeout, absolute -90 degree targets, gyro-rate turn braking, west route, motor dead zones/lag, heading hold, sensor references, 15 mm/1 degree completion\n";
   } catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }
 }
 #else
@@ -306,6 +349,9 @@ TEST(ArenaRoutine, HeadingHoldCorrectsDriftDuringXY) { EXPECT_NO_THROW(HeadingHo
 TEST(ArenaRoutine, ApproachRequestsRemainUsable) { EXPECT_NO_THROW(ApproachRequestsRemainUsable()); }
 TEST(ArenaRoutine, TurnDriftIsReacquiredBeforeReference) { EXPECT_NO_THROW(TurnDriftIsReacquiredBeforeReference()); }
 TEST(ArenaRoutine, TurnBrakesBeforeTargetAndStopsBeforeReversing) { EXPECT_NO_THROW(TurnBrakesBeforeTargetAndStopsBeforeReversing()); }
+TEST(ArenaRoutine, InstalledYawPolarityMatchesGyroFrame) { EXPECT_NO_THROW(InstalledYawPolarityMatchesGyroFrame()); }
+TEST(ArenaRoutine, ReversedTurnStopsBeforeTimeout) { EXPECT_NO_THROW(ReversedFeedbackStopsBeforeTimeout(false)); }
+TEST(ArenaRoutine, ReversedHeadingHoldStopsBeforeTimeout) { EXPECT_NO_THROW(ReversedFeedbackStopsBeforeTimeout(true)); }
 TEST(ArenaRoutine, ValidReferenceSimulation) { EXPECT_NO_THROW(Simulate(true)); }
 TEST(ArenaRoutine, MissingReferenceSimulation) { EXPECT_NO_THROW(Simulate(false)); }
 TEST(ArenaRoutine, StaleReferenceSimulation) { EXPECT_NO_THROW(Simulate(true,true)); }

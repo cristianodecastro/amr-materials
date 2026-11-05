@@ -28,7 +28,8 @@ inline constexpr double WheelSpeedMMps(int wheel, double vx_MMps, double vy_MMps
   const double alpha = localization_config::WHEEL_ANGLE_DEG[wheel] *
                        robot_geometry::PI / 180.0;
   return -std::sin(alpha) * vx_MMps + std::cos(alpha) * vy_MMps +
-         yawRate_Radps * localization_config::WHEEL_CENTER_RADIUS_MM[wheel];
+         localization_config::DRIVE_YAW_DIRECTION_SIGN * yawRate_Radps *
+         localization_config::WHEEL_CENTER_RADIUS_MM[wheel];
 }
 
 // All wheel requests share one denominator, preserving the combined
@@ -75,6 +76,7 @@ class TeleopDriveController {
     const double deadband = localization_config::DRIVER_STICK_DEADBAND;
     if (!(deadband >= 0.0 && deadband < 1.0) ||
         !Finite(localization_config::DRIVE_FORWARD_DIRECTION_DEG) ||
+        Abs(localization_config::DRIVE_YAW_DIRECTION_SIGN) != 1.0 ||
         !Positive(localization_config::TELEOP_SPEED_MMPS) ||
         !Positive(localization_config::TELEOP_ACCELERATION_MMPS2) ||
         !Positive(localization_config::TELEOP_MAX_MOTOR_OUTPUT) ||
