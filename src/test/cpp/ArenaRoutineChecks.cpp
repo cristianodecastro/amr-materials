@@ -31,14 +31,17 @@ void GeometryAndWallAssociation() {
   REQUIRE_ARENA(!map.SegmentFree({800,1500},{1200,1500}));
   const RobotPose me={at::ME.x_MM,at::ME.y_MM,robot_geometry::Radians(at::ME.headingDeg)};
   const auto left=map.SonarHit(0,me);
-  REQUIRE_ARENA(left.trustedWall && left.surface==2); // south wall
-  REQUIRE_ARENA(Near(left.range+localization_config::LEFT_SENSOR_OFFSET_MM,me.y_MM));
+  REQUIRE_ARENA(left.trustedWall && left.surface==3); // north wall
+  REQUIRE_ARENA(Near(left.range+localization_config::LEFT_SENSOR_OFFSET_MM,
+      localization_config::ARENA_HEIGHT_MM-me.y_MM));
   const RobotPose rde={at::RDE.x_MM,at::RDE.y_MM,robot_geometry::Radians(at::RDE.headingDeg)};
-  REQUIRE_ARENA(map.SonarHit(0,rde).surface==1); // left sensor -> east wall
-  REQUIRE_ARENA(map.SonarHit(1,rde).surface==3); // rear sensor -> north wall
-  // Cross the signed-angle boundary with a +90-degree CCW turn, not -270.
+  REQUIRE_ARENA(map.SonarHit(0,rde).surface==5); // left sensor -> upper divider
+  REQUIRE_ARENA(map.SonarHit(1,rde).surface==2); // rear sensor -> south wall
+  // The configured turn is +90 degrees CCW. Signed-angle wrapping still
+  // selects the short turn when a future heading crosses the -180/180 boundary.
   REQUIRE_ARENA(Near(robot_geometry::Wrap(robot_geometry::Radians(at::RDE.headingDeg-at::ME.headingDeg)),
       robot_geometry::PI/2));
+  REQUIRE_ARENA(Near(robot_geometry::Wrap(robot_geometry::Radians(-270)),robot_geometry::PI/2));
   // A changed heading must see the real divider instead of the far west wall.
   const auto divider=map.SonarHit(1,{at::RDE.x_MM,at::RDE.y_MM,0});
   REQUIRE_ARENA(divider.trustedWall && divider.surface==5);

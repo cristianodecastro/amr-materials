@@ -72,10 +72,10 @@ void Hardware::SetWheelPwm(int wheel, double output) {
   if (wheel < 0 || wheel >= localization_config::WHEEL_COUNT) return;
   if (!std::isfinite(output)) output = 0.0;
   if (!DriveMotorMotionAllowed()) output=0;
-  // All wheel writes pass here after smoothing. Apply the trim exactly once,
-  // including acceleration, reverse and rotation in either drive mode.
-  // Keep the installed left-rear trim and publish the actual output.
-  const double scale=wheel==0?localization_config::TELEOP_LEFT_REAR_OUTPUT_SCALE:1.0;
+  // Apply the left-rear trim only in Teleop, after smoothing. Autonomous uses
+  // the full mixed request for every wheel, with the same shared speed limits.
+  const double scale=wheel==0 && TeleopMotorMotionAllowed()?
+      localization_config::TELEOP_LEFT_REAR_OUTPUT_SCALE:1.0;
   const double limited = std::max(-1.0, std::min(1.0, output)) *
                          scale * localization_config::WHEEL_MOTOR_SIGN[wheel];
   wheelCommands_[wheel] = limited;

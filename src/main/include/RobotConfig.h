@@ -33,7 +33,7 @@ static constexpr double DRIVER_RIGHT_X_SIGN = -1.0;
 static constexpr double TELEOP_TRANSLATION_SPEED_SCALE = 0.50;
 static constexpr double TELEOP_ACCELERATION_MMPS2 = 400.0;
 static constexpr double TELEOP_MAX_MOTOR_OUTPUT = 0.90;
-// Fixed trim on left rear M0 only, applied after wheel mixing and smoothing.
+// Teleop-only trim on left rear M0, applied after wheel mixing and smoothing.
 // This scales PWM in both directions; encoder readings remain unmodified.
 static constexpr double TELEOP_LEFT_REAR_OUTPUT_SCALE = 0.80;
 static constexpr double TELEOP_MAX_YAW_RATE_DPS = 90.0;
@@ -91,7 +91,7 @@ static constexpr double ARENA_WIDTH_MM = 2000.0;
 static constexpr double ARENA_HEIGHT_MM = 2000.0;
 static constexpr double START_X_MM = 950.0;
 static constexpr double START_Y_MM = 900.0;
-static constexpr double START_HEADING_DEG = 180.0; // editable SP heading
+static constexpr double START_HEADING_DEG = 0.0; // editable SP heading
 
 // Body frame: +X forward, +Y left. User-provided center-to-sensor distances
 // are treated as sensing-face offsets on the four cardinal centerlines.
@@ -315,10 +315,10 @@ inline ArenaPoint Approach(const Station& s, double distance) {
 namespace arena_test_config {
 static constexpr bool ENABLED = true;
 struct Waypoint { double x_MM, y_MM, headingDeg; };
-static constexpr Waypoint SP = {950.0,900.0,180.0};
-static constexpr Waypoint ME = {1820.0,900.0,180.0};
-static constexpr Waypoint RDE = {1820.0,1820.0,-90.0};
-// Headings use [-180, 180] degrees: 180 faces west, -90 faces south.
+static constexpr Waypoint SP = {950.0,900.0,0.0};
+static constexpr Waypoint ME = {1820.0,900.0,0.0};
+static constexpr Waypoint RDE = {1820.0,1820.0,90.0};
+// Headings use [-180, 180] degrees: 0 faces east, 90 faces north.
 // Travel SP -> ME at SP heading, then turn to ME heading. Travel ME -> RDE
 // at ME heading, then settle at RDE heading. All coordinates are millimeters.
 // Share the tested teleop limits instead of maintaining slower duplicate values.
