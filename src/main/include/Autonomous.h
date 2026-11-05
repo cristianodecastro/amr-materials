@@ -22,8 +22,8 @@ class ArenaMap {
   std::vector<ArenaRect> obstacles_;
 };
 
-// Independent SP -> ME -> RDE test. Travel, turning and stationary wall
-// observations are separate states; no pickup/line calibration is required.
+// Independent SP -> MW -> RDW test. Planned turns and wall observations have
+// separate states; XY travel uses small heading-hold corrections.
 struct ArenaTestInput {
   RobotPose pose;
   double now, dt;
@@ -32,8 +32,8 @@ struct ArenaTestInput {
 };
 class ArenaTestController {
  public:
-  enum class State { Disabled, WaitingStart, TravelME, TurnME, ReferenceME,
-    TravelRDE, TurnRDE, ReferenceRDE, FinishRDE, FinishHeadingRDE, Complete, Fault, Aborted };
+  enum class State { Disabled, WaitingStart, TravelMW, TurnMW, ReferenceMW,
+    TravelRDW, TurnRDW, ReferenceRDW, FinishRDW, FinishHeadingRDW, Complete, Fault, Aborted };
   void Enter(double now);
   void Abort();
   void Fail(const std::string& reason);
@@ -46,6 +46,7 @@ class ArenaTestController {
   double GetForwardMMps() const { return forward_; }
   double GetLeftMMps() const { return left_; }
   double GetYawRadps() const { return yaw_; }
+  double GetHeadingTargetDeg() const;
   ArenaPoint GetTarget() const { return {target_.x_MM,target_.y_MM}; }
   unsigned ReferenceMask() const;
   int ReferenceSurface(int sensor) const;
@@ -54,6 +55,7 @@ class ArenaTestController {
   void Stop();
   void Transition(State state,double now,const char* status);
   bool Settled(bool reached,double now);
+  double HeadingRequest(double error,double oldYaw,double dt,bool hold) const;
   void Reference(const ArenaTestInput& in);
   ArenaMap map_{false}; // this test uses the drawing's walls, not old station placeholders
   State state_=State::Disabled;
@@ -61,6 +63,7 @@ class ArenaTestController {
   std::string status_="Select Autonomous, enable, then press Start routine";
   std::string referenceReport_="No reference requested", lastReferenceReport_;
   double forward_=0,left_=0,yaw_=0;
+  double travelHeadingRad_=0;
   double stateTime_=0, missionTime_=0, settleTime_=-1;
   double previousCorrection_[4]={-1,-1,-1,-1};
   int referenceSamples_[4]={0,0,0,0};

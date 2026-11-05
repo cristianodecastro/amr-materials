@@ -133,6 +133,7 @@ class Localization {
   const RobotPose& GetPose() const { return pose_; }
   double GetBodyVelocityX_MMps() const { return lastBodyVelocityX_MMps_; }
   double GetBodyVelocityY_MMps() const { return lastBodyVelocityY_MMps_; }
+  std::string GetFusionStatus() const;
 
  private:
   double PredictSonarRange(int sensorIndex, const RobotPose& pose) const;
@@ -161,6 +162,8 @@ class Localization {
   double lastRawGyroZ_Dps_;
   double lastYawDegrees_;
   double lastYawRateDps_;
+  double accelBiasX_G_=0,accelBiasY_G_=0;
+  bool odometrySampleHealthy_=true,accelSampleValid_=false,stationaryUpdate_=true;
 };
 
 // Robot scheduler, modes and dashboard integration.

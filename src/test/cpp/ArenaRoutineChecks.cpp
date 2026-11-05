@@ -26,27 +26,27 @@ ArenaTestInput Input() {
 }
 void GeometryAndWallAssociation() {
   ArenaMap map(false);
-  REQUIRE_ARENA(map.SegmentFree({at::SP.x_MM,at::SP.y_MM},{at::ME.x_MM,at::ME.y_MM}));
-  REQUIRE_ARENA(map.SegmentFree({at::ME.x_MM,at::ME.y_MM},{at::RDE.x_MM,at::RDE.y_MM}));
+  REQUIRE_ARENA(map.SegmentFree({at::SP.x_MM,at::SP.y_MM},{at::MW.x_MM,at::MW.y_MM}));
+  REQUIRE_ARENA(map.SegmentFree({at::MW.x_MM,at::MW.y_MM},{at::RDW.x_MM,at::RDW.y_MM}));
   REQUIRE_ARENA(!map.SegmentFree({800,1500},{1200,1500}));
-  const RobotPose me={at::ME.x_MM,at::ME.y_MM,robot_geometry::Radians(at::ME.headingDeg)};
-  const auto left=map.SonarHit(0,me);
-  REQUIRE_ARENA(left.trustedWall && left.surface==3); // north wall
-  REQUIRE_ARENA(Near(left.range+localization_config::LEFT_SENSOR_OFFSET_MM,
-      localization_config::ARENA_HEIGHT_MM-me.y_MM));
-  const RobotPose rde={at::RDE.x_MM,at::RDE.y_MM,robot_geometry::Radians(at::RDE.headingDeg)};
-  REQUIRE_ARENA(map.SonarHit(0,rde).surface==5); // left sensor -> upper divider
-  REQUIRE_ARENA(map.SonarHit(1,rde).surface==2); // rear sensor -> south wall
-  // The configured turn is +90 degrees CCW. Signed-angle wrapping still
+  const RobotPose mw={at::MW.x_MM,at::MW.y_MM,robot_geometry::Radians(at::MW.headingDeg)};
+  const auto right=map.SonarHit(2,mw);
+  REQUIRE_ARENA(right.trustedWall && right.surface==0); // west wall
+  REQUIRE_ARENA(Near(right.range+localization_config::RIGHT_SENSOR_OFFSET_MM,mw.x_MM));
+  const RobotPose rdw={at::RDW.x_MM,at::RDW.y_MM,robot_geometry::Radians(at::RDW.headingDeg)};
+  REQUIRE_ARENA(map.SonarHit(2,rdw).surface==0); // right sensor -> west wall
+  REQUIRE_ARENA(map.SonarHit(1,rdw).surface==3); // rear sensor -> north wall
+  // Turn to -90 at MW; RDW keeps that heading. Signed-angle wrapping still
   // selects the short turn when a future heading crosses the -180/180 boundary.
-  REQUIRE_ARENA(Near(robot_geometry::Wrap(robot_geometry::Radians(at::RDE.headingDeg-at::ME.headingDeg)),
-      robot_geometry::PI/2));
+  REQUIRE_ARENA(Near(robot_geometry::Wrap(robot_geometry::Radians(at::MW.headingDeg-at::SP.headingDeg)),
+      -robot_geometry::PI/2));
+  REQUIRE_ARENA(Near(robot_geometry::Wrap(robot_geometry::Radians(at::RDW.headingDeg-at::MW.headingDeg)),0));
   REQUIRE_ARENA(Near(robot_geometry::Wrap(robot_geometry::Radians(-270)),robot_geometry::PI/2));
   // A changed heading must see the real divider instead of the far west wall.
-  const auto divider=map.SonarHit(1,{at::RDE.x_MM,at::RDE.y_MM,0});
+  const auto divider=map.SonarHit(0,rdw);
   REQUIRE_ARENA(divider.trustedWall && divider.surface==5);
-  REQUIRE_ARENA(Near(divider.range,at::RDE.x_MM-localization_config::REAR_SENSOR_OFFSET_MM-
-      autonomous_config::DIVIDER_X_MAX_MM));
+  REQUIRE_ARENA(Near(divider.range,autonomous_config::DIVIDER_X_MIN_MM-
+      at::RDW.x_MM-localization_config::LEFT_SENSOR_OFFSET_MM));
   ArenaTestController controller;
   REQUIRE_ARENA(controller.ValidateGeometry().empty());
 }
@@ -59,7 +59,7 @@ void StartStopAndHealth() {
   in.startRequested=true; in.healthy=false; c.Update(in);
   REQUIRE_ARENA(c.GetState()==State::WaitingStart && Stopped(c));
   in.healthy=true; c.Update(in); in.startRequested=false;
-  REQUIRE_ARENA(c.GetState()==State::TravelME);
+  REQUIRE_ARENA(c.GetState()==State::TravelMW);
   in.now+=in.dt; c.Update(in);
   REQUIRE_ARENA(std::hypot(c.GetForwardMMps(),c.GetLeftMMps())>0 && c.GetYawRadps()==0);
   in.stopRequested=true; c.Update(in);
@@ -83,13 +83,30 @@ void TimingAndBounds() {
   in.startRequested=false; in.pose={1000,400,0}; in.now+=in.dt; c.Update(in);
   REQUIRE_ARENA(c.GetState()==State::Fault && Stopped(c));
 }
+void HeadingHoldCorrectsDriftDuringXY() {
+  ArenaTestController c;
+  auto in=Input(); c.Enter(0); in.startRequested=true; c.Update(in);
+  in.startRequested=false;
+  in.pose.headingRad=robot_geometry::Radians(10);
+  for (int tick=0;tick<30;++tick) { in.now+=in.dt; c.Update(in); }
+  REQUIRE_ARENA(c.GetState()==State::TravelMW);
+  REQUIRE_ARENA(std::hypot(c.GetForwardMMps(),c.GetLeftMMps())>0);
+  REQUIRE_ARENA(c.GetYawRadps()<0);
+  REQUIRE_ARENA(std::fabs(c.GetYawRadps())<=at::HOLD_HEADING_MAX_YAW_RADPS);
+  REQUIRE_ARENA(Near(c.GetHeadingTargetDeg(),at::SP.headingDeg));
+  in.pose.headingRad=robot_geometry::Radians(-10);
+  for (int tick=0;tick<60;++tick) { in.now+=in.dt; c.Update(in); }
+  REQUIRE_ARENA(c.GetState()==State::TravelMW && c.GetYawRadps()>0);
+  REQUIRE_ARENA(Near(c.GetHeadingTargetDeg(),at::SP.headingDeg));
+}
 void Simulate(bool supplyReferences,bool repeatOldTimestamp=false) {
   ArenaTestController c;
   auto in=Input(); c.Enter(0);
   in.startRequested=true; c.Update(in); in.startRequested=false;
-  bool sawTurnME=false,sawTurnRDE=false,sawReferenceME=false,sawReferenceRDE=false;
-  bool sawPositiveRDEYaw=false;
+  bool sawTurnMW=false,sawTurnRDW=false,sawReferenceMW=false,sawReferenceRDW=false;
+  bool sawNegativeMWYaw=false;
   bool disturbedFinalPose=false;
+  bool disturbedTravelHeading=false;
   for (int tick=1;tick<6000 && c.GetState()!=State::Complete;++tick) {
     const double forward=c.GetForwardMMps(),left=c.GetLeftMMps(),yaw=c.GetYawRadps();
     const double cosine=std::cos(in.pose.headingRad),sine=std::sin(in.pose.headingRad);
@@ -98,17 +115,21 @@ void Simulate(bool supplyReferences,bool repeatOldTimestamp=false) {
     in.pose.headingRad=robot_geometry::Wrap(in.pose.headingRad+yaw*in.dt);
     in.now=tick*in.dt;
     in.stationary=std::hypot(forward,left)<1e-6 && std::fabs(yaw)<1e-6;
-    const auto state=c.GetState();
-    if (state==State::TurnME) {
-      sawTurnME=true;
-      REQUIRE_ARENA(std::hypot(in.pose.x_MM-at::ME.x_MM,in.pose.y_MM-at::ME.y_MM)<=at::POSITION_TOLERANCE_MM+1e-5);
+    if (!disturbedTravelHeading && tick>30 && c.GetState()==State::TravelMW) {
+      in.pose.headingRad=robot_geometry::Wrap(in.pose.headingRad+robot_geometry::Radians(5));
+      disturbedTravelHeading=true;
     }
-    if (state==State::TurnRDE) sawTurnRDE=true;
-    if (state==State::ReferenceME) { sawReferenceME=true; REQUIRE_ARENA(c.ReferenceMask()==at::ME_REFERENCE_MASK); }
-    if (state==State::ReferenceRDE) {
-      sawReferenceRDE=true; REQUIRE_ARENA(c.ReferenceMask()==at::RDE_REFERENCE_MASK);
+    const auto state=c.GetState();
+    if (state==State::TurnMW) {
+      sawTurnMW=true;
+      REQUIRE_ARENA(std::hypot(in.pose.x_MM-at::MW.x_MM,in.pose.y_MM-at::MW.y_MM)<=at::POSITION_TOLERANCE_MM+1e-5);
+    }
+    if (state==State::TurnRDW) sawTurnRDW=true;
+    if (state==State::ReferenceMW) { sawReferenceMW=true; REQUIRE_ARENA(c.ReferenceMask()==at::MW_REFERENCE_MASK); }
+    if (state==State::ReferenceRDW) {
+      sawReferenceRDW=true; REQUIRE_ARENA(c.ReferenceMask()==at::RDW_REFERENCE_MASK);
       if (!disturbedFinalPose && supplyReferences && !repeatOldTimestamp) {
-        // A wall correction changes the estimated position: finish at RDE
+        // A wall correction changes the estimated position: finish at RDW
         // after that correction, rather than declaring success away from it.
         in.pose.x_MM-=20; in.pose.y_MM-=15; disturbedFinalPose=true;
       }
@@ -119,40 +140,40 @@ void Simulate(bool supplyReferences,bool repeatOldTimestamp=false) {
         if (!repeatOldTimestamp || in.correctionTime[sensor]<0) in.correctionTime[sensor]=in.now;
       }
     c.Update(in);
-    if (c.GetState()==State::TurnRDE && c.GetYawRadps()>0) sawPositiveRDEYaw=true;
+    if (c.GetState()==State::TurnMW && c.GetYawRadps()<0) sawNegativeMWYaw=true;
     REQUIRE_ARENA(c.GetState()!=State::Fault);
-    REQUIRE_ARENA(!(std::hypot(c.GetForwardMMps(),c.GetLeftMMps())>1e-9 && std::fabs(c.GetYawRadps())>1e-9));
     REQUIRE_ARENA(std::hypot(c.GetForwardMMps(),c.GetLeftMMps())<=at::SPEED_MMPS+1e-6);
     REQUIRE_ARENA(std::fabs(c.GetYawRadps())<=at::MAX_YAW_RADPS+1e-6);
-    if (c.GetState()==State::TravelME || c.GetState()==State::TravelRDE || c.GetState()==State::FinishRDE)
-      REQUIRE_ARENA(c.GetYawRadps()==0);
-    if (c.GetState()==State::TurnME || c.GetState()==State::TurnRDE || c.GetState()==State::FinishHeadingRDE)
+    if (c.GetState()==State::TravelMW || c.GetState()==State::TravelRDW || c.GetState()==State::FinishRDW)
+      REQUIRE_ARENA(std::fabs(c.GetYawRadps())<=at::HOLD_HEADING_MAX_YAW_RADPS+1e-6);
+    if (c.GetState()==State::TurnMW || c.GetState()==State::TurnRDW || c.GetState()==State::FinishHeadingRDW)
       REQUIRE_ARENA(c.GetForwardMMps()==0 && c.GetLeftMMps()==0);
   }
   REQUIRE_ARENA(c.GetState()==State::Complete && Stopped(c));
-  REQUIRE_ARENA(sawTurnME && sawTurnRDE && sawReferenceME && sawReferenceRDE);
-  REQUIRE_ARENA(sawPositiveRDEYaw);
-  REQUIRE_ARENA(std::hypot(in.pose.x_MM-at::RDE.x_MM,in.pose.y_MM-at::RDE.y_MM)<=at::POSITION_TOLERANCE_MM+1e-5);
-  REQUIRE_ARENA(std::fabs(robot_geometry::Wrap(in.pose.headingRad-robot_geometry::Radians(at::RDE.headingDeg)))<=at::HEADING_TOLERANCE_RAD+1e-5);
+  REQUIRE_ARENA(sawTurnMW && sawTurnRDW && sawReferenceMW && sawReferenceRDW);
+  REQUIRE_ARENA(sawNegativeMWYaw);
+  REQUIRE_ARENA(std::hypot(in.pose.x_MM-at::RDW.x_MM,in.pose.y_MM-at::RDW.y_MM)<=at::POSITION_TOLERANCE_MM+1e-5);
+  REQUIRE_ARENA(std::fabs(robot_geometry::Wrap(in.pose.headingRad-robot_geometry::Radians(at::RDW.headingDeg)))<=at::HEADING_TOLERANCE_RAD+1e-5);
   const bool skipped=c.GetStatus().find("unavailable")!=std::string::npos;
   REQUIRE_ARENA(skipped==(!supplyReferences || repeatOldTimestamp));
-  REQUIRE_ARENA(c.GetLastReferenceReport().find("ME:")!=std::string::npos);
-  REQUIRE_ARENA(c.GetLastReferenceReport().find("RDE:")!=std::string::npos);
+  REQUIRE_ARENA(c.GetLastReferenceReport().find("MW:")!=std::string::npos);
+  REQUIRE_ARENA(c.GetLastReferenceReport().find("RDW:")!=std::string::npos);
 }
 } // namespace
 
 #ifdef ARENA_TEST_STANDALONE
 int main() {
   try {
-    GeometryAndWallAssociation(); StartStopAndHealth(); TimingAndBounds();
+    GeometryAndWallAssociation(); StartStopAndHealth(); TimingAndBounds(); HeadingHoldCorrectsDriftDuringXY();
     Simulate(true); Simulate(false); Simulate(true,true);
-    std::cout<<"PASS: geometry, start/stop, health/timing, XY-before-turn, wall references, missing/stale samples, final corrected pose\n";
+    std::cout<<"PASS: west-route geometry, start/stop, health/timing, gyro heading hold, planned turn after XY, valid/missing/stale references, 15 mm/1 degree completion\n";
   } catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }
 }
 #else
 TEST(ArenaRoutine, GeometryAndWallAssociation) { EXPECT_NO_THROW(GeometryAndWallAssociation()); }
 TEST(ArenaRoutine, StartStopAndHealth) { EXPECT_NO_THROW(StartStopAndHealth()); }
 TEST(ArenaRoutine, TimingAndBounds) { EXPECT_NO_THROW(TimingAndBounds()); }
+TEST(ArenaRoutine, HeadingHoldCorrectsDriftDuringXY) { EXPECT_NO_THROW(HeadingHoldCorrectsDriftDuringXY()); }
 TEST(ArenaRoutine, ValidReferenceSimulation) { EXPECT_NO_THROW(Simulate(true)); }
 TEST(ArenaRoutine, MissingReferenceSimulation) { EXPECT_NO_THROW(Simulate(false)); }
 TEST(ArenaRoutine, StaleReferenceSimulation) { EXPECT_NO_THROW(Simulate(true,true)); }

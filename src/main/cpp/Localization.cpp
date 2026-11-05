@@ -8,16 +8,12 @@
 #include <limits>
 
 namespace {
-constexpr double kAccelDampingPerSecond = 0.98;
 constexpr double kPositionProcessNoiseMM2PerSecond = 400.0;
 constexpr double kHeadingProcessNoiseRad2PerSecond = 0.0008;
 constexpr double kYawMeasurementStdDevRad = 0.035;
 constexpr double kJacobianPositionStepMM = 1.0;
 constexpr double kJacobianHeadingStepRad = 0.5 * robot_geometry::PI / 180.0;
 
-double Clamp(double value, double low, double high) {
-  return std::max(low, std::min(high, value));
-}
 }  // namespace
 
 Localization::Localization(Hardware* hardware)
@@ -48,8 +44,20 @@ void Localization::Reset(double x_MM, double y_MM, double headingDeg) {
   pose_.x_MM = x_MM;
   pose_.y_MM = y_MM;
   pose_.headingRad = robot_geometry::Wrap(robot_geometry::Radians(headingDeg));
-  imuYawOffsetRad_ = robot_geometry::Wrap(
-      pose_.headingRad - robot_geometry::Radians(hardware_->GetYawDegrees()));
+  lastYawDegrees_=hardware_->GetYawDegrees();
+  lastYawRateDps_=hardware_->GetYawRateDegreesPerSecond();
+  odometrySampleHealthy_=std::isfinite(lastYawDegrees_) && std::isfinite(lastYawRateDps_);
+  imuYawOffsetRad_=odometrySampleHealthy_?robot_geometry::Wrap(
+      pose_.headingRad-robot_geometry::Radians(lastYawDegrees_)):0.0;
+  lastAccelX_G_=hardware_->GetWorldAccelX_G();
+  lastAccelY_G_=hardware_->GetWorldAccelY_G();
+  accelSampleValid_=std::isfinite(lastAccelX_G_) && std::isfinite(lastAccelY_G_) &&
+      std::hypot(lastAccelX_G_,lastAccelY_G_)<=localization_config::ACCEL_MAX_PLAUSIBLE_G;
+  // Start is pressed with the robot resting at SP. Capture the stationary
+  // residual, then refine it only during subsequent confirmed zero motion.
+  accelBiasX_G_=accelSampleValid_?lastAccelX_G_:0.0;
+  accelBiasY_G_=accelSampleValid_?lastAccelY_G_:0.0;
+  stationaryUpdate_=true;
 
   for (int row = 0; row < 3; ++row) {
     for (int col = 0; col < 3; ++col) covariance_[row][col] = 0.0;
@@ -62,6 +70,10 @@ void Localization::Reset(double x_MM, double y_MM, double headingDeg) {
 
   for (int wheel = 0; wheel < localization_config::WHEEL_COUNT; ++wheel) {
     previousEncoder_[wheel] = hardware_->GetWheelEncoderRaw(wheel);
+    if (!std::isfinite(previousEncoder_[wheel])) {
+      previousEncoder_[wheel]=0;
+      odometrySampleHealthy_=false;
+    }
   }
   fusedWorldVelocityX_MMps_ = 0.0;
   fusedWorldVelocityY_MMps_ = 0.0;
@@ -71,21 +83,31 @@ void Localization::Reset(double x_MM, double y_MM, double headingDeg) {
 }
 
 void Localization::UpdateOdometry(double dtSeconds) {
-  if (dtSeconds <= 0.0) return;
-  const double dt = Clamp(dtSeconds, 0.001, 0.10);
+  odometrySampleHealthy_=false;
+  if (!std::isfinite(dtSeconds) || dtSeconds<=0.0 ||
+      dtSeconds>autonomous_config::MAX_CONTROL_GAP_S) return;
+  const double dt=dtSeconds;
+  const double oldHeading=pose_.headingRad;
 
   double wheelSpeed[localization_config::WHEEL_COUNT] = {0.0, 0.0, 0.0};
+  double counts[localization_config::WHEEL_COUNT]={};
+  double maximumWheelSpeed=0;
   for (int wheel = 0; wheel < localization_config::WHEEL_COUNT; ++wheel) {
     const double current = hardware_->GetWheelEncoderRaw(wheel);
+    if (!std::isfinite(current)) return;
+    counts[wheel]=current;
     const double deltaCounts = (current - previousEncoder_[wheel]) *
                                localization_config::WHEEL_ENCODER_SIGN[wheel];
-    previousEncoder_[wheel] = current;
 
     const double millimetresPerCount =
         (2.0 * robot_geometry::PI * localization_config::WHEEL_RADIUS_MM) /
         (localization_config::ENCODER_COUNTS_PER_OUTPUT_REV * localization_config::MOTOR_TO_WHEEL_RATIO);
     wheelSpeed[wheel] = deltaCounts * millimetresPerCount / dt;
+    if (!std::isfinite(wheelSpeed[wheel]) ||
+        std::fabs(wheelSpeed[wheel])>3*localization_config::MAX_WHEEL_SPEED_MMPS) return;
+    maximumWheelSpeed=std::max(maximumWheelSpeed,std::fabs(wheelSpeed[wheel]));
   }
+  for (int wheel=0;wheel<localization_config::WHEEL_COUNT;++wheel) previousEncoder_[wheel]=counts[wheel];
 
   // For equally spaced omni wheels, each wheel rolls tangent to the circle
   // around the robot centre. These are the inverse kinematics of that layout.
@@ -127,11 +149,14 @@ void Localization::UpdateOdometry(double dtSeconds) {
   const double bodyVx = kinematicsValid ? drive_kinematics::BodyForward(kinematics[0][3],kinematics[1][3]) : 0.0;
   const double bodyVy = kinematicsValid ? drive_kinematics::BodyLeft(kinematics[0][3],kinematics[1][3]) : 0.0;
   const double wheelYawRate = kinematicsValid ? kinematics[2][3] : 0.0;
+  if (!kinematicsValid) return;
 
-  // Blend the VMX gyro with encoder-derived wheel rotation for the yaw
-  // prediction. The AHRS yaw corrects drift; sonar wall geometry supplies an
-  // independent heading update.
+  // Gyro rate predicts heading; AHRS yaw corrects it. The optional encoder-yaw
+  // weight defaults to zero so slipping wheels cannot rotate the estimate.
+  // Valid stationary sonar geometry can supply an independent heading update.
   lastYawRateDps_ = hardware_->GetYawRateDegreesPerSecond();
+  lastYawDegrees_ = hardware_->GetYawDegrees();
+  if (!std::isfinite(lastYawRateDps_) || !std::isfinite(lastYawDegrees_)) return;
   lastRawGyroX_Dps_ = hardware_->GetRawGyroX_Dps();
   lastRawGyroY_Dps_ = hardware_->GetRawGyroY_Dps();
   lastRawGyroZ_Dps_ = hardware_->GetRawGyroZ_Dps();
@@ -142,50 +167,70 @@ void Localization::UpdateOdometry(double dtSeconds) {
       encoderYawWeight * wheelYawRate;
   const double gyroPrediction =
       robot_geometry::Wrap(pose_.headingRad + yawRateRadps * dt);
-  lastYawDegrees_ = hardware_->GetYawDegrees();
   const double ahrsYaw = robot_geometry::Wrap(
       robot_geometry::Radians(lastYawDegrees_) + imuYawOffsetRad_);
   const double yawInnovation = robot_geometry::Wrap(ahrsYaw - gyroPrediction);
   pose_.headingRad = robot_geometry::Wrap(
       gyroPrediction + localization_config::YAW_AHRS_CORRECTION * yawInnovation);
 
-  // Encoders supply translation. Acceleration is captured for observation;
-  // its integration weight defaults to zero to avoid stationary bias drift.
+  // Acceleration assists short-term velocity prediction; encoders anchor it
+  // on every update. No unbounded acceleration-only displacement integration.
   lastAccelX_G_ = hardware_->GetWorldAccelX_G();
   lastAccelY_G_ = hardware_->GetWorldAccelY_G();
   lastRawAccelX_G_ = hardware_->GetRawAccelX_G();
   lastRawAccelY_G_ = hardware_->GetRawAccelY_G();
   lastRawAccelZ_G_ = hardware_->GetRawAccelZ_G();
-  double accelX = std::fabs(lastAccelX_G_) < localization_config::ACCEL_DEADBAND_G
-                      ? 0.0 : lastAccelX_G_ * localization_config::GRAVITY_MM_PER_S2;
-  double accelY = std::fabs(lastAccelY_G_) < localization_config::ACCEL_DEADBAND_G
-                      ? 0.0 : lastAccelY_G_ * localization_config::GRAVITY_MM_PER_S2;
+  accelSampleValid_=std::isfinite(lastAccelX_G_) && std::isfinite(lastAccelY_G_) &&
+      std::hypot(lastAccelX_G_,lastAccelY_G_)<=localization_config::ACCEL_MAX_PLAUSIBLE_G;
+  double residualX=accelSampleValid_?lastAccelX_G_-accelBiasX_G_:0;
+  double residualY=accelSampleValid_?lastAccelY_G_-accelBiasY_G_:0;
+  stationaryUpdate_=maximumWheelSpeed<=localization_config::ENCODER_STATIONARY_MMPS &&
+      std::fabs(lastYawRateDps_)<=localization_config::GYRO_STATIONARY_DPS;
+  // Use independent wheel/gyro evidence for zero velocity. Accelerometer bias
+  // must not prevent stationary updates and create false position drift.
+  if (stationaryUpdate_ && accelSampleValid_) {
+    const double gain=dt/(localization_config::ACCEL_BIAS_TRACK_TAU_S+dt);
+    accelBiasX_G_+=gain*residualX; accelBiasY_G_+=gain*residualY;
+    residualX=lastAccelX_G_-accelBiasX_G_; residualY=lastAccelY_G_-accelBiasY_G_;
+  }
+  const double accelX=std::fabs(residualX)<localization_config::ACCEL_DEADBAND_G?0:
+      residualX*localization_config::GRAVITY_MM_PER_S2;
+  const double accelY=std::fabs(residualY)<localization_config::ACCEL_DEADBAND_G?0:
+      residualY*localization_config::GRAVITY_MM_PER_S2;
   const double offsetCos = std::cos(imuYawOffsetRad_);
   const double offsetSin = std::sin(imuYawOffsetRad_);
   const double arenaAccelX = offsetCos * accelX - offsetSin * accelY;
   const double arenaAccelY = offsetSin * accelX + offsetCos * accelY;
-  const double damping = std::pow(kAccelDampingPerSecond, dt);
   const double predictedWorldVx =
-      fusedWorldVelocityX_MMps_ * damping + arenaAccelX * dt;
+      fusedWorldVelocityX_MMps_ + arenaAccelX * dt;
   const double predictedWorldVy =
-      fusedWorldVelocityY_MMps_ * damping + arenaAccelY * dt;
+      fusedWorldVelocityY_MMps_ + arenaAccelY * dt;
 
   const double c = std::cos(pose_.headingRad);
   const double s = std::sin(pose_.headingRad);
-  const double encoderWorldVx = c * bodyVx - s * bodyVy;
-  const double encoderWorldVy = s * bodyVx + c * bodyVy;
-  const double accelWeight = localization_config::ACCEL_VELOCITY_BLEND;
-  fusedWorldVelocityX_MMps_ = (1.0 - accelWeight) * encoderWorldVx +
-                             accelWeight * predictedWorldVx;
-  fusedWorldVelocityY_MMps_ = (1.0 - accelWeight) * encoderWorldVy +
-                             accelWeight * predictedWorldVy;
+  const double midpoint=oldHeading+0.5*robot_geometry::Wrap(pose_.headingRad-oldHeading);
+  const double encoderWorldVx=std::cos(midpoint)*bodyVx-std::sin(midpoint)*bodyVy;
+  const double encoderWorldVy=std::sin(midpoint)*bodyVx+std::cos(midpoint)*bodyVy;
+  const double accelWeight=accelSampleValid_?std::pow(localization_config::ACCEL_VELOCITY_BLEND,
+      dt/localization_config::CONTROL_PERIOD_S):0;
+  double correctionX=accelWeight*(predictedWorldVx-encoderWorldVx);
+  double correctionY=accelWeight*(predictedWorldVy-encoderWorldVy);
+  const double correction=std::hypot(correctionX,correctionY);
+  if (correction>localization_config::ACCEL_MAX_VELOCITY_CORRECTION_MMPS) {
+    const double scale=localization_config::ACCEL_MAX_VELOCITY_CORRECTION_MMPS/correction;
+    correctionX*=scale; correctionY*=scale;
+  }
+  fusedWorldVelocityX_MMps_=stationaryUpdate_?0:encoderWorldVx+correctionX;
+  fusedWorldVelocityY_MMps_=stationaryUpdate_?0:encoderWorldVy+correctionY;
 
   pose_.x_MM += fusedWorldVelocityX_MMps_ * dt;
   pose_.y_MM += fusedWorldVelocityY_MMps_ * dt;
 
-  lastBodyVelocityX_MMps_ = bodyVx;
-  lastBodyVelocityY_MMps_ = bodyVy;
-  lastAngularVelocityRadps_ = wheelYawRate;
+  lastBodyVelocityX_MMps_=c*fusedWorldVelocityX_MMps_+s*fusedWorldVelocityY_MMps_;
+  lastBodyVelocityY_MMps_=-s*fusedWorldVelocityX_MMps_+c*fusedWorldVelocityY_MMps_;
+  lastAngularVelocityRadps_=yawRateRadps;
+  odometrySampleHealthy_=robot_geometry::Finite(pose_) && std::isfinite(fusedWorldVelocityX_MMps_) &&
+      std::isfinite(fusedWorldVelocityY_MMps_);
 
   // Motion-dependent uncertainty: waiting still for Start must not exhaust the
   // same drift budget as driving. Noise parameters require arena calibration.
@@ -353,8 +398,15 @@ bool Localization::CorrectFromLine(const autonomous_config::Station& station,dou
 double Localization::GetPositionSigmaMM() const {
   return std::sqrt(std::max(covariance_[0][0],covariance_[1][1]));
 }
+std::string Localization::GetFusionStatus() const {
+  if (!odometrySampleHealthy_) return "Unhealthy gyro/encoder sample - autonomous stops";
+  if (!accelSampleValid_) return "Encoders + gyro/AHRS; invalid acceleration ignored";
+  if (stationaryUpdate_) return "Stationary: zero velocity; updating accelerometer bias";
+  return "Encoders + gyro/AHRS + bounded accelerometer prediction";
+}
+
 bool Localization::IsHealthy(double maxPositionSigmaMM) const {
-  return robot_geometry::Finite(pose_) && std::isfinite(GetPositionSigmaMM()) &&
+  return odometrySampleHealthy_ && robot_geometry::Finite(pose_) && std::isfinite(GetPositionSigmaMM()) &&
       GetPositionSigmaMM()<=maxPositionSigmaMM &&
       std::isfinite(covariance_[2][2]) && covariance_[2][2]>=0 &&
       std::sqrt(covariance_[2][2])<=autonomous_config::MAX_HEADING_SIGMA_RAD &&

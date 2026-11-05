@@ -11,7 +11,7 @@ namespace localization_config {
 static constexpr bool ENABLE_DETAILED_TELEMETRY = false;
 
 // Left-stick translation (including diagonals) and right-stick rotation in Teleoperated
-// mode. The SP -> ME -> RDE autonomous test has its own enable/start gate below.
+// mode. The SP -> MW -> RDW autonomous test has its own enable/start gate below.
 static constexpr bool TELEOP_DRIVE_ENABLED = true;
 static constexpr int DRIVER_JOYSTICK_PORT = 0;
 // Common gamepad mapping; confirm with the Teleop tab/Windows game controller
@@ -129,11 +129,18 @@ static constexpr double SONAR_ECHO_SETTLE_S = 0.060;
 static constexpr double SONAR_MIN_RANGE_MM = 20.0;
 static constexpr double SONAR_MAX_RANGE_MM = 4000.0;
 
-static constexpr double ACCEL_DEADBAND_G = 0.025;
-// Still capture accelerometer data, but do not integrate its bias into position.
-// Encoders are the translation baseline; AHRS uses accelerometer internally.
-static constexpr double ACCEL_VELOCITY_BLEND = 0.0;
-static constexpr double ENCODER_YAW_RATE_BLEND = 0.10;
+// Encoder-anchored complementary velocity estimate. Acceleration contributes
+// short-term prediction, with bounded influence and zero-velocity bias updates.
+static constexpr double ACCEL_DEADBAND_G = 0.005;
+static constexpr double ACCEL_VELOCITY_BLEND = 0.15;
+static constexpr double ACCEL_MAX_PLAUSIBLE_G = 0.5;
+static constexpr double ACCEL_BIAS_TRACK_TAU_S = 0.75;
+static constexpr double ENCODER_STATIONARY_MMPS = 3.0;
+static constexpr double GYRO_STATIONARY_DPS = 0.5;
+static constexpr double ACCEL_MAX_VELOCITY_CORRECTION_MMPS = 20.0;
+// Wheel slip must not overwrite the measured gyro heading. Encoders remain
+// the translation baseline; gyro rate and AHRS yaw supply heading feedback.
+static constexpr double ENCODER_YAW_RATE_BLEND = 0.0;
 static constexpr double YAW_AHRS_CORRECTION = 0.25;
 static constexpr double SONAR_RANGE_STDDEV_MM = 40.0;
 static constexpr double SONAR_MAX_INNOVATION_MM = 100.0;
@@ -284,8 +291,8 @@ static constexpr double POSITION_KP_PER_S = 1.5;
 static constexpr double HEADING_KP_PER_S = 2.5;
 static constexpr double MAX_YAW_RADPS = 0.6;
 static constexpr double YAW_ACCEL_RADPS2 = 1.0;
-static constexpr double POSITION_TOLERANCE_MM = 12.0;
-static constexpr double HEADING_TOLERANCE_RAD = 0.035;
+static constexpr double POSITION_TOLERANCE_MM = 15.0;
+static constexpr double HEADING_TOLERANCE_RAD = robot_geometry::PI/180.0;
 static constexpr double SETTLE_S = 0.20;
 static constexpr double WAYPOINT_OBSERVATION_S = 0.70;
 static constexpr double LEG_TIMEOUT_S = 35.0;
@@ -316,11 +323,11 @@ namespace arena_test_config {
 static constexpr bool ENABLED = true;
 struct Waypoint { double x_MM, y_MM, headingDeg; };
 static constexpr Waypoint SP = {950.0,900.0,0.0};
-static constexpr Waypoint ME = {1820.0,900.0,0.0};
-static constexpr Waypoint RDE = {1820.0,1820.0,90.0};
-// Headings use [-180, 180] degrees: 0 faces east, 90 faces north.
-// Travel SP -> ME at SP heading, then turn to ME heading. Travel ME -> RDE
-// at ME heading, then settle at RDE heading. All coordinates are millimeters.
+static constexpr Waypoint MW = {250.0,900.0,-90.0};
+static constexpr Waypoint RDW = {250.0,1780.0,-90.0};
+// Headings use [-180, 180] degrees: 0 faces east, -90 faces south.
+// Travel SP -> MW at SP heading, then turn to MW heading. Travel MW -> RDW
+// at MW heading, then settle at RDW heading. All coordinates are millimeters.
 // Share the tested teleop limits instead of maintaining slower duplicate values.
 // The autonomous position controller still slows down when approaching a target.
 static constexpr double SPEED_MMPS = localization_config::TELEOP_SPEED_MMPS;
@@ -332,16 +339,19 @@ static constexpr double YAW_ACCEL_RADPS2 = localization_config::TELEOP_YAW_ACCEL
     robot_geometry::PI / 180.0;
 static constexpr double POSITION_KP = 1.0;
 static constexpr double HEADING_KP = 1.5;
-static constexpr double POSITION_TOLERANCE_MM = 12.0;
-static constexpr double HEADING_TOLERANCE_RAD = 0.035;
+static constexpr double POSITION_TOLERANCE_MM = autonomous_config::POSITION_TOLERANCE_MM;
+static constexpr double HEADING_TOLERANCE_RAD = autonomous_config::HEADING_TOLERANCE_RAD;
+static constexpr double HOLD_HEADING_DEADBAND_RAD = HEADING_TOLERANCE_RAD;
+static constexpr double HOLD_HEADING_MAX_YAW_RADPS = 20.0*robot_geometry::PI/180.0;
 static constexpr double SETTLE_S = 0.40;
 static constexpr double LEG_TIMEOUT_S = 40.0;
 static constexpr double REFERENCE_TIMEOUT_S = 3.0;
 static constexpr double ROUTINE_TIMEOUT_S = 120.0;
 static constexpr double STATIONARY_SPEED_MMPS = 8.0;
-static constexpr double STATIONARY_YAW_DPS = 2.0;
+static constexpr double STATIONARY_YAW_DPS = 0.5;
 static constexpr double MAX_POSITION_SIGMA_MM = 250.0;
 static constexpr int REFERENCE_SAMPLES = 3;
-static constexpr unsigned ME_REFERENCE_MASK = 1u<<0; // left
-static constexpr unsigned RDE_REFERENCE_MASK = (1u<<0)|(1u<<1); // left + rear
+// Facing south on the west side: right -> west wall, rear -> north wall.
+static constexpr unsigned MW_REFERENCE_MASK = 1u<<2; // right
+static constexpr unsigned RDW_REFERENCE_MASK = (1u<<2)|(1u<<1); // right + rear
 } // namespace arena_test_config

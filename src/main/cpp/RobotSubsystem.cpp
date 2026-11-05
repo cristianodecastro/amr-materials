@@ -21,7 +21,7 @@ RobotSubsystem::RobotSubsystem() {
 std::string RobotSubsystem::PreflightError() const {
   if (arena_test_config::ENABLED) {
     const auto error=arenaTest_.ValidateGeometry();
-    return error.empty()?"SP -> ME -> RDE test ready; select Autonomous, enable, press Start routine":error;
+    return error.empty()?"SP -> MW -> RDW test ready; select Autonomous, enable, press Start routine":error;
   }
   using namespace autonomous_config;
   if (!AUTONOMOUS_ENABLED) return "Autonomous disabled by configuration; motors held at zero";
@@ -283,9 +283,9 @@ void RobotSubsystem::UpdateSonarPoll(double now,bool enabled) {
       if (arena_test_config::ENABLED && (arenaTest_.ReferenceMask()&(1u<<i))) {
         // Only stationary reference states may change the pose. Ignore invalid
         // echoes, old pings, moving samples and a different wall association.
-        const auto& target=arena_test_config::ME;
-        const auto& reference=arenaTest_.GetState()==ArenaTestController::State::ReferenceME?
-            target:arena_test_config::RDE;
+        const auto& target=arena_test_config::MW;
+        const auto& reference=arenaTest_.GetState()==ArenaTestController::State::ReferenceMW?
+            target:arena_test_config::RDW;
         const bool stationary=std::hypot(localization_.GetBodyVelocityX_MMps(),
             localization_.GetBodyVelocityY_MMps())<=arena_test_config::STATIONARY_SPEED_MMPS &&
             std::fabs(hardware_.GetYawRateDegreesPerSecond())<=arena_test_config::STATIONARY_YAW_DPS;
@@ -313,6 +313,7 @@ void RobotSubsystem::InitializeDashboard() {
     return arena_test_config::ENABLED?arenaTest_.GetStatus():autonomous_.GetStatus();
   }).WithPosition(0,0).WithSize(8,1);
   tab.AddBoolean("Enabled",[] { return frc::RobotState::IsEnabled(); }).WithPosition(8,0).WithSize(2,1);
+  tab.AddNumber("Target heading (deg)",[this] { return arenaTest_.GetHeadingTargetDeg(); }).WithPosition(10,0).WithSize(2,1);
   tab.AddNumber("X (mm)",[this] { return localization_.GetPose().x_MM; }).WithPosition(0,1).WithSize(3,1);
   tab.AddNumber("Y (mm)",[this] { return localization_.GetPose().y_MM; }).WithPosition(3,1).WithSize(3,1);
   tab.AddNumber("Heading (deg)",[this] { return localization_.GetPose().headingRad*180/robot_geometry::PI; }).WithPosition(6,1).WithSize(3,1);
@@ -338,6 +339,13 @@ void RobotSubsystem::InitializeDashboard() {
   tab.AddString("Test instructions",[] {
     return "Place at SP; select Autonomous, enable, then Start routine. Disable/Stop aborts; reselect Autonomous to restart.";
   }).WithPosition(0,8).WithSize(12,1);
+  tab.AddNumber("Heading error (deg)",[this] {
+    return robot_geometry::Wrap(robot_geometry::Radians(arenaTest_.GetHeadingTargetDeg())-
+        localization_.GetPose().headingRad)*180/robot_geometry::PI;
+  }).WithPosition(0,9).WithSize(3,1);
+  tab.AddNumber("Yaw request (deg/s)",[this] { return arenaTest_.GetYawRadps()*180/robot_geometry::PI; })
+      .WithPosition(3,9).WithSize(3,1);
+  tab.AddString("Fusion status",[this] { return localization_.GetFusionStatus(); }).WithPosition(6,9).WithSize(6,1);
 
   // A separate calibration tab keeps the operating screen uncluttered.
   auto& calibration=frc::Shuffleboard::GetTab("Calibration");
@@ -427,7 +435,8 @@ void RobotSubsystem::PublishDiagnostics() {
   for (int i=0;i<4;++i)
     frc::SmartDashboard::PutBoolean(std::string("Diagnostics/Sonar/")+
         localization_config::SONARS[i].name+"/fused",sonarCorrectionAccepted_[i]);
-  frc::SmartDashboard::PutNumber("Diagnostics/Auto/target_x_mm",autonomous_.GetTarget().x);
-  frc::SmartDashboard::PutNumber("Diagnostics/Auto/target_y_mm",autonomous_.GetTarget().y);
+  const auto target=arena_test_config::ENABLED?arenaTest_.GetTarget():autonomous_.GetTarget();
+  frc::SmartDashboard::PutNumber("Diagnostics/Auto/target_x_mm",target.x);
+  frc::SmartDashboard::PutNumber("Diagnostics/Auto/target_y_mm",target.y);
   localization_.PublishTelemetry();
 }
