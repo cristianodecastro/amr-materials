@@ -98,6 +98,18 @@ void RobotSubsystem::Periodic() {
     } else localization_.UpdateOdometry(dt);
   }
   line_=hardware_.ReadLine();
+  if (setSpReference_.GetBoolean(false)) {
+    setSpReference_.SetBoolean(false);
+    if (enabled) poseReferenceStatus_="Reference ignored - Disable Control Station first";
+    else if (!hardware_.IsImuConnected() || hardware_.IsImuCalibrating())
+      poseReferenceStatus_="Reference ignored - wait for IMU connection/calibration";
+    else {
+      const auto& sp=arena_test_config::SP;
+      localization_.Reset(sp.x_MM,sp.y_MM,sp.headingDeg);
+      poseAnchored_=false;
+      poseReferenceStatus_="SP reference set; motors remain disabled; gyro readings are relative to this sample";
+    }
+  }
   // Consume dashboard button pulses in every mode. Disabled/Teleop presses
   // cannot remain queued and start a routine when Autonomous is enabled later.
   startRoutineRequested_=startRoutine_.GetBoolean(false);
@@ -166,6 +178,7 @@ void RobotSubsystem::UpdateArenaTest(double now,double dt) {
     const auto& sp=arena_test_config::SP;
     localization_.Reset(sp.x_MM,sp.y_MM,sp.headingDeg);
     poseAnchored_=true;
+    poseReferenceStatus_="SP reference sampled by Start routine";
     for (int i=0;i<4;++i) sonarCorrectionTime_[i]=-1;
   }
   const bool stationary=std::hypot(localization_.GetBodyVelocityX_MMps(),
@@ -356,6 +369,17 @@ void RobotSubsystem::InitializeDashboard() {
   calibration.AddNumber("IMU world Y (g)",[this] { return hardware_.GetWorldAccelY_G(); }).WithPosition(3,2).WithSize(3,1);
   calibration.AddNumber("IMU yaw (deg)",[this] { return hardware_.GetYawDegrees(); }).WithPosition(6,2).WithSize(3,1);
   calibration.AddNumber("Yaw rate (deg/s)",[this] { return hardware_.GetYawRateDegreesPerSecond(); }).WithPosition(9,2).WithSize(3,1);
+  setSpReference_=calibration.Add("Set SP reference",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
+      .WithPosition(0,3).WithSize(3,1).GetEntry();
+  setSpReference_.SetBoolean(false);
+  calibration.AddString("Pose reference status",[this] { return poseReferenceStatus_; })
+      .WithPosition(3,3).WithSize(9,1);
+  calibration.AddNumber("Arena heading (deg)",[this] { return localization_.GetPose().headingRad*180/robot_geometry::PI; })
+      .WithPosition(0,4).WithSize(4,1);
+  calibration.AddNumber("IMU to arena offset (deg)",[this] { return localization_.GetImuOffsetDegrees(); })
+      .WithPosition(4,4).WithSize(4,1);
+  calibration.AddNumber("Arena X (mm)",[this] { return localization_.GetPose().x_MM; })
+      .WithPosition(8,4).WithSize(4,1);
 }
 
 void RobotSubsystem::InitializeTeleopDashboard() {

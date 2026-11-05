@@ -55,18 +55,37 @@ constexpr TeleopDriveController Settled(double x, double y, double rightX=0) {
   return controller;
 }
 
-constexpr bool TranslationReversedWithoutReversingYaw() {
+constexpr bool CanonicalTranslationWithoutReversingYaw() {
   const auto up=Settled(0,-1,0);
   const auto down=Settled(0,1,0);
   const auto left=Settled(-1,0,0);
   const auto right=Settled(1,0,0);
-  return up.GetForwardMMps()<0 && down.GetForwardMMps()>0 &&
-      left.GetLeftMMps()<0 && right.GetLeftMMps()>0 &&
+  return up.GetForwardMMps()>0 && down.GetForwardMMps()<0 &&
+      left.GetLeftMMps()>0 && right.GetLeftMMps()<0 &&
       Settled(0,0,kCwRawX).GetYawRateRadps()<0 &&
       Settled(0,0,-kCwRawX).GetYawRateRadps()>0;
 }
-static_assert(TranslationReversedWithoutReversingYaw(),
-              "Installed translation polarity is independent of right-stick yaw");
+static_assert(CanonicalTranslationWithoutReversingYaw(),
+              "Stick requests use canonical forward/left; wheel calibration is shared with odometry");
+
+constexpr bool ExistingTeleopWheelOutputsPreserved() {
+  for (int x=-1;x<=1;++x) for (int y=-1;y<=1;++y) {
+    const auto c=Settled(x,y,kCwRawX);
+    const double magnitude=std::hypot(x,y);
+    const double speed=magnitude==0?0:localization_config::TELEOP_SPEED_MMPS/magnitude;
+    // Previous bindings produced layout vx=raw Y, vy=raw X. The corrected
+    // body frame must leave every installed teleop motor command unchanged.
+    for (int wheel=0;wheel<3;++wheel) {
+      const double old=drive_kinematics::WheelSpeedMMps(wheel,y*speed,x*speed,c.GetYawRateRadps());
+      const double now=drive_kinematics::WheelSpeedMMps(wheel,
+          drive_kinematics::LayoutVx(c.GetForwardMMps(),c.GetLeftMMps()),
+          drive_kinematics::LayoutVy(c.GetForwardMMps(),c.GetLeftMMps()),c.GetYawRateRadps());
+      if (!Near(old,now)) return false;
+    }
+  }
+  return true;
+}
+static_assert(ExistingTeleopWheelOutputsPreserved(),"Shared wheel-frame fix must preserve all teleop wheel outputs");
 
 constexpr bool TriangleToggleIsIndependentOfManualServo() {
   ServoTeleopController servos;
@@ -323,7 +342,7 @@ constexpr bool DriveAndYawUseSeparateFrames() {
   const auto forward = Settled(0.0,kForwardRawY,0);
   const auto ccw = Settled(0.0,0.0,-kCwRawX);
   const auto cw = Settled(0.0,0.0,kCwRawX);
-  if (!Near(drive_kinematics::LayoutVx(forward.GetForwardMMps(),forward.GetLeftMMps()), localization_config::TELEOP_SPEED_MMPS) ||
+  if (!Near(drive_kinematics::LayoutVx(forward.GetForwardMMps(),forward.GetLeftMMps()), -localization_config::TELEOP_SPEED_MMPS) ||
       !Near(drive_kinematics::LayoutVy(forward.GetForwardMMps(),forward.GetLeftMMps()), 0.0)) return false;
   for (int wheel = 0; wheel < 3; ++wheel) {
     if (drive_kinematics::WheelSpeedMMps(wheel, 0.0, 0.0,
@@ -363,8 +382,8 @@ constexpr bool FullStickRespectsTranslationSpeedScale() {
         drive_kinematics::LayoutVx(forward.GetForwardMMps(),forward.GetLeftMMps()), drive_kinematics::LayoutVy(forward.GetForwardMMps(),forward.GetLeftMMps()), 0.0);
   const double denominator = drive_kinematics::OutputDenominator(
       speeds, localization_config::TELEOP_MAX_MOTOR_OUTPUT);
-  return speeds[0] / denominator < -0.43 && speeds[0] / denominator > -0.44 &&
-      speeds[1] / denominator > 0.43 && speeds[1] / denominator < 0.44 &&
+  return speeds[0] / denominator > 0.43 && speeds[0] / denominator < 0.44 &&
+      speeds[1] / denominator < -0.43 && speeds[1] / denominator > -0.44 &&
       Near(speeds[2] / denominator, 0.0);
 }
 static_assert(FullStickRespectsTranslationSpeedScale(),

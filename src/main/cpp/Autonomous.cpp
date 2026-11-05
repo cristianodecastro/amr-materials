@@ -168,6 +168,8 @@ std::string ArenaTestController::ValidateGeometry() const {
         at::POSITION_TOLERANCE_MM>0 && at::HEADING_TOLERANCE_RAD>0 && at::SETTLE_S>=0 &&
         at::HOLD_HEADING_DEADBAND_RAD>=0 && at::HOLD_HEADING_DEADBAND_RAD<=at::HEADING_TOLERANCE_RAD &&
         at::HOLD_HEADING_MAX_YAW_RADPS>0 &&
+        at::MIN_APPROACH_MMPS>0 && at::MIN_APPROACH_MMPS<=at::SPEED_MMPS &&
+        at::MIN_TURN_YAW_RADPS>0 && at::MIN_TURN_YAW_RADPS<=at::MAX_YAW_RADPS &&
         at::REFERENCE_TIMEOUT_S>at::SETTLE_S && at::REFERENCE_SAMPLES>0 &&
         at::LEG_TIMEOUT_S>0 && at::ROUTINE_TIMEOUT_S>0))
     return "Invalid test speed, tolerance or timing configuration";
@@ -216,7 +218,9 @@ double ArenaTestController::HeadingRequest(double error,double oldYaw,double dt,
   const double deadband=hold?at::HOLD_HEADING_DEADBAND_RAD:at::HEADING_TOLERANCE_RAD;
   if (std::fabs(error)<=deadband) return 0;
   const double limit=hold?std::min(at::MAX_YAW_RADPS,at::HOLD_HEADING_MAX_YAW_RADPS):at::MAX_YAW_RADPS;
-  const double request=std::max(-limit,std::min(limit,error*at::HEADING_KP));
+  double request=std::max(-limit,std::min(limit,error*at::HEADING_KP));
+  if (!hold && std::fabs(request)<at::MIN_TURN_YAW_RADPS)
+    request=error<0?-at::MIN_TURN_YAW_RADPS:at::MIN_TURN_YAW_RADPS;
   const double step=at::YAW_ACCEL_RADPS2*dt;
   return oldYaw+std::max(-step,std::min(step,request-oldYaw));
 }
@@ -293,8 +297,10 @@ void ArenaTestController::Update(const ArenaTestInput& in) {
     // Correct small disturbances around the travel heading. The planned turn
     // to the waypoint's new heading still waits until XY motion has finished.
     const double holdError=robot_geometry::Wrap(travelHeadingRad_-in.pose.headingRad);
-    yaw_=HeadingRequest(holdError,oldYaw,in.dt,true);
-    if (Settled(reached && in.stationary && std::fabs(holdError)<=at::HEADING_TOLERANCE_RAD,in.now)) {
+    yaw_=reached?0:HeadingRequest(holdError,oldYaw,in.dt,true);
+    // At the XY goal, stop and let the following turn state correct heading.
+    // Do not stall here requesting tiny yaw outputs against static friction.
+    if (Settled(reached && in.stationary,in.now)) {
       const State next=state_==State::TravelMW?State::TurnMW:
           (state_==State::FinishRDW?State::FinishHeadingRDW:State::TurnRDW);
       Transition(next,in.now,
@@ -302,8 +308,10 @@ void ArenaTestController::Update(const ArenaTestInput& in) {
       return;
     }
     if (reached) return;
-    const double speed=std::min(at::SPEED_MMPS,std::min(distance*at::POSITION_KP,
-        std::sqrt(2*at::ACCEL_MMPS2*std::max(0.0,distance-at::POSITION_TOLERANCE_MM))));
+    const double brakingSpeed=std::sqrt(2*at::ACCEL_MMPS2*
+        std::max(0.0,distance-at::POSITION_TOLERANCE_MM));
+    const double speed=std::min(at::SPEED_MMPS,std::max(at::MIN_APPROACH_MMPS,
+        std::min(distance*at::POSITION_KP,brakingSpeed)));
     const double c=std::cos(in.pose.headingRad),s=std::sin(in.pose.headingRad);
     forward_=(c*dx+s*dy)*speed/distance;
     left_=(-s*dx+c*dy)*speed/distance;

@@ -134,6 +134,7 @@ class Localization {
   double GetBodyVelocityX_MMps() const { return lastBodyVelocityX_MMps_; }
   double GetBodyVelocityY_MMps() const { return lastBodyVelocityY_MMps_; }
   std::string GetFusionStatus() const;
+  double GetImuOffsetDegrees() const { return imuYawOffsetRad_*180/robot_geometry::PI; }
 
  private:
   double PredictSonarRange(int sensorIndex, const RobotPose& pose) const;
@@ -208,6 +209,8 @@ class RobotSubsystem : public frc2::SubsystemBase {
   CobraCheck cobraCheck_;
   nt::NetworkTableEntry captureCobraWhite_,captureCobraBlack_;
   nt::NetworkTableEntry startRoutine_,stopRoutine_;
+  nt::NetworkTableEntry setSpReference_;
+  std::string poseReferenceStatus_="Disabled only: place at SP facing +X, then Set SP reference";
   bool startRoutineRequested_=false,stopRoutineRequested_=false;
   double sonarCorrectionTime_[4]={-1,-1,-1,-1};
   double lastLineCorrection_=0;

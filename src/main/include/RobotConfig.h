@@ -19,10 +19,11 @@ static constexpr int DRIVER_JOYSTICK_PORT = 0;
 static constexpr int DRIVER_LEFT_X_AXIS = 0;
 static constexpr int DRIVER_LEFT_Y_AXIS = 1;
 static constexpr int DRIVER_RIGHT_X_AXIS = 2;
-// Reverse both translation axes following the installed robot's movement test.
-// These signs affect translation only; right-stick rotation is independent.
-static constexpr double DRIVER_LEFT_X_SIGN = -1.0;
-static constexpr double DRIVER_LEFT_Y_SIGN = 1.0;
+// Canonical body commands: +forward and +left. The installed translation
+// reversal is handled once in DRIVE_FORWARD_DIRECTION_DEG for ALL callers.
+// Flipping these with the shared frame preserves existing teleop wheel outputs.
+static constexpr double DRIVER_LEFT_X_SIGN = 1.0;
+static constexpr double DRIVER_LEFT_Y_SIGN = -1.0;
 static constexpr double DRIVER_STICK_DEADBAND = 0.12;
 // Installed-controller polarity corrected after the physical rotation test:
 // negative raw right X means stick-right: clockwise (negative model yaw).
@@ -43,9 +44,10 @@ static constexpr double TELEOP_YAW_ACCELERATION_DPS2 = 45.0;
 // physical rotation check establishes opposite installed motor polarity.
 static constexpr double TELEOP_YAW_SIGN = 1.0;
 
-// Wheel angles below are now directly in the robot body frame: +X forward,
-// +Y left. The previous layout's -90 degree offset is therefore no longer used.
-static constexpr double DRIVE_FORWARD_DIRECTION_DEG = 0.0;
+// Installed wheel-layout translation is reversed relative to robot +X forward,
+// +Y left. Apply this same rotation to commands AND inverse encoder odometry.
+// It is a wheel-frame calibration, never an offset added to the gyro heading.
+static constexpr double DRIVE_FORWARD_DIRECTION_DEG = 180.0;
 static constexpr double START_BUTTON_DEBOUNCE_S = 0.060;
 
 static constexpr int TITAN_CAN_ID = 42;
@@ -66,7 +68,7 @@ static constexpr double WHEEL_RADIUS_MM = 51.0;
 static constexpr double WHEEL_CENTER_RADIUS_MM[WHEEL_COUNT] = {
     168.0, 168.0, 168.0};
 
-// Same 120-degree spacing, expressed relative to the robot front (+X):
+// Same 120-degree spacing in the wheel-layout frame (see shared rotation above):
 // left rear 120 degrees, right rear 240 degrees, front 0 degrees.
 // Positive rolling direction is tangent in the counterclockwise direction.
 static constexpr double WHEEL_ANGLE_DEG[WHEEL_COUNT] = {120.0, 240.0, 0.0};
@@ -339,6 +341,10 @@ static constexpr double YAW_ACCEL_RADPS2 = localization_config::TELEOP_YAW_ACCEL
     robot_geometry::PI / 180.0;
 static constexpr double POSITION_KP = 1.0;
 static constexpr double HEADING_KP = 1.5;
+// Moving motors need a usable request near the goal. These floors apply only
+// outside the completion tolerances, and never bypass startup slew limits.
+static constexpr double MIN_APPROACH_MMPS = 120.0;
+static constexpr double MIN_TURN_YAW_RADPS = 30.0*robot_geometry::PI/180.0;
 static constexpr double POSITION_TOLERANCE_MM = autonomous_config::POSITION_TOLERANCE_MM;
 static constexpr double HEADING_TOLERANCE_RAD = autonomous_config::HEADING_TOLERANCE_RAD;
 static constexpr double HOLD_HEADING_DEADBAND_RAD = HEADING_TOLERANCE_RAD;

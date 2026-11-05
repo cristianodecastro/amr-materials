@@ -1,4 +1,5 @@
 #include "Autonomous.h"
+#include "TeleopControl.h"
 
 #include <cmath>
 #include <limits>
@@ -99,7 +100,30 @@ void HeadingHoldCorrectsDriftDuringXY() {
   REQUIRE_ARENA(c.GetState()==State::TravelMW && c.GetYawRadps()>0);
   REQUIRE_ARENA(Near(c.GetHeadingTargetDeg(),at::SP.headingDeg));
 }
-void Simulate(bool supplyReferences,bool repeatOldTimestamp=false) {
+void ApproachRequestsRemainUsable() {
+  ArenaTestController c;
+  auto in=Input(); c.Enter(0); in.startRequested=true; c.Update(in); in.startRequested=false;
+  in.pose.x_MM=at::MW.x_MM+at::POSITION_TOLERANCE_MM+1;
+  in.pose.y_MM=at::MW.y_MM;
+  for (int tick=0;tick<100;++tick) { in.now+=in.dt; c.Update(in); }
+  REQUIRE_ARENA(c.GetState()==State::TravelMW);
+  REQUIRE_ARENA(Near(std::hypot(c.GetForwardMMps(),c.GetLeftMMps()),at::MIN_APPROACH_MMPS));
+  REQUIRE_ARENA(c.GetForwardMMps()<0);
+  const double vx=drive_kinematics::LayoutVx(c.GetForwardMMps(),c.GetLeftMMps());
+  const double vy=drive_kinematics::LayoutVy(c.GetForwardMMps(),c.GetLeftMMps());
+  REQUIRE_ARENA(drive_kinematics::WheelSpeedMMps(0,vx,vy,0)<0);
+  REQUIRE_ARENA(drive_kinematics::WheelSpeedMMps(1,vx,vy,0)>0);
+  in.pose.x_MM=at::MW.x_MM;
+  for (int tick=0;tick<25 && c.GetState()==State::TravelMW;++tick) { in.now+=in.dt; c.Update(in); }
+  REQUIRE_ARENA(c.GetState()==State::TurnMW);
+  in.pose.headingRad=robot_geometry::Radians(at::MW.headingDeg+2);
+  for (int tick=0;tick<100;++tick) { in.now+=in.dt; c.Update(in); }
+  REQUIRE_ARENA(c.GetState()==State::TurnMW);
+  REQUIRE_ARENA(Near(c.GetYawRadps(),-at::MIN_TURN_YAW_RADPS));
+  in.pose.headingRad=robot_geometry::Radians(at::MW.headingDeg); in.now+=in.dt; c.Update(in);
+  REQUIRE_ARENA(Stopped(c));
+}
+void Simulate(bool supplyReferences,bool repeatOldTimestamp=false,bool motorDeadZone=false) {
   ArenaTestController c;
   auto in=Input(); c.Enter(0);
   in.startRequested=true; c.Update(in); in.startRequested=false;
@@ -108,7 +132,21 @@ void Simulate(bool supplyReferences,bool repeatOldTimestamp=false) {
   bool disturbedFinalPose=false;
   bool disturbedTravelHeading=false;
   for (int tick=1;tick<6000 && c.GetState()!=State::Complete;++tick) {
-    const double forward=c.GetForwardMMps(),left=c.GetLeftMMps(),yaw=c.GetYawRadps();
+    const double commandForward=c.GetForwardMMps(),commandLeft=c.GetLeftMMps(),commandYaw=c.GetYawRadps();
+    const double vx=drive_kinematics::LayoutVx(commandForward,commandLeft);
+    const double vy=drive_kinematics::LayoutVy(commandForward,commandLeft);
+    double wheel[3];
+    for (int i=0;i<3;++i) wheel[i]=drive_kinematics::WheelSpeedMMps(i,vx,vy,commandYaw);
+    // Independent plant from the reported installation: positive layout
+    // translation moves opposite the physical front/left axes. Do not use the
+    // production inverse-frame helper here or a matching sign bug could hide.
+    double forward=-(wheel[1]-wheel[0])/std::sqrt(3.0);
+    double left=-(2*wheel[2]-wheel[0]-wheel[1])/3.0;
+    double yaw=(wheel[0]+wheel[1]+wheel[2])/(3*localization_config::WHEEL_CENTER_RADIUS_MM[0]);
+    if (motorDeadZone && std::hypot(forward,left)<100) {
+      forward=left=0;
+      if (std::fabs(yaw)<25*robot_geometry::PI/180) yaw=0;
+    }
     const double cosine=std::cos(in.pose.headingRad),sine=std::sin(in.pose.headingRad);
     in.pose.x_MM+=(cosine*forward-sine*left)*in.dt;
     in.pose.y_MM+=(sine*forward+cosine*left)*in.dt;
@@ -165,8 +203,9 @@ void Simulate(bool supplyReferences,bool repeatOldTimestamp=false) {
 int main() {
   try {
     GeometryAndWallAssociation(); StartStopAndHealth(); TimingAndBounds(); HeadingHoldCorrectsDriftDuringXY();
-    Simulate(true); Simulate(false); Simulate(true,true);
-    std::cout<<"PASS: west-route geometry, start/stop, health/timing, gyro heading hold, planned turn after XY, valid/missing/stale references, 15 mm/1 degree completion\n";
+    ApproachRequestsRemainUsable();
+    Simulate(true); Simulate(false); Simulate(true,true); Simulate(true,false,true);
+    std::cout<<"PASS: west motion in installed wheel frame, usable approach/turn floors, motor dead zones, heading hold, sensor references and 15 mm/1 degree completion\n";
   } catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }
 }
 #else
@@ -174,7 +213,9 @@ TEST(ArenaRoutine, GeometryAndWallAssociation) { EXPECT_NO_THROW(GeometryAndWall
 TEST(ArenaRoutine, StartStopAndHealth) { EXPECT_NO_THROW(StartStopAndHealth()); }
 TEST(ArenaRoutine, TimingAndBounds) { EXPECT_NO_THROW(TimingAndBounds()); }
 TEST(ArenaRoutine, HeadingHoldCorrectsDriftDuringXY) { EXPECT_NO_THROW(HeadingHoldCorrectsDriftDuringXY()); }
+TEST(ArenaRoutine, ApproachRequestsRemainUsable) { EXPECT_NO_THROW(ApproachRequestsRemainUsable()); }
 TEST(ArenaRoutine, ValidReferenceSimulation) { EXPECT_NO_THROW(Simulate(true)); }
 TEST(ArenaRoutine, MissingReferenceSimulation) { EXPECT_NO_THROW(Simulate(false)); }
 TEST(ArenaRoutine, StaleReferenceSimulation) { EXPECT_NO_THROW(Simulate(true,true)); }
+TEST(ArenaRoutine, MotorDeadZoneSimulation) { EXPECT_NO_THROW(Simulate(true,false,true)); }
 #endif
