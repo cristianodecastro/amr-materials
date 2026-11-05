@@ -32,7 +32,7 @@ struct ArenaTestInput {
 };
 class ArenaTestController {
  public:
-  enum class State { Disabled, WaitingStart, TravelMW, TurnMW, ReferenceMW,
+  enum class State { Disabled, WaitingStart, TravelMW, TurnMW, ReferenceMW, FinishMW, FinishHeadingMW,
     TravelRDW, TurnRDW, ReferenceRDW, FinishRDW, FinishHeadingRDW, Complete, Fault, Aborted };
   void Enter(double now);
   void Abort();

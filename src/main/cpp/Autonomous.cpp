@@ -196,6 +196,7 @@ void ArenaTestController::Abort() {
 void ArenaTestController::Transition(State state,double now,const char* status) {
   Stop(); state_=state; stateTime_=now; settleTime_=-1; status_=status;
   if (state==State::TravelMW) travelHeadingRad_=robot_geometry::Radians(at::SP.headingDeg);
+  if (state==State::FinishMW) travelHeadingRad_=robot_geometry::Radians(at::MW.headingDeg);
   if (state==State::TravelRDW) travelHeadingRad_=robot_geometry::Radians(at::MW.headingDeg);
   if (state==State::FinishRDW) travelHeadingRad_=robot_geometry::Radians(at::RDW.headingDeg);
   for (int i=0;i<4;++i) { referenceSamples_[i]=0; previousCorrection_[i]=-1; }
@@ -210,7 +211,7 @@ unsigned ArenaTestController::ReferenceMask() const {
       (state_==State::ReferenceRDW?at::RDW_REFERENCE_MASK:0u);
 }
 double ArenaTestController::GetHeadingTargetDeg() const {
-  if (state_==State::TravelMW || state_==State::TravelRDW || state_==State::FinishRDW)
+  if (state_==State::TravelMW || state_==State::FinishMW || state_==State::TravelRDW || state_==State::FinishRDW)
     return travelHeadingRad_*180.0/robot_geometry::PI;
   return target_.headingDeg;
 }
@@ -251,13 +252,12 @@ void ArenaTestController::Reference(const ArenaTestInput& in) {
   if (!done && in.now-stateTime_<at::REFERENCE_TIMEOUT_S) return;
   if (!done) {
     referencesSkipped_=true;
-    referenceReport_+="Incomplete/invalid references skipped; retain odometry on those axes";
+    referenceReport_+="Only accepted samples applied; unavailable references skipped";
   }
   if (!lastReferenceReport_.empty()) lastReferenceReport_+=" | ";
   lastReferenceReport_+=referenceReport_;
   if (state_==State::ReferenceMW) {
-    target_=at::RDW;
-    Transition(State::TravelRDW,in.now,"MW observed - XY to RDW with gyro heading hold");
+    Transition(State::FinishMW,in.now,"MW observed - finish XY using the corrected pose");
   } else {
     Transition(State::FinishRDW,in.now,"RDW observed - finish XY using the corrected pose");
   }
@@ -288,7 +288,7 @@ void ArenaTestController::Update(const ArenaTestInput& in) {
   if (in.now-stateTime_>at::LEG_TIMEOUT_S) { Fail("Motion leg timeout - stopped"); return; }
   if (!map_.IsFree({in.pose.x_MM,in.pose.y_MM})) { Fail("Pose outside mapped center-path clearance"); return; }
   if (state_==State::ReferenceMW || state_==State::ReferenceRDW) { Reference(in); return; }
-  if (state_==State::TravelMW || state_==State::TravelRDW || state_==State::FinishRDW) {
+  if (state_==State::TravelMW || state_==State::FinishMW || state_==State::TravelRDW || state_==State::FinishRDW) {
     const ArenaPoint current={in.pose.x_MM,in.pose.y_MM};
     if (!map_.SegmentFree(current,{target_.x_MM,target_.y_MM})) { Fail("XY route crosses a mapped wall"); return; }
     const double dx=target_.x_MM-in.pose.x_MM,dy=target_.y_MM-in.pose.y_MM;
@@ -302,9 +302,11 @@ void ArenaTestController::Update(const ArenaTestInput& in) {
     // Do not stall here requesting tiny yaw outputs against static friction.
     if (Settled(reached && in.stationary,in.now)) {
       const State next=state_==State::TravelMW?State::TurnMW:
-          (state_==State::FinishRDW?State::FinishHeadingRDW:State::TurnRDW);
+          (state_==State::FinishMW?State::FinishHeadingMW:
+          (state_==State::FinishRDW?State::FinishHeadingRDW:State::TurnRDW));
       Transition(next,in.now,
-          state_==State::TravelMW?"MW XY complete - turn to MW heading":"RDW XY complete - turn to RDW heading");
+          (state_==State::TravelMW || state_==State::FinishMW)?
+              "MW XY complete - settle at MW heading":"RDW XY complete - settle at RDW heading");
       return;
     }
     if (reached) return;
@@ -323,6 +325,25 @@ void ArenaTestController::Update(const ArenaTestInput& in) {
   const double error=robot_geometry::Wrap(robot_geometry::Radians(target_.headingDeg)-in.pose.headingRad);
   const bool reached=std::fabs(error)<=at::HEADING_TOLERANCE_RAD;
   if (Settled(reached && in.stationary,in.now)) {
+    // A turn can cause chassis translation. Do not reference, leave MW, or
+    // declare RDW complete while the estimated center is outside tolerance.
+    if (std::hypot(target_.x_MM-in.pose.x_MM,target_.y_MM-in.pose.y_MM)>at::POSITION_TOLERANCE_MM) {
+      const bool middle=state_==State::TurnMW || state_==State::FinishHeadingMW;
+      const State retry=state_==State::TurnMW?State::TravelMW:
+          (state_==State::FinishHeadingMW?State::FinishMW:
+          (state_==State::TurnRDW?State::TravelRDW:State::FinishRDW));
+      Transition(retry,in.now,middle?"MW shifted during turn - correct XY before continuing":
+          "RDW shifted during turn - correct XY before continuing");
+      // Preserve the heading just reached during this correction. In
+      // particular, repairing MW must not turn back toward SP's heading.
+      travelHeadingRad_=robot_geometry::Radians(target_.headingDeg);
+      return;
+    }
+    if (state_==State::FinishHeadingMW) {
+      target_=at::RDW;
+      Transition(State::TravelRDW,in.now,"MW pose verified - XY to RDW with gyro heading hold");
+      return;
+    }
     if (state_==State::FinishHeadingRDW) {
       Transition(State::Complete,in.now,referencesSkipped_?
           "SP -> MW -> RDW complete; some sensor corrections were unavailable":
