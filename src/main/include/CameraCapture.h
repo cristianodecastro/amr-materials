@@ -8,6 +8,7 @@
 #include <cscore_cv.h>
 #include <opencv2/core/mat.hpp>
 #include <networktables/NetworkTableEntry.h>
+#include <frc/smartdashboard/SendableChooser.h>
 #include "RobotConfig.h"
 
 
@@ -30,14 +31,24 @@ class CameraCapture {
 
  private:
   void Run();
-  unsigned QueueCapture(bool colour);
-  void TakePhoto(unsigned analysisRequest);
+  struct CaptureJob {
+    unsigned analysis=0;
+    int referenceSlot=-1;
+    std::string referenceName;
+    ColourCalibration calibration;
+  };
+  unsigned QueueCapture(bool colour,int referenceSlot=-1,const std::string& name="");
+  void TakePhoto(const CaptureJob& job);
+  void InitializeColourCalibration();
+  void UpdateColourCalibration();
   void CloseCamera();
   bool Capture(cv::Mat& image);
   cs::UsbCamera camera_;
   cs::CvSink sink_;
   cs::CvSource lastPhoto_;
+  cs::CvSource lastCrop_;
   cv::Mat preview_; // accessed only by the worker after Start()
+  cv::Mat cropPreview_;
   nt::NetworkTableEntry captureButton_;
   std::thread worker_;
   std::mutex mutex_;
@@ -45,6 +56,11 @@ class CameraCapture {
   bool stopping_=false, pending_=false, busy_=false, cameraActive_=false;
   std::string status_="Camera not started", lastFile_, lastSize_;
   unsigned saved_=0;
-  unsigned requestSequence_=0,pendingAnalysis_=0;
+  unsigned requestSequence_=0;
+  CaptureJob pendingJob_;
+  ColourCalibration calibration_=DefaultColourCalibration();
+  frc::SendableChooser<int> referenceSlot_;
+  nt::NetworkTableEntry roiX_,roiY_,roiWidth_,roiHeight_,applyRoi_,referenceName_,captureReference_,disableReference_;
+  std::string calibrationStatus_="Using measured photo references; Blue/spare slots need calibration";
   ColourResult colourResult_;
 };

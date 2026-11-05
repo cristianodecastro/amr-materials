@@ -5,6 +5,10 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
 
 #ifdef ARENA_TEST_STANDALONE
 #include <iostream>
@@ -397,31 +401,70 @@ void SimpleTaskStopHealthAndPhoto() {
   in.dt=0.2; c.Update(in);
   REQUIRE_ARENA(c.GetState()==SimpleTaskController::State::Fault && c.GetYawRadps()==0);
 }
-void ColourVotingRejectsBackgroundAndAmbiguity() {
-  for (int h:{0,179,30,60,120}) {
-    ColourVotes votes;
-    for (int i=0;i<100;++i) votes.AddHsv(h,i<70?0:220,200,80,50);
-    const auto result=votes.Estimate(0.1,0.65);
-    const auto expected=h==0 || h==179?PieceColour::Red:(h==30?PieceColour::Yellow:
-        (h==60?PieceColour::Green:PieceColour::Blue));
-    REQUIRE_ARENA(result.colour==expected && Near(result.coverage,0.3) && Near(result.dominance,1));
+void AverageColourAndSurpriseReferences() {
+  auto calibration=DefaultColourCalibration();
+  auto& references=calibration.references;
+  auto classify=[&references](RgbColour rgb,double spread=6) {
+    return ClassifyAverageColour(rgb,spread,references.data(),static_cast<int>(references.size()),
+        camera_config::COLOUR_MAX_DISTANCE,camera_config::COLOUR_MIN_MARGIN,camera_config::COLOUR_MAX_STDDEV);
+  };
+  // Independent averages measured from supplied PNGs at (260,200,100,50).
+  const RgbColour samples[3]={{166.1108,136.0396,33.9726},{17.7432,73.8264,35.2924},{105.0694,33.7314,7.8134}};
+  const char* names[3]={"Yellow","Green","Red"};
+  for (int i=0;i<3;++i) {
+    REQUIRE_ARENA(classify(samples[i]).name==names[i]);
+    const auto s=samples[i];
+    REQUIRE_ARENA(classify({s.red+12,s.green+12,s.blue+12}).name==names[i]);
+    REQUIRE_ARENA(classify(s,40).reference<0); // reject floor/gripper/edge contamination
   }
-  ColourVotes white,dark,mixed,purple,speck;
-  for (int i=0;i<100;++i) {
-    white.AddHsv(0,0,255,80,50); dark.AddHsv(0,255,10,80,50);
-    mixed.AddHsv(i%2?0:120,220,200,80,50);
-    purple.AddHsv(i<10?0:150,220,200,80,50);
-    speck.AddHsv(0,i<5?220:0,200,80,50);
-  }
-  for (const auto& votes:{white,dark,mixed,purple,speck})
-    REQUIRE_ARENA(votes.Estimate(0.1,0.65).colour==PieceColour::Unknown);
+  for (auto rgb:{RgbColour{255,255,255},RgbColour{0,0,0},RgbColour{50,50,50},RgbColour{10,15,200},
+      RgbColour{std::numeric_limits<double>::quiet_NaN(),0,0}})
+    REQUIRE_ARENA(classify(rgb).reference<0);
+  references[4]={"Competition violet",{110,60,180},true};
+  REQUIRE_ARENA(classify({110,60,180}).name=="Competition violet"); // no enum/hue edits
+  references[5]={"White",{220,220,220},true};
+  REQUIRE_ARENA(classify({220,220,220}).name=="White"); // neutral surprise colours also supported
+  references[4].enabled=false;
+  REQUIRE_ARENA(classify({110,60,180}).reference<0);
+  references[4]={"Almost Red",{106,34,8},true};
+  REQUIRE_ARENA(classify(samples[2]).reference<0); // competing references too close
+  const auto roi=ScaleColourRegion(calibration.roi,640,480),half=ScaleColourRegion(calibration.roi,320,240);
+  REQUIRE_ARENA(roi.x==260 && roi.y==200 && roi.width==100 && roi.height==50);
+  REQUIRE_ARENA(half.x==130 && half.y==100 && half.width==50 && half.height==25);
+  REQUIRE_ARENA(!ValidColourRegion({630,200,100,50}));
+  REQUIRE_ARENA(ScaleColourRegion({0,0,0,50},640,480).width==0);
+}
+void ColourCalibrationPersistsAndRejectsCorruption() {
+  auto calibration=DefaultColourCalibration();
+  calibration.references[4]={"Surprise gold",{160.5,115.25,40.125},true};
+  std::string error;
+  REQUIRE_ARENA(ValidateColourCalibration(calibration,error));
+  const char* temporary=std::getenv("TEMP");
+  const std::string path=std::string(temporary?temporary:"/tmp")+"/SkillsChallenge-colour-check-"+
+      std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())+".txt";
+  REQUIRE_ARENA(SaveColourCalibration(path,calibration,error));
+  auto loaded=DefaultColourCalibration();
+  REQUIRE_ARENA(LoadColourCalibration(path,loaded,error));
+  REQUIRE_ARENA(loaded.references[4].enabled && loaded.references[4].name=="Surprise gold");
+  REQUIRE_ARENA(Near(loaded.references[4].mean.green,115.25));
+  auto invalid=calibration;
+  invalid.references[4].name="rEd";
+  REQUIRE_ARENA(!SaveColourCalibration(path,invalid,error));
+  invalid=calibration; invalid.references[4].mean.red=256;
+  REQUIRE_ARENA(!SaveColourCalibration(path,invalid,error));
+  REQUIRE_ARENA(LoadColourCalibration(path,loaded,error) && loaded.references[4].name=="Surprise gold");
+  const std::string corrupt=path+".bad";
+  { std::ofstream file(corrupt); file<<"SkillsChallengeColourCalibration 1\n260 200 100 50\n8\n"; }
+  REQUIRE_ARENA(!LoadColourCalibration(corrupt,loaded,error));
+  REQUIRE_ARENA(loaded.references[4].name=="Surprise gold"); // malformed file cannot partially replace profiles
+  std::remove(path.c_str()); std::remove(corrupt.c_str());
 }
 void SimpleTasksAndColourChecks() {
   for (auto task:{SimpleTask::Forward1000,SimpleTask::Backward1000,SimpleTask::Ccw90,
       SimpleTask::Cw90,SimpleTask::Ccw180,SimpleTask::Cw180})
     for (double heading:{0.0,170.0,-170.0,90.0}) SimulateSimpleTask(task,heading);
   SimulateSimpleTask(SimpleTask::Forward1000,170,true);
-  SimpleTaskStopHealthAndPhoto(); ColourVotingRejectsBackgroundAndAmbiguity();
+  SimpleTaskStopHealthAndPhoto(); AverageColourAndSurpriseReferences(); ColourCalibrationPersistsAndRejectsCorruption();
 }
 } // namespace
 
@@ -436,7 +479,7 @@ int main() {
     Simulate(true); Simulate(false); Simulate(true,true); Simulate(true,false,true); Simulate(true,false,true,true);
     Simulate(true,false,true,true,0.25);
     SimpleTasksAndColourChecks();
-    std::cout<<"PASS: relative forward/backward, CW/CCW 90/180 across signed yaw wrap, task cancellation/health/photo results, HSV background/ambiguity rejection; arena route and gyro braking regressions\n";
+    std::cout<<"PASS: supplied-photo mean RGB, ROI scaling, arbitrary surprise colours, ambiguity/variance rejection, calibration persistence/corruption; relative tasks, arena route and gyro braking regressions\n";
   } catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }
 }
 #else

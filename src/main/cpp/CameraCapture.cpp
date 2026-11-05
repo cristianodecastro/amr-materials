@@ -5,12 +5,15 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <iomanip>
+#include <sstream>
 #include <stdexcept>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <unistd.h>
 
 #include <cameraserver/CameraServer.h>
+#include <frc/RobotState.h>
 #include <frc/shuffleboard/BuiltInWidgets.h>
 #include <frc/shuffleboard/ComplexWidget.h>
 #include <frc/shuffleboard/Shuffleboard.h>
@@ -19,6 +22,11 @@
 #include <opencv2/imgproc.hpp>
 
 namespace {
+std::string RgbText(RgbColour rgb) {
+  std::ostringstream text;
+  text<<std::fixed<<std::setprecision(1)<<rgb.red<<", "<<rgb.green<<", "<<rgb.blue;
+  return text.str();
+}
 void EnsureDirectory(const std::string& path) {
   if (::mkdir(path.c_str(),0755)!=0 && errno!=EEXIST)
     throw std::runtime_error("Cannot create "+path+": "+std::strerror(errno));
@@ -37,8 +45,109 @@ CameraCapture::~CameraCapture() {
   if (worker_.joinable()) worker_.join();
 }
 
+void CameraCapture::InitializeColourCalibration() {
+  struct stat info {};
+  if (::stat(camera_config::COLOUR_CALIBRATION_FILE,&info)==0) {
+    std::string error;
+    if (LoadColourCalibration(camera_config::COLOUR_CALIBRATION_FILE,calibration_,error))
+      calibrationStatus_="Loaded saved colour references and ROI";
+    else calibrationStatus_="Saved calibration rejected; using supplied-photo defaults: "+error;
+  }
+  auto& tab=frc::Shuffleboard::GetTab("Colour calibration");
+  roiX_=tab.Add("ROI X",double(calibration_.roi.x)).WithPosition(0,0).WithSize(3,1).GetEntry();
+  roiY_=tab.Add("ROI Y",double(calibration_.roi.y)).WithPosition(3,0).WithSize(3,1).GetEntry();
+  roiWidth_=tab.Add("ROI width",double(calibration_.roi.width)).WithPosition(6,0).WithSize(3,1).GetEntry();
+  roiHeight_=tab.Add("ROI height",double(calibration_.roi.height)).WithPosition(9,0).WithSize(3,1).GetEntry();
+  roiX_.SetDouble(calibration_.roi.x); roiY_.SetDouble(calibration_.roi.y);
+  roiWidth_.SetDouble(calibration_.roi.width); roiHeight_.SetDouble(calibration_.roi.height);
+  applyRoi_=tab.Add("Apply ROI",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
+      .WithPosition(0,1).WithSize(3,1).GetEntry();
+  referenceSlot_.SetDefaultOption("Slot 1",0);
+  for (int i=1;i<camera_config::COLOUR_REFERENCE_COUNT;++i)
+    referenceSlot_.AddOption("Slot "+std::to_string(i+1),i);
+  tab.Add("Reference slot",referenceSlot_).WithWidget(frc::BuiltInWidgets::kComboBoxChooser)
+      .WithPosition(3,1).WithSize(3,1);
+  referenceName_=tab.Add("Reference name","Surprise 1").WithPosition(6,1).WithSize(3,1).GetEntry();
+  referenceName_.SetString("Surprise 1");
+  captureReference_=tab.Add("Capture reference",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
+      .WithPosition(9,1).WithSize(3,1).GetEntry();
+  disableReference_=tab.Add("Disable selected reference",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
+      .WithPosition(0,2).WithSize(3,1).GetEntry();
+  applyRoi_.SetBoolean(false); captureReference_.SetBoolean(false); disableReference_.SetBoolean(false);
+  tab.AddString("Calibration status",[this] {
+    std::lock_guard<std::mutex> lock(mutex_); return calibrationStatus_;
+  }).WithPosition(3,2).WithSize(9,1);
+  tab.AddString("References (RGB)",[this] {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::string text;
+    for (unsigned i=0;i<calibration_.references.size();++i) {
+      const auto& ref=calibration_.references[i];
+      text+=std::to_string(i+1)+": "+ref.name+(ref.enabled?" ON ":" OFF ")+RgbText(ref.mean)+"\n";
+    }
+    return text;
+  }).WithPosition(0,3).WithSize(8,2);
+  tab.AddString("Last mean RGB",[this] {
+    std::lock_guard<std::mutex> lock(mutex_); return RgbText(colourResult_.estimate.mean);
+  }).WithPosition(8,3).WithSize(4,1);
+  tab.AddNumber("Crop max standard deviation",[this] {
+    std::lock_guard<std::mutex> lock(mutex_); return colourResult_.estimate.maxStdDev;
+  }).WithPosition(8,4).WithSize(4,1);
+}
+
+void CameraCapture::UpdateColourCalibration() {
+  const bool apply=applyRoi_.GetBoolean(false),capture=captureReference_.GetBoolean(false),
+      disable=disableReference_.GetBoolean(false);
+  if (apply) applyRoi_.SetBoolean(false);
+  if (capture) captureReference_.SetBoolean(false);
+  if (disable) disableReference_.SetBoolean(false);
+  if (!apply && !capture && !disable) return;
+  const int slot=referenceSlot_.GetSelected();
+  const std::string name=referenceName_.GetString("");
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (int(apply)+int(capture)+int(disable)>1) { calibrationStatus_="Press only one calibration action"; return; }
+    if (!frc::RobotState::IsDisabled()) { calibrationStatus_="Calibration ignored - Disable the robot, then press again"; return; }
+    if (busy_) { calibrationStatus_="Camera busy - wait, then press again"; return; }
+    if (slot<0 || slot>=static_cast<int>(calibration_.references.size())) { calibrationStatus_="Invalid reference slot"; return; }
+    auto candidate=calibration_;
+    std::string error;
+    if (apply) {
+      const double values[4]={roiX_.GetDouble(-1),roiY_.GetDouble(-1),roiWidth_.GetDouble(-1),roiHeight_.GetDouble(-1)};
+      for (double v:values) if (!std::isfinite(v) || v<0 || v>640 || std::floor(v)!=v) {
+        calibrationStatus_="ROI requires whole pixels in a 640x480 reference image"; return;
+      }
+      const ImageRegion next={int(values[0]),int(values[1]),int(values[2]),int(values[3])};
+      if (!ValidColourRegion(next)) { calibrationStatus_="ROI must fit inside 640x480 and have nonzero size"; return; }
+      const auto old=candidate.roi;
+      if (next.x==old.x && next.y==old.y && next.width==old.width && next.height==old.height) {
+        calibrationStatus_="ROI unchanged; existing references preserved"; return;
+      }
+      candidate.roi=next;
+      for (auto& r:candidate.references) r.enabled=false;
+    } else if (disable) candidate.references[slot].enabled=false;
+    else candidate.references[slot]={name,{0,0,0},true}; // validate the requested name before opening camera
+    if (!ValidateColourCalibration(candidate,error)) { calibrationStatus_=error; return; }
+    if (!capture) {
+      try { EnsureDirectory("/home/pi/SkillsChallenge"); }
+      catch (const std::exception& e) { calibrationStatus_=e.what(); return; }
+      if (!SaveColourCalibration(camera_config::COLOUR_CALIBRATION_FILE,candidate,error)) { calibrationStatus_=error; return; }
+      calibration_=std::move(candidate);
+      calibrationStatus_=apply?"ROI saved; references disabled - recapture them using the new crop":
+          "Selected reference disabled and saved";
+      colourResult_=ColourResult{}; // measurements from old settings no longer apply
+      return;
+    }
+    calibrationStatus_="Taking a fresh reference photo for "+name+"...";
+  }
+  if (!QueueCapture(true,slot,name)) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    calibrationStatus_="Reference capture not started - camera busy/unavailable";
+  }
+}
+
 void CameraCapture::Start() {
   if (worker_.joinable()) return;
+  InitializeColourCalibration();
   auto& tab=frc::Shuffleboard::GetTab("Camera");
   captureButton_=tab.Add("Take photo",false)
       .WithWidget(frc::BuiltInWidgets::kToggleButton).WithPosition(0,0).WithSize(2,1).GetEntry();
@@ -81,6 +190,18 @@ void CameraCapture::Start() {
         .WithWidget(frc::BuiltInWidgets::kCameraStream).WithPosition(0,3).WithSize(12,6);
     frc::Shuffleboard::GetTab("Simple tasks").Add("Last task photo",lastPhoto_)
         .WithWidget(frc::BuiltInWidgets::kCameraStream).WithPosition(0,5).WithSize(8,5);
+    lastCrop_=server->PutVideo("Piece colour crop",400,200);
+    lastCrop_.SetFPS(camera_config::PREVIEW_FPS);
+    auto& colours=frc::Shuffleboard::GetTab("Colour calibration");
+    colours.Add("Full photo and ROI",lastPhoto_).WithWidget(frc::BuiltInWidgets::kCameraStream)
+        .WithPosition(0,5).WithSize(8,5);
+    colours.Add("Crop used for RGB mean",lastCrop_).WithWidget(frc::BuiltInWidgets::kCameraStream)
+        .WithPosition(8,5).WithSize(4,3);
+    colours.AddString("How to calibrate",[] {
+      return "Disable robot. Put a piece in the ROI; choose a slot, type its name, press Capture reference. "
+          "It takes one new photo and saves the reference on the robot. Blue needs a sample. "
+          "Changing ROI disables all references; capture them again. RGB is lighting-dependent: recalibrate under arena lighting.";
+    }).WithPosition(8,8).WithSize(4,3);
     // Keep an actual image in the preview area before the first photograph.
     preview_=cv::Mat(camera_config::HEIGHT,camera_config::WIDTH,CV_8UC3,
         cv::Scalar(32,32,32));
@@ -99,6 +220,7 @@ void CameraCapture::Start() {
 }
 
 void CameraCapture::Periodic() {
+  UpdateColourCalibration();
   if (!captureButton_.GetBoolean(false)) return;
   captureButton_.SetBoolean(false);
   QueueCapture(false);
@@ -107,7 +229,7 @@ unsigned CameraCapture::RequestColourAnalysis() { return QueueCapture(true); }
 CameraCapture::ColourResult CameraCapture::GetColourResult() {
   std::lock_guard<std::mutex> lock(mutex_); return colourResult_;
 }
-unsigned CameraCapture::QueueCapture(bool colour) {
+unsigned CameraCapture::QueueCapture(bool colour,int referenceSlot,const std::string& name) {
   unsigned request;
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -117,7 +239,7 @@ unsigned CameraCapture::QueueCapture(bool colour) {
       return 0; // one outstanding photograph; no unbounded queue
     }
     request=++requestSequence_;
-    pendingAnalysis_=colour?request:0;
+    pendingJob_={colour?request:0,referenceSlot,name,calibration_};
     if (colour) { colourResult_=ColourResult{}; colourResult_.request=request; colourResult_.status="Capturing fresh colour photo..."; }
     busy_=pending_=true;
     status_="Opening camera for photo...";
@@ -129,7 +251,7 @@ unsigned CameraCapture::QueueCapture(bool colour) {
 void CameraCapture::Run() {
   for (;;) {
     bool capture=false;
-    unsigned analysis=0;
+    CaptureJob job;
     {
       std::unique_lock<std::mutex> lock(mutex_);
       // Network camera widgets wait for new frames, including after reconnect.
@@ -138,16 +260,17 @@ void CameraCapture::Run() {
           [this] { return stopping_ || pending_; });
       if (stopping_) return;
       capture=pending_;
-      analysis=pendingAnalysis_;
+      if (capture) job=pendingJob_;
       pending_=false;
     }
     if (capture) {
-      TakePhoto(analysis);
+      TakePhoto(job);
       std::lock_guard<std::mutex> lock(mutex_);
       busy_=false;
     }
     // Encoding/serving occurs only when someone views the still-photo source.
     if (lastPhoto_.IsEnabled() && !preview_.empty()) lastPhoto_.PutFrame(preview_);
+    if (lastCrop_.IsEnabled() && !cropPreview_.empty()) lastCrop_.PutFrame(cropPreview_);
   }
 }
 
@@ -159,7 +282,8 @@ void CameraCapture::CloseCamera() {
   cameraActive_=false;
 }
 
-void CameraCapture::TakePhoto(unsigned analysisRequest) {
+void CameraCapture::TakePhoto(const CaptureJob& job) {
+  const unsigned analysisRequest=job.analysis;
   try {
     {
       std::lock_guard<std::mutex> lock(mutex_);
@@ -201,31 +325,54 @@ void CameraCapture::TakePhoto(unsigned analysisRequest) {
       std::lock_guard<std::mutex> lock(mutex_);
       status_="Photo captured - USB camera off; saving PNG...";
     }
-    // Replace the cached preview only after successfully saving this photo.
+    const auto scaled=ScaleColourRegion(job.calibration.roi,image.cols,image.rows);
+    if (scaled.width<=0 || scaled.height<=0) throw std::runtime_error("Colour ROI is invalid at this capture resolution");
+    const cv::Rect roi(scaled.x,scaled.y,scaled.width,scaled.height);
+    cv::Mat crop=image(roi).clone();
+    cv::resize(crop,cropPreview_,cv::Size(400,200));
     if (analysisRequest) {
-      const int width=std::max(1,static_cast<int>(image.cols*camera_config::COLOUR_ROI_FRACTION));
-      const int height=std::max(1,static_cast<int>(image.rows*camera_config::COLOUR_ROI_FRACTION));
-      const cv::Rect roi((image.cols-width)/2,(image.rows-height)/2,width,height);
-      cv::Mat hsv;
-      cv::cvtColor(image(roi),hsv,cv::COLOR_BGR2HSV);
-      ColourVotes votes;
-      for (int y=0;y<hsv.rows;++y) for (int x=0;x<hsv.cols;++x) {
-        const auto pixel=hsv.at<cv::Vec3b>(y,x);
-        votes.AddHsv(pixel[0],pixel[1],pixel[2],camera_config::COLOUR_MIN_SATURATION,camera_config::COLOUR_MIN_VALUE);
+      cv::Scalar mean,deviation;
+      cv::meanStdDev(crop,mean,deviation); // OpenCV channel order is B,G,R
+      const RgbColour rgb={mean[2],mean[1],mean[0]};
+      const double spread=std::max(deviation[0],std::max(deviation[1],deviation[2]));
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        colourResult_.estimate.mean=rgb; colourResult_.estimate.maxStdDev=spread;
       }
-      const auto estimate=votes.Estimate(camera_config::COLOUR_MIN_COVERAGE,camera_config::COLOUR_MIN_DOMINANCE);
+      auto settings=job.calibration;
+      if (job.referenceSlot>=0) {
+        if (!frc::RobotState::IsDisabled())
+          throw std::runtime_error("Reference cancelled - keep robot Disabled until capture finishes");
+        if (spread>camera_config::COLOUR_MAX_STDDEV)
+          throw std::runtime_error("Reference crop is not uniform - keep floor, gripper and piece edges outside the ROI");
+        settings.references.at(job.referenceSlot)={job.referenceName,rgb,true};
+        EnsureDirectory("/home/pi/SkillsChallenge");
+        std::string error;
+        if (!SaveColourCalibration(camera_config::COLOUR_CALIBRATION_FILE,settings,error))
+          throw std::runtime_error("Reference not saved: "+error);
+        std::lock_guard<std::mutex> lock(mutex_);
+        calibration_=settings;
+        calibrationStatus_="Saved "+job.referenceName+" reference; mean RGB "+RgbText(rgb);
+      }
+      const auto estimate=ClassifyAverageColour(rgb,spread,settings.references.data(),
+          static_cast<int>(settings.references.size()),camera_config::COLOUR_MAX_DISTANCE,
+          camera_config::COLOUR_MIN_MARGIN,camera_config::COLOUR_MAX_STDDEV);
       const bool saved=Capture(image); // saved PNG keeps the unannotated image
       preview_=image.clone();
       cv::rectangle(preview_,roi,cv::Scalar(255,255,255),2);
-      cv::putText(preview_,PieceColourName(estimate.colour),cv::Point(20,35),
+      cv::putText(preview_,estimate.name+" RGB "+RgbText(rgb),cv::Point(20,35),
           cv::FONT_HERSHEY_SIMPLEX,0.8,cv::Scalar(255,255,255),2);
       std::lock_guard<std::mutex> lock(mutex_);
       colourResult_.request=analysisRequest; colourResult_.ready=colourResult_.success=true;
       colourResult_.estimate=estimate;
-      colourResult_.status=estimate.colour==PieceColour::Unknown?"Unknown - centre one piece inside the box; check lighting":
-          std::string("Detected ")+PieceColourName(estimate.colour);
+      colourResult_.status=estimate.reference<0?"Unknown - crop mixed, outside calibrated RGB range or ambiguous; calibrate if needed":
+          "Detected "+estimate.name;
+      colourResult_.status+="; mean RGB "+RgbText(rgb);
       if (!saved) colourResult_.status+="; PNG was not saved (see Camera status)";
-    } else if (Capture(image)) preview_=image;
+    } else if (Capture(image)) {
+      preview_=image.clone();
+      cv::rectangle(preview_,roi,cv::Scalar(255,255,255),2);
+    }
   } catch (const std::exception& error) {
     CloseCamera();
     std::lock_guard<std::mutex> lock(mutex_);
@@ -234,6 +381,7 @@ void CameraCapture::TakePhoto(unsigned analysisRequest) {
       colourResult_.request=analysisRequest; colourResult_.ready=true; colourResult_.success=false;
       colourResult_.status=status_;
     }
+    if (job.referenceSlot>=0) calibrationStatus_=status_;
   }
 }
 

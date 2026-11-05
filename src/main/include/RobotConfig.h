@@ -220,13 +220,27 @@ static constexpr double REQUEST_TIMEOUT_S = 8.0;
 // This does not acquire new USB frames or save additional files.
 static constexpr int PREVIEW_FPS = 1;
 static constexpr const char* CAPTURE_DIRECTORY = "/home/pi/SkillsChallenge/captures";
-// Initial colour thresholds; tune using photos under the arena lighting.
-// HSV hue uses OpenCV's 0..179 scale. Ignore neutral/dark background pixels.
-static constexpr int COLOUR_MIN_SATURATION = 80;
-static constexpr int COLOUR_MIN_VALUE = 50;
-static constexpr double COLOUR_ROI_FRACTION = 0.50;
-static constexpr double COLOUR_MIN_COVERAGE = 0.10;
-static constexpr double COLOUR_MIN_DOMINANCE = 0.65;
+// ROI coordinates refer to the already upright 640x480 photo, scaled for any
+// other capture resolution. This patch is inside all three docs/*.png pieces,
+// clear of the gripper, edges and floor. Recalibrate after camera/mount changes.
+static constexpr ImageRegion COLOUR_ROI = {260,200,100,50};
+// Euclidean distance between mean RGB values (0..255 per channel). These are
+// initial acceptance limits, not probabilities; unknown/ambiguous crops reject.
+static constexpr double COLOUR_MAX_DISTANCE = 35.0;
+static constexpr double COLOUR_MIN_MARGIN = 12.0;
+static constexpr double COLOUR_MAX_STDDEV = 25.0;
+static constexpr int COLOUR_REFERENCE_COUNT = 8; // increase to reserve more slots
+// RGB averages measured over the ROI in docs. Red label confirmed by user.
+// Blue has no supplied sample and must be calibrated; spare slots accept ANY
+// name and colour, including a competition surprise colour, without new code.
+static const ColourReference DEFAULT_COLOUR_REFERENCES[COLOUR_REFERENCE_COUNT] = {
+    {"Red",{105.0694,33.7314,7.8134},true},  // piece-1750888872955429-1562-3.png
+    {"Green",{17.7432,73.8264,35.2924},true}, // piece-1750888647575289-1562-2.png
+    {"Yellow",{166.1108,136.0396,33.9726},true}, // piece-1750888096651251-1562-1.png
+    {"Blue",{0,0,0},false},
+    {"Surprise 1",{0,0,0},false},{"Surprise 2",{0,0,0},false},
+    {"Surprise 3",{0,0,0},false},{"Surprise 4",{0,0,0},false}};
+static constexpr const char* COLOUR_CALIBRATION_FILE = "/home/pi/SkillsChallenge/colour-calibration.txt";
 }
 
 // Disabled autonomous arena, mission and correction settings.

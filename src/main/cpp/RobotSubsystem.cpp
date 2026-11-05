@@ -421,18 +421,23 @@ void RobotSubsystem::InitializeTaskDashboard() {
   tab.AddString("Active task",[this] { return SimpleTaskName(simpleTask_.GetTask()); }).WithPosition(0,2).WithSize(6,1);
   tab.AddNumber("Travel (mm)",[this] { return simpleTask_.GetTravelMM(); }).WithPosition(6,2).WithSize(3,1);
   tab.AddNumber("Rotation (deg)",[this] { return simpleTask_.GetTurnDegrees(); }).WithPosition(9,2).WithSize(3,1);
-  tab.AddString("Last colour",[this] { return camera_?PieceColourName(camera_->GetColourResult().estimate.colour):"Unavailable"; })
+  tab.AddString("Last colour",[this] { return camera_?camera_->GetColourResult().estimate.name:"Unavailable"; })
       .WithPosition(0,3).WithSize(4,1);
-  tab.AddNumber("Colour dominance (%)",[this] { return camera_?100*camera_->GetColourResult().estimate.dominance:0; })
+  tab.AddString("Mean RGB",[this] {
+    if (!camera_) return std::string("Unavailable");
+    const auto mean=camera_->GetColourResult().estimate.mean;
+    return std::to_string(int(std::round(mean.red)))+", "+std::to_string(int(std::round(mean.green)))+", "+std::to_string(int(std::round(mean.blue)));
+  })
       .WithPosition(4,3).WithSize(4,1);
-  tab.AddNumber("Colour coverage (%)",[this] { return camera_?100*camera_->GetColourResult().estimate.coverage:0; })
+  tab.AddNumber("Reference distance (RGB)",[this] { return camera_?camera_->GetColourResult().estimate.distance:-1; })
       .WithPosition(8,3).WithSize(4,1);
   tab.AddString("Request feedback",[this] { return taskNotice_; }).WithPosition(0,4).WithSize(12,1);
   tab.AddString("How to run",[] {
     return "Choose Next task; select Autonomous and enable (e); press Run selected task. "
         "Each Run starts from the current pose. Selection changes affect the next Run only. "
-        "Stop/Disable cancels. Lift and servos stay off. Place one coloured piece in the central preview box. "
-        "Colour uses one fresh photo; camera stays off between requests. Re-select Autonomous to return to the arena route.";
+        "Stop/Disable cancels. Lift and servos stay off. Keep the piece inside the small ROI box. "
+        "Colour uses its average RGB from one fresh photo; camera stays off between requests. "
+        "Use Colour calibration while Disabled to add/recalibrate colours. Re-select Autonomous to return to the arena route.";
   }).WithPosition(8,5).WithSize(4,5);
 }
 
