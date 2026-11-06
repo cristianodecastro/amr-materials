@@ -572,8 +572,8 @@ void EncoderGyroOdometryChecks() {
 }
 void AutonomousDistanceScaleDoesNotChangeTeleopOrHeading() {
   // This fixture represents nominal wheel travel BEFORE empirical calibration.
-  // 1000 nominal mm must now report 910; reaching a reported 1000 requires
-  // about 1098.9 nominal mm, in either direction and on either body axis.
+  // 1000 nominal mm must report 955.5 after the latest measured calibration;
+  // the same scalar applies in both directions and on either body axis.
   for (double direction:{-1.0,1.0}) for (bool sideways:{false,true}) {
     drive_kinematics::EncoderGyroOdometry autonomous;
     drive_kinematics::TeleopPoseTelemetry manual;
@@ -585,12 +585,12 @@ void AutonomousDistanceScaleDoesNotChangeTeleopOrHeading() {
       REQUIRE_ARENA(autonomous.Update(counts,0,0,0.02));
       REQUIRE_ARENA(manual.Update(counts,0,0,0,0,0.02));
     }
-    REQUIRE_ARENA(Near(sideways?autonomous.Pose().y_MM:autonomous.Pose().x_MM,direction*910));
+    REQUIRE_ARENA(Near(sideways?autonomous.Pose().y_MM:autonomous.Pose().x_MM,direction*955.5));
     REQUIRE_ARENA(Near(sideways?manual.Pose().y_MM:manual.Pose().x_MM,direction*1000,1));
     REQUIRE_ARENA(Near(autonomous.Pose().headingRad,0));
     autonomous.Reset({0,0,0},counts,0);
     for (int tick=0;tick<250;++tick) {
-      const double step=direction*4/0.91;
+      const double step=direction*4/0.9555;
       AddPhysicalCounts(counts,sideways?0:step,sideways?step:0,0);
       REQUIRE_ARENA(autonomous.Update(counts,0,0,0.02));
     }

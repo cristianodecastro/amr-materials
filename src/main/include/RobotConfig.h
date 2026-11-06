@@ -142,11 +142,11 @@ static constexpr double SONAR_MAX_RANGE_MM = 4000.0;
 
 }  // namespace localization_config
 
-// Empirical linear-distance calibration for Autonomous ONLY. A 1000 mm task
-// measured 910 mm on the floor, so count-derived XY increments are scaled by
-// 910/1000. Keep nominal wheel geometry, motor outputs and Teleop unchanged.
+// Empirical linear-distance calibration for Autonomous ONLY. With scale 0.91,
+// the latest 1000 mm task measured 1050 mm: new scale = 0.91*1050/1000.
+// Keep nominal wheel geometry, motor outputs and Teleop unchanged.
 namespace autonomous_odometry_config {
-static constexpr double DISTANCE_SCALE = 0.91;
+static constexpr double DISTANCE_SCALE = 0.9555;
 static_assert(DISTANCE_SCALE>0 && DISTANCE_SCALE<=2.0,"Invalid autonomous odometry distance scale");
 }
 
