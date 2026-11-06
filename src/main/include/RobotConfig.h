@@ -33,8 +33,7 @@ static constexpr double DRIVER_RIGHT_X_SIGN = 1.0;
 static constexpr double TELEOP_TRANSLATION_SPEED_SCALE = 0.50;
 static constexpr double TELEOP_ACCELERATION_MMPS2 = 400.0;
 static constexpr double TELEOP_MAX_MOTOR_OUTPUT = 0.90;
-// Teleop-only trim on left rear M0, applied after wheel mixing and smoothing.
-// This scales PWM in both directions; encoder readings remain unmodified.
+// Historical driver-only trim; Autonomous never uses this multiplier.
 static constexpr double TELEOP_LEFT_REAR_OUTPUT_SCALE = 0.80;
 static constexpr double TELEOP_MAX_YAW_RATE_DPS = 90.0;
 // Start at zero and take two seconds to reach the 90 degree/s yaw limit.
@@ -68,6 +67,9 @@ static constexpr double MOTOR_TO_WHEEL_RATIO = 1.0;  // PLACEHOLDER if gearing d
 
 // User-specified wheel diameter 102 mm and center radius 168 mm.
 static constexpr double WHEEL_RADIUS_MM = 51.0;
+// Studica encoder distance formula. GetRaw() is counts: convert exactly once.
+static constexpr double ENCODER_MM_PER_COUNT = 2.0*robot_geometry::PI*WHEEL_RADIUS_MM/
+    (ENCODER_COUNTS_PER_OUTPUT_REV*MOTOR_TO_WHEEL_RATIO);
 static constexpr double WHEEL_CENTER_RADIUS_MM[WHEEL_COUNT] = {
     168.0, 168.0, 168.0};
 
@@ -81,8 +83,8 @@ static constexpr double WHEEL_MOTOR_SIGN[WHEEL_COUNT] = {1.0, 1.0, 1.0};
 // Maverick 75001 speeds are already at the 61:1 gearbox OUTPUT shaft.
 // MOTOR_TO_WHEEL_RATIO represents external gearing only; do not divide by 61
 // again. This estimates the speed/PWM scale. Drive is currently open-loop;
-// encoders coordinate initial startup and detect faults, without regulating
-// cruising speed or adding automatic motor power boosts.
+// Autonomous uses direct wheel outputs; historical Teleop output treatment is
+// isolated in TELEOP_LEFT_REAR_OUTPUT_SCALE and teleop_wheel_config below.
 static constexpr double MAVERICK_MAX_NO_LOAD_RPM = 112.0;
 static constexpr double MAVERICK_NOMINAL_NO_LOAD_RPM = 100.0;
 static constexpr double MAVERICK_NOMINAL_RATED_RPM = 80.0;
@@ -135,23 +137,8 @@ static constexpr double SONAR_ECHO_SETTLE_S = 0.060;
 static constexpr double SONAR_MIN_RANGE_MM = 20.0;
 static constexpr double SONAR_MAX_RANGE_MM = 4000.0;
 
-// Encoder-anchored complementary velocity estimate. Acceleration contributes
-// short-term prediction, with bounded influence and zero-velocity bias updates.
-static constexpr double ACCEL_DEADBAND_G = 0.005;
-static constexpr double ACCEL_VELOCITY_BLEND = 0.15;
-static constexpr double ACCEL_MAX_PLAUSIBLE_G = 0.5;
-static constexpr double ACCEL_BIAS_TRACK_TAU_S = 0.75;
-static constexpr double ENCODER_STATIONARY_MMPS = 3.0;
-static constexpr double GYRO_STATIONARY_DPS = 0.5;
-static constexpr double ACCEL_MAX_VELOCITY_CORRECTION_MMPS = 20.0;
-// Wheel slip must not overwrite the measured gyro heading. Encoders remain
-// the translation baseline; gyro rate and AHRS yaw supply heading feedback.
-static constexpr double ENCODER_YAW_RATE_BLEND = 0.0;
-static constexpr double YAW_AHRS_CORRECTION = 0.25;
-static constexpr double SONAR_RANGE_STDDEV_MM = 40.0;
-static constexpr double SONAR_MAX_INNOVATION_MM = 100.0;
-
-static constexpr double GRAVITY_MM_PER_S2 = 9806.65;
+// Autonomous position uses encoder increments only and reset-relative gyro
+// heading. Teleop pose telemetry retains its separate legacy blend below.
 
 }  // namespace localization_config
 
@@ -186,8 +173,6 @@ static constexpr int LIMIT_DIO[2] = {-1,-1}; // PLACEHOLDER; -1 = not assigned
 namespace wheel_drive_config {
 static constexpr double SPEED_FILTER_S=0.060;
 static constexpr double SPEED_WINDOW_S=0.060;
-static constexpr double PWM_RISE_PER_S=0.75;
-static constexpr double PWM_FALL_PER_S=1.50;
 static constexpr double MAX_SAMPLE_S=0.10;
 static constexpr double ZERO_SPEED_MMPS=0.5;
 static constexpr double STALL_REQUEST_MMPS=20.0;
@@ -196,14 +181,29 @@ static constexpr double STALL_OUTPUT=0.12;
 static constexpr double STALL_TIMEOUT_S=1.0;
 static constexpr double DIRECTION_GRACE_S=0.30;
 static constexpr double WRONG_DIRECTION_TIMEOUT_S=0.25;
-// Confirm movement after two signed encoder counts (~0.44 mm at a 102 mm
-// wheel). Temporarily remove power from early movers until all required wheels
-// respond. This is an encoder threshold, not a mechanical stopping distance.
+}
+
+// Preserve the driver's pre-autonomous-revision wheel behaviour exclusively
+// in Teleop. Autonomous bypasses this startup gate and the second output ramp.
+namespace teleop_wheel_config {
+static constexpr double PWM_RISE_PER_S=0.75;
+static constexpr double PWM_FALL_PER_S=1.50;
 static constexpr double STARTUP_CONFIRM_COUNTS=2.0;
-// A wheel almost perpendicular to the requested travel can be effectively
-// idle; do not require it to move before allowing the other wheels to start.
 static constexpr double STARTUP_MIN_WHEEL_RATIO=0.10;
 static constexpr double STARTUP_TIMEOUT_S=2.0;
+}
+// Legacy manual-mode pose telemetry. It is never a steering input for Teleop
+// and never contributes to Autonomous's encoder-only position estimate.
+namespace teleop_odometry_config {
+static constexpr double ACCEL_DEADBAND_G=0.005;
+static constexpr double ACCEL_VELOCITY_BLEND=0.15;
+static constexpr double ACCEL_MAX_PLAUSIBLE_G=0.5;
+static constexpr double ACCEL_BIAS_TRACK_TAU_S=0.75;
+static constexpr double ENCODER_STATIONARY_MMPS=3.0;
+static constexpr double GYRO_STATIONARY_DPS=0.5;
+static constexpr double ACCEL_MAX_VELOCITY_CORRECTION_MMPS=20.0;
+static constexpr double YAW_AHRS_CORRECTION=0.25;
+static constexpr double GRAVITY_MM_PER_S2=9806.65;
 }
 
 // USB still-photo settings.
@@ -313,7 +313,7 @@ static constexpr double CRUISE_MMPS = 220.0;
 static constexpr double DOCK_MMPS = 70.0;
 static constexpr double ACCEL_MMPS2 = 300.0;
 static constexpr double MAX_OUTPUT = 0.45;
-// Motor output ramp and encoder monitoring live in TeleopControl.h.
+// Command acceleration limits and encoder monitoring live in TeleopControl.h.
 static constexpr double POSITION_KP_PER_S = 1.5;
 static constexpr double HEADING_KP_PER_S = 2.5;
 static constexpr double MAX_YAW_RADPS = 0.6;
@@ -328,15 +328,6 @@ static constexpr double MISSION_TIMEOUT_S = 180.0;
 static constexpr double STALL_TIMEOUT_S = 2.5;
 static constexpr double PROGRESS_MM = 5.0;
 static constexpr double MAX_CONTROL_GAP_S = 0.10;
-static constexpr double MAX_POSITION_SIGMA_MM = 60.0;
-static constexpr double MAX_HEADING_SIGMA_RAD = 0.09;
-// Sonar age is handled conservatively: fuse only if slow at ping AND receipt.
-static constexpr double SONAR_FUSION_MAX_SPEED_MMPS = 60.0;
-static constexpr double SONAR_FUSION_MAX_YAW_DPS = 8.0;
-static constexpr double SONAR_FUSION_MAX_AGE_S = 0.12;
-static constexpr double SONAR_MAX_POSE_STEP_MM = 20.0;
-static constexpr double SONAR_CONE_HALF_ANGLE_RAD = 0.0873;
-static constexpr double SONAR_CONE_RANGE_SPREAD_MM = 60.0;
 static constexpr double SONAR_STALE_S = 0.60;
 
 inline ArenaPoint Approach(const Station& s, double distance) {
@@ -385,13 +376,7 @@ static constexpr double HOLD_HEADING_DEADBAND_RAD = HEADING_TOLERANCE_RAD;
 static constexpr double HOLD_HEADING_MAX_YAW_RADPS = 20.0*robot_geometry::PI/180.0;
 static constexpr double SETTLE_S = 0.40;
 static constexpr double LEG_TIMEOUT_S = 40.0;
-static constexpr double REFERENCE_TIMEOUT_S = 3.0;
 static constexpr double ROUTINE_TIMEOUT_S = 120.0;
 static constexpr double STATIONARY_SPEED_MMPS = 8.0;
 static constexpr double STATIONARY_YAW_DPS = 0.5;
-static constexpr double MAX_POSITION_SIGMA_MM = 250.0;
-static constexpr int REFERENCE_SAMPLES = 3;
-// Facing south on the west side: right -> west wall, rear -> north wall.
-static constexpr unsigned MW_REFERENCE_MASK = 1u<<2; // right
-static constexpr unsigned RDW_REFERENCE_MASK = (1u<<2)|(1u<<1); // right + rear
 } // namespace arena_test_config

@@ -22,13 +22,12 @@ class ArenaMap {
   std::vector<ArenaRect> obstacles_;
 };
 
-// Independent SP -> MW -> RDW test. Planned turns and wall observations have
-// separate states; XY travel uses small heading-hold corrections.
+// Independent SP -> MW -> RDW test. Planned turns follow XY travel, which
+// uses gyro heading hold. Wall/tape position referencing is currently disabled.
 struct ArenaTestInput {
   RobotPose pose;
   double now, dt;
   bool healthy, stationary, startRequested, stopRequested;
-  double correctionTime[4]; // timestamps of accepted, fresh sonar corrections
   double yawRateRadps=0; // signed CCW gyro rate, independent of the arena yaw offset
 };
 // Shared gyro turn profile and direction checks for routes and individual tasks.
@@ -93,8 +92,6 @@ class ArenaTestController {
   double GetYawRadps() const { return yaw_; }
   double GetHeadingTargetDeg() const;
   ArenaPoint GetTarget() const { return {target_.x_MM,target_.y_MM}; }
-  unsigned ReferenceMask() const;
-  int ReferenceSurface(int sensor) const;
   std::string ValidateGeometry() const;
  private:
   void Stop();
@@ -110,9 +107,6 @@ class ArenaTestController {
   double travelHeadingRad_=0;
   double stoppedHeadingTargetDeg_=arena_test_config::SP.headingDeg;
   double stateTime_=0, missionTime_=0, settleTime_=-1;
-  double previousCorrection_[4]={-1,-1,-1,-1};
-  int referenceSamples_[4]={0,0,0,0};
-  bool referencesSkipped_=false;
   HeadingMotionControl heading_;
 };
 

@@ -45,6 +45,8 @@ std::string RobotSubsystem::PreflightError() const {
 
 void RobotSubsystem::EnterAutonomous() {
   StopAll();
+  localization_.SetAutonomousMode(true);
+  maxControlDt_=0; lateUpdates_=0;
   // A task selection authorizes no movement; both interfaces still wait for
   // an explicit Start/Run click after enabling Autonomous.
   autoSession_=true;
@@ -53,7 +55,6 @@ void RobotSubsystem::EnterAutonomous() {
     const double now=frc::Timer::GetFPGATimestamp();
     lastLoopTime_=now;
     startRoutine_.SetBoolean(false); stopRoutine_.SetBoolean(false);
-    for (int i=0;i<4;++i) sonarCorrectionTime_[i]=-1;
     arenaTest_.Enter(now);
     return;
   }
@@ -71,7 +72,7 @@ void RobotSubsystem::EnterAutonomous() {
   lastLoopTime_=now;
   sonarAwaitingEcho_=false;
   nextSonarIndex_=0; lastSonarPingTime_=now;
-  for (int i=0;i<4;++i) { sonarRanges_MM_[i]=-1; sonarRangeValid_[i]=false; sonarCorrectionAccepted_[i]=false; }
+  for (int i=0;i<4;++i) { sonarRanges_MM_[i]=-1; sonarRangeValid_[i]=false; }
   autonomous_.Enter(now,PreflightError());
 }
 
@@ -88,6 +89,7 @@ void RobotSubsystem::StopAll() {
   runTask_.SetBoolean(false); stopTask_.SetBoolean(false);
   startRoutine_.SetBoolean(false); stopRoutine_.SetBoolean(false);
   autoSession_=false;
+  localization_.SetAutonomousMode(false);
 }
 
 void RobotSubsystem::Periodic() {
@@ -95,6 +97,20 @@ void RobotSubsystem::Periodic() {
   lastLoopTime_=now;
   const bool enabled=frc::RobotState::IsEnabled();
   const bool autoMode=frc::RobotState::IsAutonomous() && !frc::RobotState::IsTest();
+  controlDt_=dt;
+  if (enabled && std::isfinite(dt) && dt>0) {
+    maxControlDt_=std::max(maxControlDt_,dt);
+    if (dt>1.5*localization_config::CONTROL_PERIOD_S) ++lateUpdates_;
+  }
+  const double imuUpdates=hardware_.GetImuUpdateCount();
+  if (!hardware_.IsImuConnected() || !std::isfinite(imuUpdates)) {
+    imuRateWindowTime_=0; imuMeasuredHz_=0;
+  } else if (imuRateWindowTime_==0 || imuUpdates<imuRateWindowCount_) {
+    imuRateWindowTime_=now; imuRateWindowCount_=imuUpdates;
+  } else if (now-imuRateWindowTime_>=1.0) {
+    imuMeasuredHz_=(imuUpdates-imuRateWindowCount_)/(now-imuRateWindowTime_);
+    imuRateWindowTime_=now; imuRateWindowCount_=imuUpdates;
+  }
 
   // Pose remains observable in manual mode; only autonomous start anchors it
   // to an arena placement. Never use manual-mode pose as a global guarantee.
@@ -177,8 +193,9 @@ void RobotSubsystem::UpdateAutonomous(double now,double dt) {
       else {
         hardware_.SetAutonomousDriveEnabled(false); hardware_.StopDrive(); hardware_.StopManipulator();
         if (motion) localization_.Reset(0,0,0); // relative to current physical front, not the arena SP
-        ArenaTestInput in={localization_.GetPose(),now,dt,imuReady,stationary,false,false,{}};
+        ArenaTestInput in={localization_.GetPose(),now,dt,imuReady,stationary,false,false,0};
         if (simpleTask_.Start(task,in)) {
+          maxControlDt_=dt; lateUpdates_=0;
           simpleSession_=true; poseAnchored_=false; arenaTest_.Abort(); autonomous_.Abort();
           taskNotice_=std::string("Started: ")+SimpleTaskName(task)+"; changing selection affects only the next Run";
           if (task==SimpleTask::Colour) {
@@ -216,12 +233,6 @@ void RobotSubsystem::UpdateAutonomous(double now,double dt) {
     hardware_.StopDrive();
     hardware_.StopManipulator();
   }
-  // Avoid treating highly correlated 50 Hz tape samples as independent pose
-  // measurements. The controller still follows the tape on every fresh read.
-  if (autonomous_.CanCorrectFromLine() && line_.valid && now-lastLineCorrection_>=0.20) {
-    localization_.CorrectFromLine(autonomous_.GetStation(),line_.leftErrorMM);
-    lastLineCorrection_=now;
-  }
 }
 
 void RobotSubsystem::UpdateSimpleTask(double now,double dt) {
@@ -230,9 +241,9 @@ void RobotSubsystem::UpdateSimpleTask(double now,double dt) {
       std::fabs(hardware_.GetYawRateDegreesPerSecond())<=arena_test_config::STATIONARY_YAW_DPS;
   ArenaTestInput in={localization_.GetPose(),now,dt,
       hardware_.IsImuConnected() && !hardware_.IsImuCalibrating() &&
-          localization_.IsHealthy(arena_test_config::MAX_POSITION_SIGMA_MM) &&
+          localization_.IsHealthy() &&
           frc::DriverStation::GetInstance().IsDSAttached(),
-      stationary,false,false,{},robot_geometry::Radians(hardware_.GetYawRateDegreesPerSecond())};
+      stationary,false,false,robot_geometry::Radians(hardware_.GetYawRateDegreesPerSecond())};
   if (hardware_.HasDriveFault() && simpleTask_.IsMotionRunning()) simpleTask_.Fail(hardware_.GetDriveStatus());
   simpleTask_.Update(in);
   if (simpleTask_.GetState()==SimpleTaskController::State::Photograph && camera_) {
@@ -260,17 +271,15 @@ void RobotSubsystem::UpdateArenaTest(double now,double dt) {
     localization_.Reset(sp.x_MM,sp.y_MM,sp.headingDeg);
     poseAnchored_=true;
     poseReferenceStatus_="SP reference sampled by Start routine";
-    for (int i=0;i<4;++i) sonarCorrectionTime_[i]=-1;
   }
   const bool stationary=std::hypot(localization_.GetBodyVelocityX_MMps(),
       localization_.GetBodyVelocityY_MMps())<=arena_test_config::STATIONARY_SPEED_MMPS &&
       std::fabs(hardware_.GetYawRateDegreesPerSecond())<=arena_test_config::STATIONARY_YAW_DPS;
   ArenaTestInput in={localization_.GetPose(),now,dt,
       imuReady && frc::DriverStation::GetInstance().IsDSAttached() &&
-          localization_.IsHealthy(arena_test_config::MAX_POSITION_SIGMA_MM),
-      stationary,startRoutineRequested_,stopRoutineRequested_,{},
+          localization_.IsHealthy(),
+      stationary,startRoutineRequested_,stopRoutineRequested_,
       robot_geometry::Radians(hardware_.GetYawRateDegreesPerSecond())};
-  for (int i=0;i<4;++i) in.correctionTime[i]=sonarCorrectionTime_[i];
   if (hardware_.HasDriveFault() && arenaTest_.IsRunning()) arenaTest_.Fail(hardware_.GetDriveStatus());
   arenaTest_.Update(in);
   hardware_.SetAutonomousDriveEnabled(arenaTest_.IsRunning());
@@ -354,54 +363,24 @@ void RobotSubsystem::UpdateTeleopDrive(double dt) {
 
 void RobotSubsystem::UpdateSonarPoll(double now,bool enabled) {
   if (!enabled) {
-    sonarAwaitingEcho_=false;
-    nextSonarIndex_=0; lastSonarPingTime_=now;
-    for (int i=0;i<4;++i) { sonarRanges_MM_[i]=-1; sonarRangeValid_[i]=sonarCorrectionAccepted_[i]=false; }
+    sonarAwaitingEcho_=false; nextSonarIndex_=0; lastSonarPingTime_=now;
+    for (int i=0;i<4;++i) { sonarRanges_MM_[i]=-1; sonarRangeValid_[i]=false; }
     return;
   }
-  const bool slow=std::hypot(localization_.GetBodyVelocityX_MMps(),localization_.GetBodyVelocityY_MMps())
-          <=autonomous_config::SONAR_FUSION_MAX_SPEED_MMPS &&
-      std::fabs(hardware_.GetYawRateDegreesPerSecond())<=autonomous_config::SONAR_FUSION_MAX_YAW_DPS;
   if (sonarAwaitingEcho_) {
-    const double age=now-sonarPingTime_;
-    if (age<localization_config::SONAR_ECHO_SETTLE_S) return;
+    if (now-sonarPingTime_<localization_config::SONAR_ECHO_SETTLE_S) return;
     const int i=nextSonarIndex_;
     sonarReadTime_[i]=now;
     const double range=hardware_.GetSonarRangeMM(i);
     sonarRangeValid_[i]=hardware_.IsSonarRangeValid(i) && std::isfinite(range) &&
         range>=localization_config::SONAR_MIN_RANGE_MM && range<=localization_config::SONAR_MAX_RANGE_MM;
     sonarRanges_MM_[i]=sonarRangeValid_[i]?range:-1;
-    sonarCorrectionAccepted_[i]=false;
-    // Global wall correction is valid only after explicit arena initialization.
-    if (autoSession_ && poseAnchored_ && sonarRangeValid_[i] && slow && sonarSlowAtPing_ &&
-        age<=autonomous_config::SONAR_FUSION_MAX_AGE_S) {
-      if (arena_test_config::ENABLED && (arenaTest_.ReferenceMask()&(1u<<i))) {
-        // Only stationary reference states may change the pose. Ignore invalid
-        // echoes, old pings, moving samples and a different wall association.
-        const auto& target=arena_test_config::MW;
-        const auto& reference=arenaTest_.GetState()==ArenaTestController::State::ReferenceMW?
-            target:arena_test_config::RDW;
-        const bool stationary=std::hypot(localization_.GetBodyVelocityX_MMps(),
-            localization_.GetBodyVelocityY_MMps())<=arena_test_config::STATIONARY_SPEED_MMPS &&
-            std::fabs(hardware_.GetYawRateDegreesPerSecond())<=arena_test_config::STATIONARY_YAW_DPS;
-        const bool aligned=std::fabs(robot_geometry::Wrap(localization_.GetPose().headingRad-
-            robot_geometry::Radians(reference.headingDeg)))<=arena_test_config::HEADING_TOLERANCE_RAD;
-        const int wall=arenaTest_.ReferenceSurface(i);
-        if (stationary && aligned && wall>=0)
-          sonarCorrectionAccepted_[i]=localization_.CorrectFromSonar(i,range,wall);
-      } else if (!arena_test_config::ENABLED && autonomous_.IsRunning() &&
-          autonomous_config::SONAR_MOUNTS_CONFIRMED) {
-        sonarCorrectionAccepted_[i]=localization_.CorrectFromSonar(i,range);
-      }
-      if (sonarCorrectionAccepted_[i]) sonarCorrectionTime_[i]=now;
-    }
+    // Measurement display only. Ultrasound cannot modify position or heading.
     nextSonarIndex_=(i+1)%4; sonarAwaitingEcho_=false; lastSonarPingTime_=now;
   } else if (now-lastSonarPingTime_>=localization_config::SONAR_PING_SPACING_S) {
-    hardware_.PingSonar(nextSonarIndex_);
-    sonarPingTime_=now; sonarSlowAtPing_=slow; sonarAwaitingEcho_=true;
+    hardware_.PingSonar(nextSonarIndex_); sonarPingTime_=now; sonarAwaitingEcho_=true;
   }
 }
-
 void RobotSubsystem::InitializeTaskDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Simple tasks");
   taskChooser_.SetDefaultOption("Choose a task",static_cast<int>(SimpleTask::None));
@@ -451,7 +430,7 @@ void RobotSubsystem::InitializeDashboard() {
   tab.AddNumber("X (mm)",[this] { return localization_.GetPose().x_MM; }).WithPosition(0,1).WithSize(3,1);
   tab.AddNumber("Y (mm)",[this] { return localization_.GetPose().y_MM; }).WithPosition(3,1).WithSize(3,1);
   tab.AddNumber("Heading (deg)",[this] { return localization_.GetPose().headingRad*180/robot_geometry::PI; }).WithPosition(6,1).WithSize(3,1);
-  tab.AddNumber("Position sigma (mm)",[this] { return localization_.GetPositionSigmaMM(); }).WithPosition(9,1).WithSize(3,1);
+  tab.AddBoolean("Odometry healthy",[this] { return localization_.IsHealthy(); }).WithPosition(9,1).WithSize(3,1);
   tab.AddString("Ultrasonic status",[] {
     return frc::RobotState::IsEnabled()?"Polling - distances from sensor face; -1 = no valid echo":
         "Paused while Disabled - VMX FlexDIO outputs require Enable";
@@ -479,7 +458,7 @@ void RobotSubsystem::InitializeDashboard() {
   }).WithPosition(0,9).WithSize(3,1);
   tab.AddNumber("Yaw request (deg/s)",[this] { return arenaTest_.GetYawRadps()*180/robot_geometry::PI; })
       .WithPosition(3,9).WithSize(3,1);
-  tab.AddString("Fusion status",[this] { return localization_.GetFusionStatus(); }).WithPosition(6,9).WithSize(6,1);
+  tab.AddString("Odometry status",[this] { return localization_.GetStatus(); }).WithPosition(6,9).WithSize(6,1);
 
   // A separate calibration tab keeps the operating screen uncluttered.
   auto& calibration=frc::Shuffleboard::GetTab("Calibration");
@@ -550,6 +529,12 @@ void RobotSubsystem::InitializeTeleopDashboard() {
     tuning.AddNumber(name+" measured (mm/s)",[this,i] { return hardware_.GetWheelMeasuredMMps(i); }).WithPosition(i*4,2).WithSize(4,1);
     tuning.AddNumber(name+" output (%)",[this,i] { return hardware_.GetWheelCommand(i)*100; }).WithPosition(i*4,3).WithSize(4,1);
   }
+  tuning.AddNumber("Control period (ms)",[this] { return controlDt_*1000; }).WithPosition(0,4).WithSize(3,1);
+  tuning.AddNumber("Control frequency (Hz)",[this] { return controlDt_>0?1/controlDt_:0; }).WithPosition(3,4).WithSize(3,1);
+  tuning.AddNumber("Max enabled period (ms)",[this] { return maxControlDt_*1000; }).WithPosition(6,4).WithSize(3,1);
+  tuning.AddNumber("Enabled updates over 30 ms",[this] { return double(lateUpdates_); }).WithPosition(9,4).WithSize(3,1);
+  tuning.AddNumber("IMU packet rate (Hz)",[this] { return imuMeasuredHz_; }).WithPosition(0,5).WithSize(3,1);
+  tuning.AddString("Odometry method",[this] { return localization_.GetStatus(); }).WithPosition(3,5).WithSize(9,1);
 }
 
 void RobotSubsystem::InitializeCobraDashboard() {
@@ -577,9 +562,6 @@ void RobotSubsystem::InitializeCobraDashboard() {
 
 void RobotSubsystem::PublishDiagnostics() {
   if (!localization_config::ENABLE_DETAILED_TELEMETRY) return;
-  for (int i=0;i<4;++i)
-    frc::SmartDashboard::PutBoolean(std::string("Diagnostics/Sonar/")+
-        localization_config::SONARS[i].name+"/fused",sonarCorrectionAccepted_[i]);
   const auto target=arena_test_config::ENABLED?arenaTest_.GetTarget():autonomous_.GetTarget();
   frc::SmartDashboard::PutNumber("Diagnostics/Auto/target_x_mm",target.x);
   frc::SmartDashboard::PutNumber("Diagnostics/Auto/target_y_mm",target.y);

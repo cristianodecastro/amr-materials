@@ -11,16 +11,15 @@ constexpr bool PortsValid() {
   const int lift=manipulator_config::TITAN_MOTOR_PORT;
   if (lift<0 || lift>3) return false;
   for (int i=0;i<3;++i) {
+    if ((localization_config::WHEEL_MOTOR_SIGN[i]!=1 && localization_config::WHEEL_MOTOR_SIGN[i]!=-1) ||
+        (localization_config::WHEEL_ENCODER_SIGN[i]!=1 && localization_config::WHEEL_ENCODER_SIGN[i]!=-1)) return false;
     const int port=localization_config::WHEEL_TITAN_PORT[i];
     if (port<0 || port>3 || port==lift) return false;
     for (int j=0;j<i;++j) if (port==localization_config::WHEEL_TITAN_PORT[j]) return false;
   }
   return true;
 }
-static_assert(PortsValid(),"Three distinct drive ports and a separate lift port must cover Titan 0..3");
-static_assert(localization_config::TELEOP_LEFT_REAR_OUTPUT_SCALE > 0.0 &&
-              localization_config::TELEOP_LEFT_REAR_OUTPUT_SCALE <= 1.0,
-              "Left rear teleop output scale must be in (0, 1]");
+static_assert(PortsValid(),"Drive/lift ports must be distinct; motor and encoder signs must be +1 or -1");
 }
 
 bool Hardware::TeleopMotorMotionAllowed() {
@@ -72,12 +71,9 @@ void Hardware::SetWheelPwm(int wheel, double output) {
   if (wheel < 0 || wheel >= localization_config::WHEEL_COUNT) return;
   if (!std::isfinite(output)) output = 0.0;
   if (!DriveMotorMotionAllowed()) output=0;
-  // Apply the left-rear trim only in Teleop, after smoothing. Autonomous uses
-  // the full mixed request for every wheel, with the same shared speed limits.
-  const double scale=wheel==0 && TeleopMotorMotionAllowed()?
-      localization_config::TELEOP_LEFT_REAR_OUTPUT_SCALE:1.0;
+  const auto context=TeleopMotorMotionAllowed()?WheelDriveContext::Teleop:WheelDriveContext::Autonomous;
   const double limited = std::max(-1.0, std::min(1.0, output)) *
-                         scale * localization_config::WHEEL_MOTOR_SIGN[wheel];
+                         WheelOutputScale(wheel,context)*localization_config::WHEEL_MOTOR_SIGN[wheel];
   wheelCommands_[wheel] = limited;
   switch (wheel) {
     case 0: leftRearMotor_.Set(limited); break;
@@ -94,6 +90,7 @@ double Hardware::GetWheelCommand(int wheel) const {
 
 void Hardware::StopDrive() {
   wheelDrive_.Reset();
+  teleopWheelDrive_.Reset();
   for (int wheel = 0; wheel < localization_config::WHEEL_COUNT; ++wheel)
     SetWheelPwm(wheel, 0.0);
 }
@@ -133,16 +130,20 @@ void Hardware::DriveRobotRelative(double forward,double left,double yawRadps,
         drive_kinematics::LayoutVy(forward,left),yawRadps);
     counts[i]=GetWheelEncoderRaw(i);
   }
-  wheelDrive_.Update(desired,counts,dt,maxOutput);
-  for (int i=0;i<3;++i) SetWheelPwm(i,wheelDrive_.Output(i));
+  teleopWheelActive_=TeleopMotorMotionAllowed();
+  auto& controller=teleopWheelActive_?teleopWheelDrive_:wheelDrive_;
+  controller.Update(desired,counts,dt,maxOutput,
+      teleopWheelActive_?WheelDriveContext::Teleop:WheelDriveContext::Autonomous);
+  for (int i=0;i<3;++i) SetWheelPwm(i,controller.Output(i));
 }
 
 std::string Hardware::GetDriveStatus() const {
-  const int wheel=wheelDrive_.HasFault()?wheelDrive_.FaultWheel():wheelDrive_.WaitingWheel();
+  const auto& controller=ActiveWheelDrive();
+  const int wheel=controller.HasFault()?controller.FaultWheel():controller.WaitingWheel();
   const std::string prefix=wheel>=0 && wheel<3?
       std::string(localization_config::WHEEL_NAME[wheel])+" M"+
       std::to_string(localization_config::WHEEL_TITAN_PORT[wheel])+": ":"";
-  return prefix+wheelDrive_.Status();
+  return prefix+controller.Status();
 }
 
 void Hardware::SetServoAngle(int servo, double degrees, bool enabled) {

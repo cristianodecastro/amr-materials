@@ -431,223 +431,102 @@ static_assert(drive_kinematics::OutputDenominator(kBadSpeeds, 1.0) == 0.0,
 // They verify electrical commands, not real motor response on the arena floor.
 namespace wheel_checks {
 constexpr double Abs(double x) { return x<0?-x:x; }
-constexpr bool Near(double a,double b) { return Abs(a-b)<1.0e-7; }
-constexpr double mmPerCount=2*robot_geometry::PI*localization_config::WHEEL_RADIUS_MM/
-    (localization_config::ENCODER_COUNTS_PER_OUTPUT_REV*localization_config::MOTOR_TO_WHEEL_RATIO);
-
-constexpr bool StartupPreservesSidewaysRatios() {
+constexpr bool Near(double a,double b) { return Abs(a-b)<1e-7; }
+constexpr bool DirectOutputsPreserveRatios() {
   WheelDriveController control;
-  const double desired[3]={-150,-150,300};
+  const double desired[3]={-150,-150,300},zero[3]={};
+  control.Update(desired,zero,0.02,0.9);
+  return !control.HasFault() && Near(control.Output(0),-150/localization_config::MAX_WHEEL_SPEED_MMPS) &&
+      Near(control.Output(0),control.Output(1)) && Near(control.Output(2),-2*control.Output(0));
+}
+static_assert(DirectOutputsPreserveRatios(),"First-tick outputs follow only the common-normalized kinematics");
+constexpr bool EarlyEncoderResponseNeverChangesOutput() {
+  WheelDriveController control;
+  const double desired[3]={-80,-80,160};
   double counts[3]={};
-  for (int step=0;step<45;++step) {
-    for (int i=0;i<3;++i) counts[i]+=desired[i]*0.02/mmPerCount;
+  for (int tick=0;tick<20;++tick) {
+    if (tick==2) counts[2]=3;
+    if (tick==5) counts[0]=-3;
+    if (tick==12) counts[1]=-3;
     control.Update(desired,counts,0.02,0.9);
-    if (control.HasFault() || !Near(control.Output(0),control.Output(1)) ||
-        !Near(control.Output(2),-2*control.Output(0))) return false;
-    if (step==0 && (!Near(control.Output(0),-0.0075) || !Near(control.Output(2),0.015))) return false;
+    for (int i=0;i<3;++i)
+      if (!Near(control.Output(i),desired[i]/localization_config::MAX_WHEEL_SPEED_MMPS)) return false;
   }
-  return Near(control.Output(0),desired[0]/localization_config::MAX_WHEEL_SPEED_MMPS) &&
-      Near(control.Output(2),desired[2]/localization_config::MAX_WHEEL_SPEED_MMPS);
+  return !control.HasFault();
 }
-static_assert(StartupPreservesSidewaysRatios(),
-              "A 2:1 front/rear request must remain 2:1 from the FIRST tick; neither rear gets a trim or boost");
-
-constexpr bool BothSidewaysDirectionsAndForwardAreSymmetric() {
-  const double zero[3]={};
-  double left[3]={},right[3]={},forward[3]={};
-  for (int i=0;i<3;++i) {
-    left[i]=drive_kinematics::WheelSpeedMMps(i,0,100,0);
-    right[i]=drive_kinematics::WheelSpeedMMps(i,0,-100,0);
-    forward[i]=drive_kinematics::WheelSpeedMMps(i,100,0,0);
-  }
-  WheelDriveController a,b,c;
-  for (int tick=0;tick<15;++tick) {
-    a.Update(left,zero,0.02,0.9);
-    b.Update(right,zero,0.02,0.9);
-    c.Update(forward,zero,0.02,0.9);
-    for (int i=0;i<3;++i) if (!Near(a.Output(i),-b.Output(i))) return false;
-    if (!Near(a.Output(0),a.Output(1)) || !Near(c.Output(0),-c.Output(1)) || c.Output(2)!=0) return false;
-  }
-  return true;
-}
-static_assert(BothSidewaysDirectionsAndForwardAreSymmetric(),
-              "Left/right must be mirrored; forward rear outputs must have equal magnitudes and opposite signs");
-
+static_assert(EarlyEncoderResponseNeverChangesOutput(),"No early-moving wheel may be held, trimmed or boosted");
 constexpr bool EncoderSpeedDoesNotCompensatePower() {
   WheelDriveController a,b;
   const double desired[3]={-120,-120,240};
-  double countsA[3]={},countsB[3]={};
+  double ca[3]={},cb[3]={};
   for (int tick=0;tick<35;++tick) {
     for (int i=0;i<3;++i) {
-      countsA[i]+=desired[i]*0.02/mmPerCount;
-      countsB[i]+=desired[i]*0.02*1.5/mmPerCount;
+      ca[i]+=desired[i]*0.02/localization_config::ENCODER_MM_PER_COUNT;
+      cb[i]+=desired[i]*0.03/localization_config::ENCODER_MM_PER_COUNT;
     }
-    a.Update(desired,countsA,0.02,0.9);
-    b.Update(desired,countsB,0.02,0.9);
+    a.Update(desired,ca,0.02,0.9); b.Update(desired,cb,0.02,0.9);
     if (a.HasFault() || b.HasFault()) return false;
     for (int i=0;i<3;++i) if (!Near(a.Output(i),b.Output(i))) return false;
   }
   return Abs(b.MeasuredMMps(0))>Abs(a.MeasuredMMps(0));
 }
-static_assert(EncoderSpeedDoesNotCompensatePower(),
-              "Different encoder speeds may change telemetry but must not apply hidden PI/friction power adjustments");
-
-constexpr bool CommonRampBlendsTheWholeVector() {
-  WheelDriveController control;
-  double desired[3]={-120,120,0},counts[3]={};
-  for (int tick=0;tick<15;++tick) control.Update(desired,counts,0.02,0.9);
-  double previous[3]={control.Output(0),control.Output(1),control.Output(2)};
-  desired[1]=-120; desired[2]=240;
-  control.Update(desired,counts,0.02,0.9);
-  const double delta1=desired[1]/localization_config::MAX_WHEEL_SPEED_MMPS-previous[1];
-  const double delta2=desired[2]/localization_config::MAX_WHEEL_SPEED_MMPS-previous[2];
-  const double moved1=control.Output(1)-previous[1],moved2=control.Output(2)-previous[2];
-  return Near(moved1*delta2,moved2*delta1) && moved1<0 && moved2>0 &&
-      Abs(moved1)<=wheel_drive_config::PWM_FALL_PER_S*0.02+1.0e-8 &&
-      Abs(moved2)<=wheel_drive_config::PWM_RISE_PER_S*0.02+1.0e-8;
-}
-static_assert(CommonRampBlendsTheWholeVector(), "Every changing wheel must use the same interpolation fraction");
-
-constexpr bool SaturationAndNeutralAreSafe() {
-  WheelDriveController control;
-  double desired[3]={2000,-1000,500},counts[3]={};
-  for (int tick=0;tick<20;++tick) {
-    control.Update(desired,counts,0.02,0.25);
-    for (int i=0;i<3;++i) if (Abs(control.Output(i))>0.2500001) return false;
-    if (!Near(control.Output(0),-2*control.Output(1)) ||
-        !Near(control.Output(0),4*control.Output(2))) return false;
+static_assert(EncoderSpeedDoesNotCompensatePower(),"Encoder telemetry cannot compensate individual motor power");
+constexpr bool CardinalDirectionsAreSymmetric() {
+  const double zero[3]={};
+  for (int direction=-1;direction<=1;direction+=2) {
+    const double forward[3]={100.0*direction,-100.0*direction,0};
+    const double sideways[3]={50.0*direction,50.0*direction,-100.0*direction};
+    WheelDriveController a,b;
+    a.Update(forward,zero,0.02,0.9); b.Update(sideways,zero,0.02,0.9);
+    if (!Near(a.Output(0),-a.Output(1)) || a.Output(2)!=0 ||
+        !Near(b.Output(0),b.Output(1)) || !Near(b.Output(2),-2*b.Output(0))) return false;
   }
-  desired[0]=desired[1]=desired[2]=0;
+  return true;
+}
+static_assert(CardinalDirectionsAreSymmetric(),"Forward/back rear outputs mirror; lateral front is twice either rear");
+constexpr bool CommonSaturationAndNeutral() {
+  WheelDriveController control;
+  const double desired[3]={2000,-1000,500},counts[3]={},zero[3]={};
   control.Update(desired,counts,0.02,0.25);
+  if (!Near(control.Output(0),0.25) || !Near(control.Output(1),-0.125) || !Near(control.Output(2),0.0625)) return false;
+  control.Update(zero,counts,0.02,0.25);
   return control.Output(0)==0 && control.Output(1)==0 && control.Output(2)==0;
 }
-static_assert(SaturationAndNeutralAreSafe(), "Shared saturation preserves ratios; a neutral command stops immediately");
-
-constexpr bool EncoderFaultsStillStopAllWheels() {
+static_assert(CommonSaturationAndNeutral(),"Common cap preserves wheel ratios; neutral stops all outputs");
+constexpr bool EncoderFaultsStopAllWheels() {
   WheelDriveController control;
-  const double desired[3]={-120,-120,240};
-  double counts[3]={};
+  const double desired[3]={-120,-120,240}; double counts[3]={};
   for (int tick=0;tick<75;++tick) control.Update(desired,counts,0.02,0.9);
   if (!control.HasFault() || control.Output(0)!=0 || control.Output(1)!=0 || control.Output(2)!=0) return false;
-  control.Reset();
-  counts[0]=std::numeric_limits<double>::quiet_NaN();
+  control.Reset(); counts[0]=std::numeric_limits<double>::quiet_NaN();
   control.Update(desired,counts,0.02,0.9);
   return control.HasFault() && control.Output(0)==0 && control.Output(2)==0;
 }
-static_assert(EncoderFaultsStillStopAllWheels(), "Removing compensation must retain all-wheel fault stopping");
-
-constexpr bool FrontWaitsForBothRearsThenReleasesSmoothly() {
-  WheelDriveController control;
-  const double desired[3]={-60,-60,120};
-  double counts[3]={};
-  for (int i=0;i<20;++i) control.Update(desired,counts,0.02,0.9);
-  if (!control.IsStarting()) return false;
-  counts[2]=2; // Front moves before either rear.
-  for (int i=0;i<10;++i) control.Update(desired,counts,0.02,0.9);
-  if (!control.IsStarting() || control.Output(2)!=0 || control.WaitingWheel()!=0) return false;
-  if (!Near(control.Output(0),desired[0]/localization_config::MAX_WHEEL_SPEED_MMPS) ||
-      !Near(control.Output(1),desired[1]/localization_config::MAX_WHEEL_SPEED_MMPS)) return false;
-  counts[0]=-2;
-  for (int i=0;i<5;++i) control.Update(desired,counts,0.02,0.9);
-  if (!control.IsStarting() || control.WaitingWheel()!=1 || control.Output(0)!=0 || control.Output(2)!=0) return false;
-  counts[1]=-2; // Last rear responds; no full-power jump on release.
-  control.Update(desired,counts,0.02,0.9);
-  if (control.IsStarting() || control.HasFault() || control.Output(2)<=0 || control.Output(2)>0.0150001) return false;
-  for (int i=0;i<20;++i) control.Update(desired,counts,0.02,0.9);
-  return !control.HasFault() && Near(control.Output(0),control.Output(1)) &&
-      Near(control.Output(2),-2*control.Output(0));
-}
-static_assert(FrontWaitsForBothRearsThenReleasesSmoothly(),
-              "Early front movement must be held while rears start; group release must be gradual");
-
-constexpr bool EarlyLeftRearIsHeldWithoutBoostingOtherWheels() {
-  WheelDriveController control;
-  const double desired[3]={-80,-80,160};
-  double counts[3]={};
-  for (int i=0;i<15;++i) control.Update(desired,counts,0.02,0.9);
-  counts[0]=-2;
-  for (int i=0;i<10;++i) {
-    control.Update(desired,counts,0.02,0.9);
-    for (int j=0;j<3;++j)
-      if (Abs(control.Output(j))>Abs(desired[j])/localization_config::MAX_WHEEL_SPEED_MMPS+1.0e-8) return false;
+static_assert(EncoderFaultsStopAllWheels(),"Fault stopping remains after removing output corrections");
+constexpr bool TeleopLegacyRampAndHoldAreIsolated() {
+  WheelDriveController manual,automatic;
+  const double desired[3]={-150,-150,300}; double counts[3]={};
+  manual.Update(desired,counts,0.02,0.9,WheelDriveContext::Teleop);
+  automatic.Update(desired,counts,0.02,0.9,WheelDriveContext::Autonomous);
+  if (!Near(manual.Output(2),0.015) || !Near(manual.Output(0),-0.0075) || !manual.IsStarting()) return false;
+  if (!Near(automatic.Output(2),300/localization_config::MAX_WHEEL_SPEED_MMPS) || automatic.IsStarting()) return false;
+  counts[2]=3;
+  for (int tick=0;tick<25;++tick) {
+    manual.Update(desired,counts,0.02,0.9,WheelDriveContext::Teleop);
+    automatic.Update(desired,counts,0.02,0.9,WheelDriveContext::Autonomous);
   }
-  return control.IsStarting() && control.Output(0)==0 && control.Output(1)<0 && control.Output(2)>0 &&
-      control.WaitingWheel()==1;
+  if (manual.Output(2)!=0 || !manual.IsStarting() || manual.WaitingWheel()!=0) return false;
+  if (!Near(automatic.Output(2),300/localization_config::MAX_WHEEL_SPEED_MMPS)) return false;
+  counts[0]=counts[1]=-3;
+  manual.Update(desired,counts,0.02,0.9,WheelDriveContext::Teleop);
+  if (manual.IsStarting() || !Near(manual.Output(2),0.015)) return false;
+  manual.Reset(); automatic.Reset();
+  return !manual.IsStarting() && manual.Output(0)==0 && automatic.Output(2)==0;
 }
-static_assert(EarlyLeftRearIsHeldWithoutBoostingOtherWheels(),
-              "Startup gating must treat the left rear like the front, with no motor-specific trim or power boost");
-
-constexpr bool IdleFrontDoesNotBlockForwardAndNeutralResetsGate() {
-  WheelDriveController control;
-  const double desired[3]={-100,100,0};
-  double counts[3]={};
-  control.Update(desired,counts,0.02,0.9);
-  counts[0]=-2; counts[1]=2;
-  control.Update(desired,counts,0.02,0.9);
-  if (control.IsStarting() || control.Output(2)!=0) return false;
-  control.Reset();
-  control.Update(desired,counts,0.02,0.9);
-  if (!control.IsStarting() || control.WaitingWheel()!=0) return false;
-  const double zero[3]={};
-  control.Update(zero,counts,0.02,0.9);
-  return !control.IsStarting() && control.Output(0)==0 && control.Output(1)==0;
-}
-static_assert(IdleFrontDoesNotBlockForwardAndNeutralResetsGate(),
-              "Only wheels needed for the requested direction participate; neutral cancels startup immediately");
-
-constexpr bool ChangingDirectionCancelsOldStartupHold() {
-  WheelDriveController control;
-  double desired[3]={-60,-60,120},counts[3]={};
-  control.Update(desired,counts,0.02,0.9);
-  counts[2]=2;
-  for (int i=0;i<10;++i) control.Update(desired,counts,0.02,0.9);
-  if (!control.IsStarting() || control.Output(2)!=0) return false;
-  desired[0]=-100; desired[1]=100; desired[2]=0;
-  for (int i=0;i<15;++i) control.Update(desired,counts,0.02,0.9);
-  return !control.IsStarting() && !control.HasFault() && control.Output(0)<0 &&
-      control.Output(1)>0 && control.Output(2)==0;
-}
-static_assert(ChangingDirectionCancelsOldStartupHold(),
-              "A new requested direction must not inherit wheel holds from the old startup");
-
-constexpr bool InsufficientLowPowerGetsAStartupTimeout() {
-  WheelDriveController control;
-  const double desired[3]={-20,-20,40};
-  double counts[3]={};
-  control.Update(desired,counts,0.02,0.9);
-  counts[2]=2;
-  for (int i=0;i<110;++i) control.Update(desired,counts,0.02,0.9);
-  return control.HasFault() && control.FaultWheel()==0 && control.Output(0)==0 &&
-      control.Output(1)==0 && control.Output(2)==0;
-}
-static_assert(InsufficientLowPowerGetsAStartupTimeout(),
-              "If a low command cannot start all required wheels, stop instead of driving indefinitely on one wheel");
-
-constexpr bool DifferentFrictionMotorSimulationStartsTheGroup() {
-  WheelDriveController control;
-  const double desired[3]={-140,-140,280};
-  double position[3]={},counts[3]={},velocity[3]={};
-  bool frontHeld=false,groupReleased=false;
-  double previousFront=0;
-  for (int tick=0;tick<250;++tick) {
-    control.Update(desired,counts,0.02,0.9);
-    if (control.HasFault()) return false;
-    if (tick>0 && control.IsStarting() && counts[2]>=2 &&
-        control.Output(2)<previousFront-1.0e-8) frontHeld=true;
-    previousFront=control.Output(2);
-    if (tick>0 && !control.IsStarting()) groupReleased=true;
-    for (int i=0;i<3;++i) {
-      const double power=control.Output(i);
-      const double friction=i==0?0.17:(i==1?0.19:0.08);
-      const double steady=Abs(power)>friction?
-          (power>0?1:-1)*(Abs(power)-friction)/(1-friction)*localization_config::MAX_WHEEL_SPEED_MMPS:0;
-      velocity[i]+=(steady-velocity[i])*(0.02/(0.10+0.02));
-      position[i]+=velocity[i]*0.02;
-      counts[i]=static_cast<int>(position[i]/mmPerCount);
-    }
-  }
-  return frontHeld && groupReleased && velocity[0]<0 && velocity[1]<0 && velocity[2]>0;
-}
-static_assert(DifferentFrictionMotorSimulationStartsTheGroup(),
-              "Startup must hold an early low-friction wheel and release the group when the slower wheels respond");
+static_assert(TeleopLegacyRampAndHoldAreIsolated(),"Legacy startup/ramp is Teleop-only and state is separate");
+static_assert(WheelOutputScale(0,WheelDriveContext::Teleop)==0.8 &&
+    WheelOutputScale(1,WheelDriveContext::Teleop)==1 && WheelOutputScale(2,WheelDriveContext::Teleop)==1 &&
+    WheelOutputScale(0,WheelDriveContext::Autonomous)==1 &&
+    WheelOutputScale(1,WheelDriveContext::Autonomous)==1 && WheelOutputScale(2,WheelDriveContext::Autonomous)==1,
+    "Restore 80 percent M0 only in Teleop; no autonomous motor trim");
 }

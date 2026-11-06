@@ -27,7 +27,7 @@ bool Stopped(const ArenaTestController& c) {
 }
 ArenaTestInput Input() {
   return {{at::SP.x_MM,at::SP.y_MM,robot_geometry::Radians(at::SP.headingDeg)},
-      0,0.02,true,true,false,false,{-1,-1,-1,-1}};
+      0,0.02,true,true,false,false,0};
 }
 void GeometryAndWallAssociation() {
   ArenaMap map(false);
@@ -140,7 +140,7 @@ void TurnDriftIsReacquiredBeforeReference() {
   in.pose.headingRad=robot_geometry::Radians(at::MW.headingDeg);
   in.pose.x_MM+=25;
   for (int tick=0;tick<25 && c.GetState()==State::TurnMW;++tick) { in.now+=in.dt; c.Update(in); }
-  REQUIRE_ARENA(c.GetState()==State::TravelMW && c.ReferenceMask()==0);
+  REQUIRE_ARENA(c.GetState()==State::TravelMW);
   REQUIRE_ARENA(Near(c.GetHeadingTargetDeg(),at::MW.headingDeg));
   in.now+=in.dt; c.Update(in);
   REQUIRE_ARENA(c.GetYawRadps()==0 && std::hypot(c.GetForwardMMps(),c.GetLeftMMps())>0);
@@ -226,7 +226,7 @@ void ReversedFeedbackStopsBeforeTimeout(bool duringTravel) {
         std::to_string(in.pose.headingRad*180/robot_geometry::PI)+
         ", duringTravel="+std::to_string(duringTravel));
 }
-void Simulate(bool supplyReferences,bool repeatOldTimestamp=false,bool motorDeadZone=false,bool motorLag=false,
+void Simulate(bool disturbPose,bool motorDeadZone=false,bool motorLag=false,
               double responseTime=0.08) {
   ArenaTestController c;
   auto in=Input(); c.Enter(0);
@@ -283,8 +283,8 @@ void Simulate(bool supplyReferences,bool repeatOldTimestamp=false,bool motorDead
       REQUIRE_ARENA(in.pose.headingRad>=robot_geometry::Radians(at::MW.headingDeg-1));
     if (state==State::TurnRDW) sawTurnRDW=true;
     if (state==State::ReferenceMW) {
-      sawReferenceMW=true; REQUIRE_ARENA(c.ReferenceMask()==at::MW_REFERENCE_MASK);
-      if (!disturbedMiddlePose && supplyReferences && !repeatOldTimestamp) {
+      sawReferenceMW=true;
+      if (!disturbedMiddlePose && disturbPose) {
         in.pose.x_MM+=24; in.pose.y_MM-=18; disturbedMiddlePose=true;
       }
     }
@@ -294,21 +294,15 @@ void Simulate(bool supplyReferences,bool repeatOldTimestamp=false,bool motorDead
       leftMiddle=true;
     }
     if (state==State::ReferenceRDW) {
-      sawReferenceRDW=true; REQUIRE_ARENA(c.ReferenceMask()==at::RDW_REFERENCE_MASK);
-      if (!disturbedFinalPose && supplyReferences && !repeatOldTimestamp) {
-        // A wall correction changes the estimated position: finish at RDW
-        // after that correction, rather than declaring success away from it.
+      sawReferenceRDW=true;
+      if (!disturbedFinalPose && disturbPose) {
+        // An external disturbance changes pose: finish at RDW before success.
         in.pose.x_MM-=20; in.pose.y_MM-=15; disturbedFinalPose=true;
       }
     }
     if (motorLag && state==State::FinishHeadingRDW && !disturbedFinalTurn) {
       in.pose.x_MM+=24; disturbedFinalTurn=true;
     }
-    if (supplyReferences && c.ReferenceMask()!=0 && tick%20==0)
-      for (int sensor=0;sensor<4;++sensor) if (c.ReferenceMask()&(1u<<sensor)) {
-        REQUIRE_ARENA(c.ReferenceSurface(sensor)>=0);
-        if (!repeatOldTimestamp || in.correctionTime[sensor]<0) in.correctionTime[sensor]=in.now;
-      }
     c.Update(in);
     if (c.GetState()==State::TurnMW && c.GetYawRadps()<0) sawNegativeMWYaw=true;
     REQUIRE_ARENA(c.GetState()!=State::Fault);
@@ -325,8 +319,8 @@ void Simulate(bool supplyReferences,bool repeatOldTimestamp=false,bool motorDead
   REQUIRE_ARENA(leftMiddle);
   REQUIRE_ARENA(std::hypot(in.pose.x_MM-at::RDW.x_MM,in.pose.y_MM-at::RDW.y_MM)<=at::POSITION_TOLERANCE_MM+1e-5);
   REQUIRE_ARENA(std::fabs(robot_geometry::Wrap(in.pose.headingRad-robot_geometry::Radians(at::RDW.headingDeg)))<=at::HEADING_TOLERANCE_RAD+1e-5);
-  const bool skipped=c.GetStatus().find("unavailable")!=std::string::npos;
-  REQUIRE_ARENA(skipped==(!supplyReferences || repeatOldTimestamp));
+  REQUIRE_ARENA(c.GetStatus().find("encoder distance and gyro heading only")!=std::string::npos);
+  REQUIRE_ARENA(c.GetLastReferenceReport().find("Position referencing disabled")!=std::string::npos);
   REQUIRE_ARENA(c.GetLastReferenceReport().find("MW:")!=std::string::npos);
   REQUIRE_ARENA(c.GetLastReferenceReport().find("RDW:")!=std::string::npos);
 }
@@ -466,6 +460,115 @@ void SimpleTasksAndColourChecks() {
   SimulateSimpleTask(SimpleTask::Forward1000,170,true);
   SimpleTaskStopHealthAndPhoto(); AverageColourAndSurpriseReferences(); ColourCalibrationPersistsAndRejectsCorruption();
 }
+// Independent installed-wheel model for odometry tests. These expressions do
+// not reuse production projections/inverse helpers, so a matching bug cannot hide.
+void AddPhysicalCounts(double (&counts)[3],double forward,double left,double turn) {
+  const double mmPerCount=102*robot_geometry::PI/1464;
+  const double wheel[3]={std::sqrt(3.0)/2*forward+0.5*left-168*turn,
+      -std::sqrt(3.0)/2*forward+0.5*left-168*turn,-left-168*turn};
+  for (int i=0;i<3;++i) counts[i]+=wheel[i]/mmPerCount;
+}
+void KinematicsUsesWheelProjectionAndSingleCountConversion() {
+  REQUIRE_ARENA(Near(localization_config::ENCODER_MM_PER_COUNT,0.218881455373059,1e-9));
+  for (double forward:{-1000.0,0.0,1000.0}) for (double left:{-1000.0,0.0,1000.0}) {
+    const double turn=0.3;
+    double counts[3]={},wheel[3]; AddPhysicalCounts(counts,forward,left,turn);
+    for (int i=0;i<3;++i) wheel[i]=counts[i]*localization_config::ENCODER_MM_PER_COUNT;
+    double actualForward=0,actualLeft=0;
+    REQUIRE_ARENA(drive_kinematics::BodyDisplacement(wheel,turn,actualForward,actualLeft));
+    REQUIRE_ARENA(Near(actualForward,forward) && Near(actualLeft,left));
+    for (int i=0;i<3;++i)
+      REQUIRE_ARENA(Near(wheel[i],drive_kinematics::WheelSpeedMMps(i,
+          drive_kinematics::LayoutVx(forward,left),drive_kinematics::LayoutVy(forward,left),turn)));
+  }
+}
+void EncoderDistanceDoesNotDependOnTickRate() {
+  for (double dt:{0.01,0.02,0.05}) for (double direction:{-1.0,1.0}) {
+    drive_kinematics::EncoderGyroOdometry odometry;
+    double counts[3]={}; odometry.Reset({0,0,0},counts,137);
+    for (int tick=0;tick<int(std::round(5/dt));++tick) {
+      AddPhysicalCounts(counts,direction*200*dt,0,0);
+      REQUIRE_ARENA(odometry.Update(counts,137,0,dt));
+    }
+    REQUIRE_ARENA(Near(odometry.Pose().x_MM,direction*1000));
+    REQUIRE_ARENA(Near(odometry.Pose().y_MM,0) && Near(odometry.Pose().headingRad,0));
+  }
+  drive_kinematics::EncoderGyroOdometry odometry;
+  double counts[3]={}; odometry.Reset({0,0,0},counts,-172);
+  const double periods[4]={0.01,0.03,0.02,0.04};
+  for (int tick=0;tick<200;++tick) {
+    const double dt=periods[tick%4]; AddPhysicalCounts(counts,200*dt,0,0);
+    REQUIRE_ARENA(odometry.Update(counts,-172,0,dt));
+  }
+  REQUIRE_ARENA(Near(odometry.Pose().x_MM,1000));
+  // CAN counts can arrive in bursts. Repeated cached values cannot create or
+  // erase distance; all increments are consumed once on their arrival.
+  counts[0]=counts[1]=counts[2]=0; odometry.Reset({0,0,0},counts,0);
+  double truth[3]={};
+  for (int tick=1;tick<=300;++tick) {
+    AddPhysicalCounts(truth,200*0.02,0,0);
+    if (tick%3==0) for (int i=0;i<3;++i) counts[i]=std::round(truth[i]);
+    REQUIRE_ARENA(odometry.Update(counts,0,0,0.02));
+  }
+  REQUIRE_ARENA(Near(odometry.Pose().x_MM,1200,0.3));
+  // Even very small valid increments survive; no stationary velocity filter
+  // discards low-speed motion from the encoder distance.
+  counts[0]=counts[1]=counts[2]=0; odometry.Reset({0,0,0},counts,0);
+  for (int tick=0;tick<100;++tick) {
+    ++counts[0]; --counts[1]; REQUIRE_ARENA(odometry.Update(counts,0,0,0.1));
+  }
+  REQUIRE_ARENA(Near(odometry.Pose().x_MM,200*localization_config::ENCODER_MM_PER_COUNT/std::sqrt(3.0)));
+}
+void GyroRelativeHeadingAndCurvedTravel() {
+  for (double dt:{0.01,0.02,0.05}) {
+    drive_kinematics::EncoderGyroOdometry odometry;
+    double counts[3]={}; odometry.Reset({0,0,0},counts,170);
+    double elapsed=0;
+    for (int tick=0;tick<int(std::round(4/dt));++tick) {
+      elapsed+=dt; AddPhysicalCounts(counts,200*dt,0,0.3*dt);
+      const double yaw=robot_geometry::Wrap(robot_geometry::Radians(170)+0.3*elapsed)*180/robot_geometry::PI;
+      REQUIRE_ARENA(odometry.Update(counts,yaw,0.3*180/robot_geometry::PI,dt));
+    }
+    REQUIRE_ARENA(Near(odometry.Pose().x_MM,200/0.3*std::sin(1.2)));
+    REQUIRE_ARENA(Near(odometry.Pose().y_MM,200/0.3*(1-std::cos(1.2))));
+    REQUIRE_ARENA(Near(odometry.Pose().headingRad,1.2));
+  }
+  drive_kinematics::EncoderGyroOdometry odometry;
+  double counts[3]={}; odometry.Reset({950,900,0},counts,137);
+  for (int tick=1;tick<=50;++tick) {
+    AddPhysicalCounts(counts,0,0,robot_geometry::PI/100);
+    REQUIRE_ARENA(odometry.Update(counts,137+90*tick/50.0,90,0.02));
+  }
+  REQUIRE_ARENA(Near(odometry.Pose().x_MM,950) && Near(odometry.Pose().y_MM,900));
+  REQUIRE_ARENA(Near(odometry.Pose().headingRad,robot_geometry::PI/2));
+  odometry.Reset({0,0,0},counts,137);
+  REQUIRE_ARENA(odometry.Update(counts,137,30,0.02));
+  REQUIRE_ARENA(Near(odometry.Pose().headingRad,0)); // no extra gyro-rate integration
+  REQUIRE_ARENA(!odometry.Update(counts,137,0,0.2) && !odometry.Healthy());
+  REQUIRE_ARENA(Near(odometry.Pose().x_MM,0));
+  odometry.Reset({0,0,0},counts,137); counts[0]=std::numeric_limits<double>::quiet_NaN();
+  REQUIRE_ARENA(!odometry.Update(counts,137,0,0.02));
+}
+void EncoderGyroOdometryChecks() {
+  KinematicsUsesWheelProjectionAndSingleCountConversion();
+  EncoderDistanceDoesNotDependOnTickRate(); GyroRelativeHeadingAndCurvedTravel();
+  drive_kinematics::EncoderGyroOdometry autonomous;
+  drive_kinematics::TeleopPoseTelemetry manual;
+  drive_kinematics::TeleopPoseTelemetry manualWithoutAcceleration;
+  double counts[3]={};
+  autonomous.Reset({0,0,0},counts,0); manual.Reset({0,0,0},counts,0,0,0);
+  manualWithoutAcceleration.Reset({0,0,0},counts,0,0,0);
+  AddPhysicalCounts(counts,100*0.02,0,0);
+  REQUIRE_ARENA(autonomous.Update(counts,0,0,0.02));
+  REQUIRE_ARENA(manual.Update(counts,0,0,0.1,0,0.02));
+  REQUIRE_ARENA(manualWithoutAcceleration.Update(counts,0,0,0,0,0.02));
+  REQUIRE_ARENA(manual.Pose().x_MM>manualWithoutAcceleration.Pose().x_MM); // legacy display still uses acceleration
+  REQUIRE_ARENA(Near(autonomous.Pose().x_MM,2)); // manual state never alters autonomous distance
+  const auto before=manual.Pose();
+  REQUIRE_ARENA(autonomous.Update(counts,0,30,0.02));
+  REQUIRE_ARENA(Near(manual.Pose().x_MM,before.x_MM));
+  REQUIRE_ARENA(Near(autonomous.Pose().headingRad,0));
+}
 } // namespace
 
 #ifdef ARENA_TEST_STANDALONE
@@ -476,10 +579,11 @@ int main() {
     TurnBrakesBeforeTargetAndStopsBeforeReversing();
     InstalledYawPolarityMatchesGyroFrame();
     ReversedFeedbackStopsBeforeTimeout(false); ReversedFeedbackStopsBeforeTimeout(true);
-    Simulate(true); Simulate(false); Simulate(true,true); Simulate(true,false,true); Simulate(true,false,true,true);
-    Simulate(true,false,true,true,0.25);
+    Simulate(true); Simulate(false); Simulate(true,true); Simulate(true,true,true);
+    Simulate(true,true,true,0.25);
     SimpleTasksAndColourChecks();
-    std::cout<<"PASS: supplied-photo mean RGB, ROI scaling, arbitrary surprise colours, ambiguity/variance rejection, calibration persistence/corruption; relative tasks, arena route and gyro braking regressions\n";
+    EncoderGyroOdometryChecks();
+    std::cout<<"PASS: direct encoder/gyro odometry, forward/inverse wheel projections, timing jitter and sparse counts, exact turn integration; motion tasks, arena route and colour calibration regressions\n";
   } catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }
 }
 #else
@@ -493,11 +597,11 @@ TEST(ArenaRoutine, TurnBrakesBeforeTargetAndStopsBeforeReversing) { EXPECT_NO_TH
 TEST(ArenaRoutine, InstalledYawPolarityMatchesGyroFrame) { EXPECT_NO_THROW(InstalledYawPolarityMatchesGyroFrame()); }
 TEST(ArenaRoutine, ReversedTurnStopsBeforeTimeout) { EXPECT_NO_THROW(ReversedFeedbackStopsBeforeTimeout(false)); }
 TEST(ArenaRoutine, ReversedHeadingHoldStopsBeforeTimeout) { EXPECT_NO_THROW(ReversedFeedbackStopsBeforeTimeout(true)); }
-TEST(ArenaRoutine, ValidReferenceSimulation) { EXPECT_NO_THROW(Simulate(true)); }
-TEST(ArenaRoutine, MissingReferenceSimulation) { EXPECT_NO_THROW(Simulate(false)); }
-TEST(ArenaRoutine, StaleReferenceSimulation) { EXPECT_NO_THROW(Simulate(true,true)); }
-TEST(ArenaRoutine, MotorDeadZoneSimulation) { EXPECT_NO_THROW(Simulate(true,false,true)); }
-TEST(ArenaRoutine, MotorLagAndPoseCorrectionSimulation) { EXPECT_NO_THROW(Simulate(true,false,true,true)); }
-TEST(ArenaRoutine, SlowerMotorResponseSimulation) { EXPECT_NO_THROW(Simulate(true,false,true,true,0.25)); }
+TEST(ArenaRoutine, DisturbedPoseSimulation) { EXPECT_NO_THROW(Simulate(true)); }
+TEST(ArenaRoutine, NominalPoseSimulation) { EXPECT_NO_THROW(Simulate(false)); }
+TEST(ArenaRoutine, MotorDeadZoneSimulation) { EXPECT_NO_THROW(Simulate(true,true)); }
+TEST(ArenaRoutine, MotorLagAndPoseDriftSimulation) { EXPECT_NO_THROW(Simulate(true,true,true)); }
+TEST(ArenaRoutine, SlowerMotorResponseSimulation) { EXPECT_NO_THROW(Simulate(true,true,true,0.25)); }
 TEST(SimpleTasks, MotionAndColour) { EXPECT_NO_THROW(SimpleTasksAndColourChecks()); }
+TEST(Odometry, EncoderGyroAndTiming) { EXPECT_NO_THROW(EncoderGyroOdometryChecks()); }
 #endif

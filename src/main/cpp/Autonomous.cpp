@@ -174,7 +174,7 @@ std::string ArenaTestController::ValidateGeometry() const {
         at::TURN_BRAKE_RESPONSE_S>=0 &&
         std::fabs(localization_config::DRIVE_YAW_DIRECTION_SIGN)==1 &&
         at::YAW_DIRECTION_ERROR_RAD>0 && at::YAW_DIRECTION_CHECK_MIN_RADPS>0 &&
-        at::REFERENCE_TIMEOUT_S>at::SETTLE_S && at::REFERENCE_SAMPLES>0 &&
+
         at::LEG_TIMEOUT_S>0 && at::ROUTINE_TIMEOUT_S>0))
     return "Invalid test speed, tolerance or timing configuration";
   return {};
@@ -183,9 +183,8 @@ void ArenaTestController::Enter(double now) {
   Stop(); target_=at::SP; stateTime_=now; missionTime_=now; settleTime_=-1;
   travelHeadingRad_=robot_geometry::Radians(at::SP.headingDeg);
   stoppedHeadingTargetDeg_=at::SP.headingDeg;
-  referencesSkipped_=false; heading_.Reset(); lastReferenceReport_.clear();
+  heading_.Reset(); lastReferenceReport_.clear();
   referenceReport_="No reference requested";
-  for (int i=0;i<4;++i) { referenceSamples_[i]=0; previousCorrection_[i]=-1; }
   state_=at::ENABLED?State::WaitingStart:State::Disabled;
   status_=at::ENABLED?"Ready at SP - press Start routine":"Arena test disabled in configuration";
   const auto error=ValidateGeometry();
@@ -205,16 +204,11 @@ void ArenaTestController::Transition(State state,double now,const char* status) 
   if (state==State::FinishMW) travelHeadingRad_=robot_geometry::Radians(at::MW.headingDeg);
   if (state==State::TravelRDW) travelHeadingRad_=robot_geometry::Radians(at::MW.headingDeg);
   if (state==State::FinishRDW) travelHeadingRad_=robot_geometry::Radians(at::RDW.headingDeg);
-  for (int i=0;i<4;++i) { referenceSamples_[i]=0; previousCorrection_[i]=-1; }
 }
 bool ArenaTestController::Settled(bool reached,double now) {
   if (!reached) { settleTime_=-1; return false; }
   if (settleTime_<0) settleTime_=now;
   return now-settleTime_>=at::SETTLE_S;
-}
-unsigned ArenaTestController::ReferenceMask() const {
-  return state_==State::ReferenceMW?at::MW_REFERENCE_MASK:
-      (state_==State::ReferenceRDW?at::RDW_REFERENCE_MASK:0u);
 }
 double ArenaTestController::GetHeadingTargetDeg() const {
   if (state_==State::Fault || state_==State::Aborted) return stoppedHeadingTargetDeg_;
@@ -257,44 +251,14 @@ double HeadingMotionControl::Request(double error,double oldYaw,double measuredY
   const double step=at::YAW_ACCEL_RADPS2*dt;
   return oldYaw+std::max(-step,std::min(step,request-oldYaw));
 }
-int ArenaTestController::ReferenceSurface(int sensor) const {
-  if (sensor<0 || sensor>=4 || !(ReferenceMask()&(1u<<sensor))) return -1;
-  const RobotPose p={target_.x_MM,target_.y_MM,robot_geometry::Radians(target_.headingDeg)};
-  const auto hit=map_.SonarHit(sensor,p);
-  return hit.trustedWall?hit.surface:-1;
-}
 void ArenaTestController::Reference(const ArenaTestInput& in) {
-  const unsigned mask=ReferenceMask();
-  if (in.stationary && in.now-stateTime_>=at::SETTLE_S) {
-    for (int i=0;i<4;++i) if ((mask&(1u<<i)) &&
-        std::isfinite(in.correctionTime[i]) && in.correctionTime[i]>stateTime_+at::SETTLE_S &&
-        in.correctionTime[i]>previousCorrection_[i] && in.correctionTime[i]<=in.now &&
-        in.now-in.correctionTime[i]<=autonomous_config::SONAR_STALE_S) {
-      previousCorrection_[i]=in.correctionTime[i];
-      if (referenceSamples_[i]<at::REFERENCE_SAMPLES) ++referenceSamples_[i];
-    }
-  }
-  bool done=true;
-  referenceReport_=state_==State::ReferenceMW?"MW: ":"RDW: ";
-  for (int i=0;i<4;++i) if (mask&(1u<<i)) {
-    done=done && referenceSamples_[i]>=at::REFERENCE_SAMPLES;
-    referenceReport_+=std::string(localization_config::SONARS[i].name)+" "+
-        std::to_string(referenceSamples_[i])+"/"+std::to_string(at::REFERENCE_SAMPLES)+" accepted; ";
-  }
-  if (!done && in.now-stateTime_<at::REFERENCE_TIMEOUT_S) return;
-  if (!done) {
-    referencesSkipped_=true;
-    referenceReport_+="Only accepted samples applied; unavailable references skipped";
-  }
+  referenceReport_=std::string(state_==State::ReferenceMW?"MW: ":"RDW: ")+
+      "Position referencing disabled - encoder increments and gyro heading only";
   if (!lastReferenceReport_.empty()) lastReferenceReport_+=" | ";
   lastReferenceReport_+=referenceReport_;
-  if (state_==State::ReferenceMW) {
-    Transition(State::FinishMW,in.now,"MW observed - finish XY using the corrected pose");
-  } else {
-    Transition(State::FinishRDW,in.now,"RDW observed - finish XY using the corrected pose");
-  }
-}
-void ArenaTestController::Update(const ArenaTestInput& in) {
+  Transition(state_==State::ReferenceMW?State::FinishMW:State::FinishRDW,in.now,
+      "Verify waypoint using encoder distance and gyro heading only");
+}void ArenaTestController::Update(const ArenaTestInput& in) {
   const double oldForward=forward_,oldLeft=left_,oldYaw=yaw_;
   Stop();
   if (in.stopRequested) { Abort(); return; }
@@ -382,13 +346,11 @@ void ArenaTestController::Update(const ArenaTestInput& in) {
       return;
     }
     if (state_==State::FinishHeadingRDW) {
-      Transition(State::Complete,in.now,referencesSkipped_?
-          "SP -> MW -> RDW complete; some sensor corrections were unavailable":
-          "SP -> MW -> RDW complete; MW and RDW references accepted");
+      Transition(State::Complete,in.now,"SP -> MW -> RDW complete - encoder distance and gyro heading only");
       return;
     }
     Transition(state_==State::TurnMW?State::ReferenceMW:State::ReferenceRDW,in.now,
-        state_==State::TurnMW?"MW: stationary right-sensor reference":"RDW: stationary right/rear reference");
+        state_==State::TurnMW?"MW: verify encoder/gyro pose":"RDW: verify encoder/gyro pose");
     return;
   }
   if (reached) return;

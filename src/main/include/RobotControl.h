@@ -30,10 +30,10 @@ class Hardware {
   double GetWheelCommand(int wheel) const;
   void DriveRobotRelative(double forward, double left, double yawRadps,
                                    double maxOutput, double dt);
-  double GetWheelTargetMMps(int i) const { return wheelDrive_.TargetMMps(i); }
-  double GetWheelMeasuredMMps(int i) const { return wheelDrive_.MeasuredMMps(i); }
-  bool HasDriveFault() const { return wheelDrive_.HasFault(); }
-  bool IsDriveStarting() const { return wheelDrive_.IsStarting(); }
+  double GetWheelTargetMMps(int i) const { return ActiveWheelDrive().TargetMMps(i); }
+  double GetWheelMeasuredMMps(int i) const { return ActiveWheelDrive().MeasuredMMps(i); }
+  bool HasDriveFault() const { return ActiveWheelDrive().HasFault(); }
+  bool IsDriveStarting() const { return ActiveWheelDrive().IsStarting(); }
   std::string GetDriveStatus() const;
   void StopDrive();
   void SetAutonomousDriveEnabled(bool enabled) { autonomousDriveEnabled_=enabled; }
@@ -57,6 +57,7 @@ class Hardware {
   double GetRawGyroZ_Dps();
   bool IsImuConnected();
   bool IsImuCalibrating();
+  double GetImuUpdateCount() { return imu_.GetUpdateCount(); }
 
   void PingSonar(int index);
   double GetSonarRangeMM(int index) const;
@@ -67,11 +68,14 @@ class Hardware {
  private:
   static bool TeleopMotorMotionAllowed();
   bool DriveMotorMotionAllowed() const;
+  const WheelDriveController& ActiveWheelDrive() const { return teleopWheelActive_?teleopWheelDrive_:wheelDrive_; }
   bool autonomousDriveEnabled_=false;
   double liftCommand_=0;
   std::unique_ptr<frc::DigitalInput> liftUpperLimit_,liftLowerLimit_;
   std::unique_ptr<studica::Cobra> cobra_;
   WheelDriveController wheelDrive_;
+  WheelDriveController teleopWheelDrive_;
+  bool teleopWheelActive_=false;
   double wheelCommands_[localization_config::WHEEL_COUNT] = {0.0, 0.0, 0.0};
   studica::Servo manualServo_{manipulator_config::SERVO_PWM[0]};
   studica::Servo triangleServo_{manipulator_config::SERVO_PWM[1]};
@@ -92,19 +96,13 @@ class Hardware {
 
   studica::TitanQuadEncoder leftRearEncoder_{
       leftRearMotor_, localization_config::WHEEL_TITAN_PORT[0],
-      (2.0 * robot_geometry::PI * localization_config::WHEEL_RADIUS_MM) /
-          (localization_config::ENCODER_COUNTS_PER_OUTPUT_REV *
-           localization_config::MOTOR_TO_WHEEL_RATIO)};
+      localization_config::ENCODER_MM_PER_COUNT};
   studica::TitanQuadEncoder rightRearEncoder_{
       rightRearMotor_, localization_config::WHEEL_TITAN_PORT[1],
-      (2.0 * robot_geometry::PI * localization_config::WHEEL_RADIUS_MM) /
-          (localization_config::ENCODER_COUNTS_PER_OUTPUT_REV *
-           localization_config::MOTOR_TO_WHEEL_RATIO)};
+      localization_config::ENCODER_MM_PER_COUNT};
   studica::TitanQuadEncoder frontEncoder_{
       frontMotor_, localization_config::WHEEL_TITAN_PORT[2],
-      (2.0 * robot_geometry::PI * localization_config::WHEEL_RADIUS_MM) /
-          (localization_config::ENCODER_COUNTS_PER_OUTPUT_REV *
-           localization_config::MOTOR_TO_WHEEL_RATIO)};
+      localization_config::ENCODER_MM_PER_COUNT};
 
   frc::Ultrasonic leftSonar_{localization_config::SONARS[0].triggerDio,
                            localization_config::SONARS[0].echoDio};
@@ -115,59 +113,29 @@ class Hardware {
   frc::Ultrasonic frontSonar_{localization_config::SONARS[3].triggerDio,
                             localization_config::SONARS[3].echoDio};
 
-  AHRS imu_{frc::SPI::Port::kMXP};
+  AHRS imu_{frc::SPI::Port::kMXP}; // preserve the original device sampling configuration
 };
 
-// Odometry and sensor fusion.
+// Mode-isolated pose observers. Only Autonomous uses the simplified odometry.
 class Localization {
  public:
   explicit Localization(Hardware* hardware);
-
-  void Reset(double x_MM, double y_MM, double headingDeg);
+  void Reset(double x_MM,double y_MM,double headingDeg);
   void UpdateOdometry(double dtSeconds);
-  bool CorrectFromSonar(int sensorIndex, double measuredRange_MM, int expectedSurface=-1);
-  bool CorrectFromLine(const autonomous_config::Station& station, double tapeLeftError_MM);
-  bool IsHealthy(double maxPositionSigmaMM=autonomous_config::MAX_POSITION_SIGMA_MM) const;
-  double GetPositionSigmaMM() const;
+  void SetAutonomousMode(bool autonomous);
+  bool IsHealthy() const { return autonomousMode_?odometry_.Healthy():teleopTelemetry_.Healthy(); }
   void PublishTelemetry() const;
-
-  const RobotPose& GetPose() const { return pose_; }
-  double GetBodyVelocityX_MMps() const { return lastBodyVelocityX_MMps_; }
-  double GetBodyVelocityY_MMps() const { return lastBodyVelocityY_MMps_; }
-  std::string GetFusionStatus() const;
-  double GetImuOffsetDegrees() const { return imuYawOffsetRad_*180/robot_geometry::PI; }
-
+  const RobotPose& GetPose() const { return autonomousMode_?odometry_.Pose():teleopTelemetry_.Pose(); }
+  double GetBodyVelocityX_MMps() const { return autonomousMode_?odometry_.ForwardSpeed():teleopTelemetry_.ForwardSpeed(); }
+  double GetBodyVelocityY_MMps() const { return autonomousMode_?odometry_.LeftSpeed():teleopTelemetry_.LeftSpeed(); }
+  std::string GetStatus() const;
+  double GetImuOffsetDegrees() const { return autonomousMode_?odometry_.OffsetDegrees():teleopTelemetry_.OffsetDegrees(); }
  private:
-  double PredictSonarRange(int sensorIndex, const RobotPose& pose) const;
-  ArenaRayHit PredictSonarHit(int sensorIndex, const RobotPose& pose, double angleOffset=0) const;
-  void ApplyScalarCorrection(const double jacobian[3], double innovation,
-                             double variance);
-
   Hardware* hardware_;
-  ArenaMap arena_{false}; // current reference test uses the measured wall geometry
-  RobotPose pose_;
-  double covariance_[3][3];
-  double previousEncoder_[localization_config::WHEEL_COUNT];
-  double fusedWorldVelocityX_MMps_;
-  double fusedWorldVelocityY_MMps_;
-  double imuYawOffsetRad_;
-  double lastBodyVelocityX_MMps_;
-  double lastBodyVelocityY_MMps_;
-  double lastAngularVelocityRadps_;
-  double lastAccelX_G_;
-  double lastAccelY_G_;
-  double lastRawAccelX_G_;
-  double lastRawAccelY_G_;
-  double lastRawAccelZ_G_;
-  double lastRawGyroX_Dps_;
-  double lastRawGyroY_Dps_;
-  double lastRawGyroZ_Dps_;
-  double lastYawDegrees_;
-  double lastYawRateDps_;
-  double accelBiasX_G_=0,accelBiasY_G_=0;
-  bool odometrySampleHealthy_=true,accelSampleValid_=false,stationaryUpdate_=true;
+  drive_kinematics::EncoderGyroOdometry odometry_;
+  drive_kinematics::TeleopPoseTelemetry teleopTelemetry_;
+  bool autonomousMode_=false;
 };
-
 // Robot scheduler, modes and dashboard integration.
 class CameraCapture;
 class RobotSubsystem : public frc2::SubsystemBase {
@@ -224,15 +192,14 @@ class RobotSubsystem : public frc2::SubsystemBase {
   nt::NetworkTableEntry setSpReference_;
   std::string poseReferenceStatus_="Disabled only: place at SP facing +X, then Set SP reference";
   bool startRoutineRequested_=false,stopRoutineRequested_=false;
-  double sonarCorrectionTime_[4]={-1,-1,-1,-1};
-  double lastLineCorrection_=0;
   double lastLoopTime_=0;
+  double controlDt_=localization_config::CONTROL_PERIOD_S,maxControlDt_=0;
+  double imuRateWindowTime_=0,imuRateWindowCount_=0,imuMeasuredHz_=0;
+  unsigned lateUpdates_=0;
   int nextSonarIndex_=0;
   bool sonarAwaitingEcho_=false;
-  bool sonarSlowAtPing_=false;
   double sonarPingTime_=0,lastSonarPingTime_=0;
   double sonarRanges_MM_[4]={-1,-1,-1,-1};
   double sonarReadTime_[4]={-1,-1,-1,-1};
   bool sonarRangeValid_[4]={false,false,false,false};
-  bool sonarCorrectionAccepted_[4]={false,false,false,false};
 };

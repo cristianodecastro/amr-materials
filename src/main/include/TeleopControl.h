@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cmath>
+#include <algorithm>
 #include "RobotConfig.h"
 
 // Wheel geometry and shared output normalization.
@@ -31,6 +32,146 @@ inline constexpr double WheelSpeedMMps(int wheel, double vx_MMps, double vy_MMps
          localization_config::DRIVE_YAW_DIRECTION_SIGN * yawRate_Radps *
          localization_config::WHEEL_CENTER_RADIUS_MM[wheel];
 }
+
+// Invert the SAME tangent projections used by WheelSpeedMMps. Gyro rotation
+// removes each wheel's rotational travel; solve the remaining XY least squares.
+// Inputs are distances in mm, not wheel RPM or body travel along that wheel.
+inline bool BodyDisplacement(const double (&wheelMM)[3],double gyroTurn,
+                             double& forward,double& left) {
+  double xx=0,xy=0,yy=0,bx=0,by=0;
+  for (int i=0;i<3;++i) {
+    const double angle=localization_config::WHEEL_ANGLE_DEG[i]*robot_geometry::PI/180;
+    const double x=-std::sin(angle),y=std::cos(angle);
+    const double d=wheelMM[i]-localization_config::DRIVE_YAW_DIRECTION_SIGN*
+        localization_config::WHEEL_CENTER_RADIUS_MM[i]*gyroTurn;
+    xx+=x*x; xy+=x*y; yy+=y*y; bx+=x*d; by+=y*d;
+  }
+  const double determinant=xx*yy-xy*xy;
+  if (!std::isfinite(determinant) || std::fabs(determinant)<1e-8) return false;
+  const double vx=(yy*bx-xy*by)/determinant,vy=(xx*by-xy*bx)/determinant;
+  forward=BodyForward(vx,vy); left=BodyLeft(vx,vy);
+  return std::isfinite(forward) && std::isfinite(left);
+}
+
+// Count-increment odometry: displacement never depends on an assumed update
+// frequency. Actual dt is used only for velocity display and sample checks.
+class EncoderGyroOdometry {
+ public:
+  void Reset(RobotPose pose,const double (&counts)[3],double yawDeg) {
+    pose_=pose; pose_.headingRad=robot_geometry::Wrap(pose.headingRad);
+    offset_=robot_geometry::Wrap(pose_.headingRad-robot_geometry::Radians(yawDeg));
+    forwardSpeed_=leftSpeed_=0;
+    healthy_=robot_geometry::Finite(pose_) && std::isfinite(yawDeg);
+    for (int i=0;i<3;++i) { previous_[i]=counts[i]; healthy_=healthy_ && std::isfinite(counts[i]); }
+  }
+  bool Update(const double (&counts)[3],double yawDeg,double gyroRateDps,double dt) {
+    healthy_=false;
+    forwardSpeed_=leftSpeed_=0;
+    if (!std::isfinite(dt) || dt<=0 || dt>autonomous_config::MAX_CONTROL_GAP_S ||
+        !std::isfinite(yawDeg) || !std::isfinite(gyroRateDps)) return false;
+    double wheel[3];
+    for (int i=0;i<3;++i) {
+      wheel[i]=(counts[i]-previous_[i])*localization_config::WHEEL_ENCODER_SIGN[i]*
+          localization_config::ENCODER_MM_PER_COUNT;
+      if (!std::isfinite(wheel[i]) || std::fabs(wheel[i])/dt>3*localization_config::MAX_WHEEL_SPEED_MMPS) return false;
+    }
+    const double heading=robot_geometry::Wrap(robot_geometry::Radians(yawDeg)+offset_);
+    const double turn=robot_geometry::Wrap(heading-pose_.headingRad);
+    double forward=0,left=0;
+    if (!BodyDisplacement(wheel,turn,forward,left)) return false;
+    const double midpoint=pose_.headingRad+turn/2;
+    // Exact constant-twist arc integration; sinc tends to one for straight travel.
+    const double arc=std::fabs(turn)<1e-8?1.0:std::sin(turn/2)/(turn/2);
+    pose_.x_MM+=arc*(std::cos(midpoint)*forward-std::sin(midpoint)*left);
+    pose_.y_MM+=arc*(std::sin(midpoint)*forward+std::cos(midpoint)*left);
+    pose_.headingRad=heading;
+    for (int i=0;i<3;++i) previous_[i]=counts[i];
+    forwardSpeed_=forward/dt; leftSpeed_=left/dt;
+    healthy_=robot_geometry::Finite(pose_);
+    return healthy_;
+  }
+  const RobotPose& Pose() const { return pose_; }
+  bool Healthy() const { return healthy_; }
+  double ForwardSpeed() const { return forwardSpeed_; }
+  double LeftSpeed() const { return leftSpeed_; }
+  double OffsetDegrees() const { return offset_*180/robot_geometry::PI; }
+ private:
+  RobotPose pose_{0,0,0};
+  double previous_[3]={},offset_=0,forwardSpeed_=0,leftSpeed_=0;
+  bool healthy_=false;
+};
+
+// Preserve the pre-revision manual pose display. This estimate is observational:
+// Teleop steering never consumes it, and Autonomous never reads this state.
+class TeleopPoseTelemetry {
+ public:
+  void Reset(RobotPose pose,const double (&counts)[3],double yawDeg,double ax,double ay) {
+    pose_=pose; offset_=robot_geometry::Wrap(pose.headingRad-robot_geometry::Radians(yawDeg));
+    worldX_=worldY_=forwardSpeed_=leftSpeed_=0;
+    const bool accel=ValidAcceleration(ax,ay);
+    biasX_=accel?ax:0; biasY_=accel?ay:0;
+    healthy_=robot_geometry::Finite(pose) && std::isfinite(yawDeg);
+    for (int i=0;i<3;++i) { previous_[i]=counts[i]; healthy_=healthy_ && std::isfinite(counts[i]); }
+  }
+  bool Update(const double (&counts)[3],double yawDeg,double rateDps,double ax,double ay,double dt) {
+    namespace c=teleop_odometry_config;
+    healthy_=false;
+    if (!std::isfinite(dt) || dt<=0 || dt>autonomous_config::MAX_CONTROL_GAP_S ||
+        !std::isfinite(yawDeg) || !std::isfinite(rateDps)) return false;
+    double wheel[3],maximum=0;
+    for (int i=0;i<3;++i) {
+      wheel[i]=(counts[i]-previous_[i])*localization_config::WHEEL_ENCODER_SIGN[i]*localization_config::ENCODER_MM_PER_COUNT;
+      const double speed=std::fabs(wheel[i])/dt;
+      if (!std::isfinite(speed) || speed>3*localization_config::MAX_WHEEL_SPEED_MMPS) return false;
+      maximum=std::max(maximum,speed);
+    }
+    double forward=0,left=0;
+    if (!BodyDisplacement(wheel,0,forward,left)) return false;
+    const double oldHeading=pose_.headingRad;
+    const double prediction=robot_geometry::Wrap(oldHeading+robot_geometry::Radians(rateDps)*dt);
+    const double yaw=robot_geometry::Wrap(robot_geometry::Radians(yawDeg)+offset_);
+    pose_.headingRad=robot_geometry::Wrap(prediction+c::YAW_AHRS_CORRECTION*robot_geometry::Wrap(yaw-prediction));
+    const bool stationary=maximum<=c::ENCODER_STATIONARY_MMPS && std::fabs(rateDps)<=c::GYRO_STATIONARY_DPS;
+    const bool accel=ValidAcceleration(ax,ay);
+    double dx=accel?ax-biasX_:0,dy=accel?ay-biasY_:0;
+    if (stationary && accel) {
+      const double gain=dt/(c::ACCEL_BIAS_TRACK_TAU_S+dt);
+      biasX_+=gain*dx; biasY_+=gain*dy; dx=ax-biasX_; dy=ay-biasY_;
+    }
+    const double accelX=std::fabs(dx)<c::ACCEL_DEADBAND_G?0:dx*c::GRAVITY_MM_PER_S2;
+    const double accelY=std::fabs(dy)<c::ACCEL_DEADBAND_G?0:dy*c::GRAVITY_MM_PER_S2;
+    const double predictedX=worldX_+(std::cos(offset_)*accelX-std::sin(offset_)*accelY)*dt;
+    const double predictedY=worldY_+(std::sin(offset_)*accelX+std::cos(offset_)*accelY)*dt;
+    const double midpoint=oldHeading+0.5*robot_geometry::Wrap(pose_.headingRad-oldHeading);
+    const double encoderX=(std::cos(midpoint)*forward-std::sin(midpoint)*left)/dt;
+    const double encoderY=(std::sin(midpoint)*forward+std::cos(midpoint)*left)/dt;
+    const double weight=accel?std::pow(c::ACCEL_VELOCITY_BLEND,dt/localization_config::CONTROL_PERIOD_S):0;
+    double correctionX=weight*(predictedX-encoderX),correctionY=weight*(predictedY-encoderY);
+    const double correction=std::hypot(correctionX,correctionY);
+    if (correction>c::ACCEL_MAX_VELOCITY_CORRECTION_MMPS) {
+      correctionX*=c::ACCEL_MAX_VELOCITY_CORRECTION_MMPS/correction;
+      correctionY*=c::ACCEL_MAX_VELOCITY_CORRECTION_MMPS/correction;
+    }
+    worldX_=stationary?0:encoderX+correctionX; worldY_=stationary?0:encoderY+correctionY;
+    pose_.x_MM+=worldX_*dt; pose_.y_MM+=worldY_*dt;
+    forwardSpeed_=std::cos(pose_.headingRad)*worldX_+std::sin(pose_.headingRad)*worldY_;
+    leftSpeed_=-std::sin(pose_.headingRad)*worldX_+std::cos(pose_.headingRad)*worldY_;
+    for (int i=0;i<3;++i) previous_[i]=counts[i];
+    healthy_=robot_geometry::Finite(pose_); return healthy_;
+  }
+  const RobotPose& Pose() const { return pose_; }
+  bool Healthy() const { return healthy_; }
+  double ForwardSpeed() const { return forwardSpeed_; }
+  double LeftSpeed() const { return leftSpeed_; }
+  double OffsetDegrees() const { return offset_*180/robot_geometry::PI; }
+ private:
+  static bool ValidAcceleration(double x,double y) {
+    return std::isfinite(x) && std::isfinite(y) && std::hypot(x,y)<=teleop_odometry_config::ACCEL_MAX_PLAUSIBLE_G;
+  }
+  RobotPose pose_{0,0,0};
+  double previous_[3]={},offset_=0,worldX_=0,worldY_=0,biasX_=0,biasY_=0,forwardSpeed_=0,leftSpeed_=0;
+  bool healthy_=false;
+};
 
 // All wheel requests share one denominator, preserving the combined
 // translation/rotation vector when any motor saturates. Zero rejects input.
@@ -188,16 +329,18 @@ class TeleopDriveController {
   const char* status_ = "Waiting for Control Station";
 };
 
-// Wheel outputs and encoder monitoring.
-// Uncompensated mixer output: no static-friction offset, PI correction, gyro
-// correction, minimum-power boost, or per-wheel trim. Encoders measure speed
-// and detect faults. A startup gate can temporarily HOLD early-moving wheels;
-// it never boosts a lagging wheel above the uncompensated mixer request.
+enum class WheelDriveContext { Autonomous, Teleop };
+inline constexpr double WheelOutputScale(int wheel,WheelDriveContext context) {
+  return context==WheelDriveContext::Teleop && wheel==0?localization_config::TELEOP_LEFT_REAR_OUTPUT_SCALE:1.0;
+}
+// Each Hardware instance has separate manual/autonomous controller state.
+// Autonomous uses the direct mixer; the driver's historical startup/ramp is
+// requested explicitly with Teleop context, never inferred from wheel motion.
 class WheelDriveController {
  public:
   constexpr void Reset() { *this=WheelDriveController{}; }
-  constexpr void Update(const double (&desired)[3],const double (&counts)[3],
-                        double dt,double maxOutput) {
+  constexpr void Update(const double (&desired)[3],const double (&counts)[3],double dt,double maxOutput,
+                        WheelDriveContext context=WheelDriveContext::Autonomous) {
     if (fault_) return;
     if (!Finite(dt) || dt<=0 || dt>wheel_drive_config::MAX_SAMPLE_S ||
         !Finite(maxOutput) || maxOutput<=0 || maxOutput>1) {
@@ -205,89 +348,69 @@ class WheelDriveController {
     }
     double peak=0;
     for (int i=0;i<3;++i) {
-      if (!Finite(desired[i]) || !Finite(counts[i])) {
-        Fault("Invalid encoder or wheel request",i); return;
-      }
+      if (!Finite(desired[i]) || !Finite(counts[i])) { Fault("Invalid encoder or wheel request",i); return; }
       if (Abs(desired[i])>peak) peak=Abs(desired[i]);
     }
     if (peak<=wheel_drive_config::ZERO_SPEED_MMPS) { Reset(); return; }
     const double denominator=drive_kinematics::OutputDenominator(desired,maxOutput);
+    if (!(denominator>0)) { Fault("Invalid wheel normalization",-1); return; }
     const double scale=localization_config::MAX_WHEEL_SPEED_MMPS/denominator;
-    if (!baseline_) BeginStartup(desired,counts,peak);
-    const double mmPerCount=2*robot_geometry::PI*localization_config::WHEEL_RADIUS_MM/
-        (localization_config::ENCODER_COUNTS_PER_OUTPUT_REV*localization_config::MOTOR_TO_WHEEL_RATIO);
+    const bool teleop=context==WheelDriveContext::Teleop;
+    if (teleop && !baseline_) BeginStartup(desired,counts,peak);
     sampleElapsed_+=dt;
-    const bool observe=baseline_ && sampleElapsed_+1.0e-9>=wheel_drive_config::SPEED_WINDOW_S;
+    const bool observe=baseline_ && sampleElapsed_+1e-9>=wheel_drive_config::SPEED_WINDOW_S;
     const double alpha=sampleElapsed_/(wheel_drive_config::SPEED_FILTER_S+sampleElapsed_);
     double wanted[3]={};
-    const double seconds=dt<0.05?dt:0.05;
     for (int i=0;i<3;++i) {
       if (!baseline_) previousCounts_[i]=counts[i];
       if (observe) {
-        const double measured=(counts[i]-previousCounts_[i])*
-            localization_config::WHEEL_ENCODER_SIGN[i]*mmPerCount/sampleElapsed_;
+        const double measured=(counts[i]-previousCounts_[i])*localization_config::WHEEL_ENCODER_SIGN[i]*
+            localization_config::ENCODER_MM_PER_COUNT/sampleElapsed_;
         if (!Finite(measured) || Abs(measured)>3*localization_config::MAX_WHEEL_SPEED_MMPS) {
           Fault("Encoder jump/out-of-range speed",i); return;
         }
-        measured_[i]+=alpha*(measured-measured_[i]);
-        previousCounts_[i]=counts[i];
+        measured_[i]+=alpha*(measured-measured_[i]); previousCounts_[i]=counts[i];
       }
       target_[i]=desired[i]*scale;
-      wanted[i]=target_[i]/localization_config::MAX_WHEEL_SPEED_MMPS;
+      wanted[i]=desired[i]/denominator;
     }
     if (!baseline_ || observe) sampleElapsed_=0;
     baseline_=true;
-
-    if (starting_) {
+    if (teleop && starting_) {
       startupTime_+=dt;
-      // A deliberate direction change ends this startup attempt; the shared
-      // ramp handles the new request. Neutral/reset arms the next startup gate.
       for (int i=0;i<3;++i) {
-        const bool required=Abs(desired[i])/peak>=wheel_drive_config::STARTUP_MIN_WHEEL_RATIO;
-        if (required!=startupRequired_[i] ||
-            (required && desired[i]*startupDirection_[i]<=0)) starting_=false;
+        const bool required=Abs(desired[i])/peak>=teleop_wheel_config::STARTUP_MIN_WHEEL_RATIO;
+        if (required!=startupRequired_[i] || (required && desired[i]*startupDirection_[i]<=0)) starting_=false;
       }
       if (starting_) {
         bool allMoving=true;
-        for (int i=0;i<3;++i) {
-          if (!startupRequired_[i]) continue;
-          const double movement=(counts[i]-startupCounts_[i])*
-              localization_config::WHEEL_ENCODER_SIGN[i]*startupDirection_[i];
-          if (movement>=wheel_drive_config::STARTUP_CONFIRM_COUNTS) startupMoved_[i]=true;
+        for (int i=0;i<3;++i) if (startupRequired_[i]) {
+          const double movement=(counts[i]-startupCounts_[i])*localization_config::WHEEL_ENCODER_SIGN[i]*startupDirection_[i];
+          if (movement>=teleop_wheel_config::STARTUP_CONFIRM_COUNTS) startupMoved_[i]=true;
           allMoving=allMoving && startupMoved_[i];
         }
         if (allMoving) starting_=false;
-        else if (startupTime_>=wheel_drive_config::STARTUP_TIMEOUT_S) {
-          Fault("Wheel did not start - increase stick slightly or check encoder; center stick",WaitingWheel());
-          return;
-        } else {
-          for (int i=0;i<3;++i)
-            if (startupRequired_[i] && startupMoved_[i]) wanted[i]=0;
-        }
+        else if (startupTime_>=teleop_wheel_config::STARTUP_TIMEOUT_S) {
+          Fault("Wheel did not start - increase stick slightly or check encoder; center stick",WaitingWheel()); return;
+        } else for (int i=0;i<3;++i) if (startupRequired_[i] && startupMoved_[i]) wanted[i]=0;
       }
     }
-
-    double fraction=1.0;
-    for (int i=0;i<3;++i) {
-      const double change=Abs(wanted[i]-output_[i]);
-      const double rate=wanted[i]*output_[i]>=0 && Abs(wanted[i])>Abs(output_[i])?
-          wheel_drive_config::PWM_RISE_PER_S:wheel_drive_config::PWM_FALL_PER_S;
-      if (change>rate*seconds) {
-        const double allowed=rate*seconds/change;
-        if (allowed<fraction) fraction=allowed;
+    double fraction=1;
+    if (teleop) {
+      const double seconds=dt<0.05?dt:0.05;
+      for (int i=0;i<3;++i) {
+        const double change=Abs(wanted[i]-output_[i]);
+        const double rate=wanted[i]*output_[i]>=0 && Abs(wanted[i])>Abs(output_[i])?
+            teleop_wheel_config::PWM_RISE_PER_S:teleop_wheel_config::PWM_FALL_PER_S;
+        if (change>rate*seconds && rate*seconds/change<fraction) fraction=rate*seconds/change;
       }
     }
-    // ONE interpolation fraction for all wheels. From rest, a 2:1 wheel request
-    // remains 2:1 on every tick rather than initially becoming 1:1 due to
-    // separately capped PWM steps. During changes the full vector blends.
     for (int i=0;i<3;++i) output_[i]+=fraction*(wanted[i]-output_[i]);
-
     for (int i=0;i<3;++i) {
       const double request=target_[i];
       const int direction=Abs(request)<=wheel_drive_config::ZERO_SPEED_MMPS?0:(request>0?1:-1);
       if (direction!=direction_[i]) {
-        stallTime_[i]=wrongDirectionTime_[i]=directionTime_[i]=0;
-        direction_[i]=direction;
+        stallTime_[i]=wrongDirectionTime_[i]=directionTime_[i]=0; direction_[i]=direction;
       }
       if (direction==0) continue;
       directionTime_[i]=direction*output_[i]>0?directionTime_[i]+dt:0;
@@ -298,15 +421,12 @@ class WheelDriveController {
       const bool backwards=directionTime_[i]>wheel_drive_config::DIRECTION_GRACE_S &&
           direction*measured_[i]< -wheel_drive_config::STALL_REQUEST_MMPS;
       wrongDirectionTime_[i]=backwards?wrongDirectionTime_[i]+dt:0;
-      if (stallTime_[i]>=wheel_drive_config::STALL_TIMEOUT_S) {
-        Fault("Wheel stalled/encoder not changing - center stick",i); return;
-      }
-      if (wrongDirectionTime_[i]>=wheel_drive_config::WRONG_DIRECTION_TIMEOUT_S) {
-        Fault("Encoder direction mismatch - check encoder sign; center stick",i); return;
-      }
+      if (stallTime_[i]>=wheel_drive_config::STALL_TIMEOUT_S) { Fault("Wheel stalled/encoder not changing",i); return; }
+      if (wrongDirectionTime_[i]>=wheel_drive_config::WRONG_DIRECTION_TIMEOUT_S) { Fault("Encoder direction mismatch",i); return; }
     }
-    status_=starting_?"Startup - waiting for wheel encoder response":
-        "Open-loop mixer; encoders monitored; no power boost";
+    status_=teleop?(starting_?"Startup - waiting for wheel encoder response":
+        "Teleop mixer; encoders monitored; no power boost"):
+        "Autonomous direct wheel mixer; no per-wheel corrections or holds";
   }
   constexpr double Output(int i) const { return i>=0 && i<3?output_[i]:0; }
   constexpr double TargetMMps(int i) const { return i>=0 && i<3?target_[i]:0; }
@@ -316,24 +436,20 @@ class WheelDriveController {
   constexpr const char* Status() const { return status_; }
   constexpr bool IsStarting() const { return starting_; }
   constexpr int WaitingWheel() const {
-    if (starting_) for (int i=0;i<3;++i)
-      if (startupRequired_[i] && !startupMoved_[i]) return i;
+    if (starting_) for (int i=0;i<3;++i) if (startupRequired_[i] && !startupMoved_[i]) return i;
     return -1;
   }
  private:
   static constexpr double Abs(double x) { return x<0?-x:x; }
-  static constexpr bool Finite(double x) { return std::isfinite(x) && x>=-1.0e15 && x<=1.0e15; }
+  static constexpr bool Finite(double x) { return std::isfinite(x) && x>=-1e15 && x<=1e15; }
   constexpr void BeginStartup(const double (&desired)[3],const double (&counts)[3],double peak) {
-    int requiredCount=0;
+    int required=0;
     for (int i=0;i<3;++i) {
-      startupRequired_[i]=Abs(desired[i])/peak>=wheel_drive_config::STARTUP_MIN_WHEEL_RATIO;
-      startupDirection_[i]=desired[i]>0?1:-1;
-      startupCounts_[i]=counts[i];
-      startupMoved_[i]=false;
-      if (startupRequired_[i]) ++requiredCount;
+      startupRequired_[i]=Abs(desired[i])/peak>=teleop_wheel_config::STARTUP_MIN_WHEEL_RATIO;
+      startupDirection_[i]=desired[i]>0?1:-1; startupCounts_[i]=counts[i]; startupMoved_[i]=false;
+      if (startupRequired_[i]) ++required;
     }
-    starting_=requiredCount>1;
-    startupTime_=0;
+    starting_=required>1; startupTime_=0;
   }
   constexpr void Fault(const char* message,int wheel) {
     fault_=true; faultWheel_=wheel; status_=message;
@@ -349,9 +465,8 @@ class WheelDriveController {
   bool starting_=false,startupRequired_[3]={},startupMoved_[3]={};
   double startupCounts_[3]={},startupTime_=0;
   int startupDirection_[3]={};
-  const char* status_="Stopped - no compensation";
+  const char* status_="Stopped";
 };
-
 // Hold-to-run lift control.
 // Hold-to-run manual lift. Release after enable/reconnect/limit before moving.
 class LiftTeleopController {
