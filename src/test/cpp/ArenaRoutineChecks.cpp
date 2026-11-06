@@ -490,7 +490,7 @@ void EncoderDistanceDoesNotDependOnTickRate() {
       AddPhysicalCounts(counts,direction*200*dt,0,0);
       REQUIRE_ARENA(odometry.Update(counts,137,0,dt));
     }
-    REQUIRE_ARENA(Near(odometry.Pose().x_MM,direction*1000));
+    REQUIRE_ARENA(Near(odometry.Pose().x_MM,direction*1000*autonomous_odometry_config::DISTANCE_SCALE));
     REQUIRE_ARENA(Near(odometry.Pose().y_MM,0) && Near(odometry.Pose().headingRad,0));
   }
   drive_kinematics::EncoderGyroOdometry odometry;
@@ -500,7 +500,7 @@ void EncoderDistanceDoesNotDependOnTickRate() {
     const double dt=periods[tick%4]; AddPhysicalCounts(counts,200*dt,0,0);
     REQUIRE_ARENA(odometry.Update(counts,-172,0,dt));
   }
-  REQUIRE_ARENA(Near(odometry.Pose().x_MM,1000));
+  REQUIRE_ARENA(Near(odometry.Pose().x_MM,1000*autonomous_odometry_config::DISTANCE_SCALE));
   // CAN counts can arrive in bursts. Repeated cached values cannot create or
   // erase distance; all increments are consumed once on their arrival.
   counts[0]=counts[1]=counts[2]=0; odometry.Reset({0,0,0},counts,0);
@@ -510,14 +510,15 @@ void EncoderDistanceDoesNotDependOnTickRate() {
     if (tick%3==0) for (int i=0;i<3;++i) counts[i]=std::round(truth[i]);
     REQUIRE_ARENA(odometry.Update(counts,0,0,0.02));
   }
-  REQUIRE_ARENA(Near(odometry.Pose().x_MM,1200,0.3));
+  REQUIRE_ARENA(Near(odometry.Pose().x_MM,1200*autonomous_odometry_config::DISTANCE_SCALE,0.3));
   // Even very small valid increments survive; no stationary velocity filter
   // discards low-speed motion from the encoder distance.
   counts[0]=counts[1]=counts[2]=0; odometry.Reset({0,0,0},counts,0);
   for (int tick=0;tick<100;++tick) {
     ++counts[0]; --counts[1]; REQUIRE_ARENA(odometry.Update(counts,0,0,0.1));
   }
-  REQUIRE_ARENA(Near(odometry.Pose().x_MM,200*localization_config::ENCODER_MM_PER_COUNT/std::sqrt(3.0)));
+  REQUIRE_ARENA(Near(odometry.Pose().x_MM,autonomous_odometry_config::DISTANCE_SCALE*
+      200*localization_config::ENCODER_MM_PER_COUNT/std::sqrt(3.0)));
 }
 void GyroRelativeHeadingAndCurvedTravel() {
   for (double dt:{0.01,0.02,0.05}) {
@@ -529,8 +530,8 @@ void GyroRelativeHeadingAndCurvedTravel() {
       const double yaw=robot_geometry::Wrap(robot_geometry::Radians(170)+0.3*elapsed)*180/robot_geometry::PI;
       REQUIRE_ARENA(odometry.Update(counts,yaw,0.3*180/robot_geometry::PI,dt));
     }
-    REQUIRE_ARENA(Near(odometry.Pose().x_MM,200/0.3*std::sin(1.2)));
-    REQUIRE_ARENA(Near(odometry.Pose().y_MM,200/0.3*(1-std::cos(1.2))));
+    REQUIRE_ARENA(Near(odometry.Pose().x_MM,autonomous_odometry_config::DISTANCE_SCALE*200/0.3*std::sin(1.2)));
+    REQUIRE_ARENA(Near(odometry.Pose().y_MM,autonomous_odometry_config::DISTANCE_SCALE*200/0.3*(1-std::cos(1.2))));
     REQUIRE_ARENA(Near(odometry.Pose().headingRad,1.2));
   }
   drive_kinematics::EncoderGyroOdometry odometry;
@@ -563,11 +564,38 @@ void EncoderGyroOdometryChecks() {
   REQUIRE_ARENA(manual.Update(counts,0,0,0.1,0,0.02));
   REQUIRE_ARENA(manualWithoutAcceleration.Update(counts,0,0,0,0,0.02));
   REQUIRE_ARENA(manual.Pose().x_MM>manualWithoutAcceleration.Pose().x_MM); // legacy display still uses acceleration
-  REQUIRE_ARENA(Near(autonomous.Pose().x_MM,2)); // manual state never alters autonomous distance
+  REQUIRE_ARENA(Near(autonomous.Pose().x_MM,2*autonomous_odometry_config::DISTANCE_SCALE));
   const auto before=manual.Pose();
   REQUIRE_ARENA(autonomous.Update(counts,0,30,0.02));
   REQUIRE_ARENA(Near(manual.Pose().x_MM,before.x_MM));
   REQUIRE_ARENA(Near(autonomous.Pose().headingRad,0));
+}
+void AutonomousDistanceScaleDoesNotChangeTeleopOrHeading() {
+  // This fixture represents nominal wheel travel BEFORE empirical calibration.
+  // 1000 nominal mm must now report 910; reaching a reported 1000 requires
+  // about 1098.9 nominal mm, in either direction and on either body axis.
+  for (double direction:{-1.0,1.0}) for (bool sideways:{false,true}) {
+    drive_kinematics::EncoderGyroOdometry autonomous;
+    drive_kinematics::TeleopPoseTelemetry manual;
+    double counts[3]={};
+    autonomous.Reset({0,0,0},counts,0); manual.Reset({0,0,0},counts,0,0,0);
+    for (int tick=0;tick<250;++tick) {
+      const double step=direction*4;
+      AddPhysicalCounts(counts,sideways?0:step,sideways?step:0,0);
+      REQUIRE_ARENA(autonomous.Update(counts,0,0,0.02));
+      REQUIRE_ARENA(manual.Update(counts,0,0,0,0,0.02));
+    }
+    REQUIRE_ARENA(Near(sideways?autonomous.Pose().y_MM:autonomous.Pose().x_MM,direction*910));
+    REQUIRE_ARENA(Near(sideways?manual.Pose().y_MM:manual.Pose().x_MM,direction*1000,1));
+    REQUIRE_ARENA(Near(autonomous.Pose().headingRad,0));
+    autonomous.Reset({0,0,0},counts,0);
+    for (int tick=0;tick<250;++tick) {
+      const double step=direction*4/0.91;
+      AddPhysicalCounts(counts,sideways?0:step,sideways?step:0,0);
+      REQUIRE_ARENA(autonomous.Update(counts,0,0,0.02));
+    }
+    REQUIRE_ARENA(Near(sideways?autonomous.Pose().y_MM:autonomous.Pose().x_MM,direction*1000));
+  }
 }
 } // namespace
 
@@ -583,6 +611,7 @@ int main() {
     Simulate(true,true,true,0.25);
     SimpleTasksAndColourChecks();
     EncoderGyroOdometryChecks();
+    AutonomousDistanceScaleDoesNotChangeTeleopOrHeading();
     std::cout<<"PASS: direct encoder/gyro odometry, forward/inverse wheel projections, timing jitter and sparse counts, exact turn integration; motion tasks, arena route and colour calibration regressions\n";
   } catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }
 }
@@ -604,4 +633,5 @@ TEST(ArenaRoutine, MotorLagAndPoseDriftSimulation) { EXPECT_NO_THROW(Simulate(tr
 TEST(ArenaRoutine, SlowerMotorResponseSimulation) { EXPECT_NO_THROW(Simulate(true,true,true,0.25)); }
 TEST(SimpleTasks, MotionAndColour) { EXPECT_NO_THROW(SimpleTasksAndColourChecks()); }
 TEST(Odometry, EncoderGyroAndTiming) { EXPECT_NO_THROW(EncoderGyroOdometryChecks()); }
+TEST(Odometry, AutonomousOnlyDistanceScale) { EXPECT_NO_THROW(AutonomousDistanceScaleDoesNotChangeTeleopOrHeading()); }
 #endif

@@ -79,6 +79,10 @@ class EncoderGyroOdometry {
     const double turn=robot_geometry::Wrap(heading-pose_.headingRad);
     double forward=0,left=0;
     if (!BodyDisplacement(wheel,turn,forward,left)) return false;
+    // Scale translation after separating rotation. Do not alter raw counts,
+    // the shared motor mixer, gyro heading, or the Teleop pose observer.
+    forward*=autonomous_odometry_config::DISTANCE_SCALE;
+    left*=autonomous_odometry_config::DISTANCE_SCALE;
     const double midpoint=pose_.headingRad+turn/2;
     // Exact constant-twist arc integration; sinc tends to one for straight travel.
     const double arc=std::fabs(turn)<1e-8?1.0:std::sin(turn/2)/(turn/2);
