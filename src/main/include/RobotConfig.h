@@ -33,8 +33,6 @@ static constexpr double DRIVER_RIGHT_X_SIGN = 1.0;
 static constexpr double TELEOP_TRANSLATION_SPEED_SCALE = 0.50;
 static constexpr double TELEOP_ACCELERATION_MMPS2 = 400.0;
 static constexpr double TELEOP_MAX_MOTOR_OUTPUT = 0.90;
-// Historical driver-only trim; Autonomous never uses this multiplier.
-static constexpr double TELEOP_LEFT_REAR_OUTPUT_SCALE = 0.80;
 static constexpr double TELEOP_MAX_YAW_RATE_DPS = 90.0;
 // Start at zero and take two seconds to reach the 90 degree/s yaw limit.
 static constexpr double TELEOP_YAW_ACCELERATION_DPS2 = 45.0;
@@ -83,8 +81,8 @@ static constexpr double WHEEL_MOTOR_SIGN[WHEEL_COUNT] = {1.0, 1.0, 1.0};
 // Maverick 75001 speeds are already at the 61:1 gearbox OUTPUT shaft.
 // MOTOR_TO_WHEEL_RATIO represents external gearing only; do not divide by 61
 // again. This estimates the speed/PWM scale. Drive is currently open-loop;
-// Autonomous uses direct wheel outputs; historical Teleop output treatment is
-// isolated in TELEOP_LEFT_REAR_OUTPUT_SCALE and teleop_wheel_config below.
+// Autonomous uses direct wheel outputs; Teleop startup and smoothing settings
+// are isolated in teleop_wheel_config below. Neither mode uses motor trim.
 static constexpr double MAVERICK_MAX_NO_LOAD_RPM = 112.0;
 static constexpr double MAVERICK_NOMINAL_NO_LOAD_RPM = 100.0;
 static constexpr double MAVERICK_NOMINAL_RATED_RPM = 80.0;

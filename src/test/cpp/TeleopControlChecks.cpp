@@ -247,7 +247,7 @@ constexpr bool SidewaysTargetsStayEqualWithStickOffset() {
   return Near(rear0,rear1) && forward.GetLeftMMps()==0 && forward.GetForwardMMps()>0;
 }
 static_assert(SidewaysTargetsStayEqualWithStickOffset(),
-              "Within-deadband offsets preserve straight mixer targets; M0 output trim is applied later");
+              "Within-deadband offsets preserve straight mixer targets");
 
 constexpr bool DirectionChangesUseVectorAccelerationLimit() {
   auto controller=Settled(kLeftRawX,0);
@@ -524,9 +524,4 @@ constexpr bool TeleopLegacyRampAndHoldAreIsolated() {
   return !manual.IsStarting() && manual.Output(0)==0 && automatic.Output(2)==0;
 }
 static_assert(TeleopLegacyRampAndHoldAreIsolated(),"Legacy startup/ramp is Teleop-only and state is separate");
-static_assert(WheelOutputScale(0,WheelDriveContext::Teleop)==0.8 &&
-    WheelOutputScale(1,WheelDriveContext::Teleop)==1 && WheelOutputScale(2,WheelDriveContext::Teleop)==1 &&
-    WheelOutputScale(0,WheelDriveContext::Autonomous)==1 &&
-    WheelOutputScale(1,WheelDriveContext::Autonomous)==1 && WheelOutputScale(2,WheelDriveContext::Autonomous)==1,
-    "Restore 80 percent M0 only in Teleop; no autonomous motor trim");
 }

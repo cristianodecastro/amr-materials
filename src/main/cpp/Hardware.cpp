@@ -28,11 +28,14 @@ bool Hardware::TeleopMotorMotionAllowed() {
       !frc::RobotState::IsTest();
 }
 
-bool Hardware::DriveMotorMotionAllowed() const {
-  if (TeleopMotorMotionAllowed()) return true;
+bool Hardware::AutonomousMotorMotionAllowed() const {
   return autonomousDriveEnabled_ &&
       frc::DriverStation::GetInstance().IsDSAttached() && frc::RobotState::IsEnabled() &&
       frc::RobotState::IsAutonomous() && !frc::RobotState::IsTest();
+}
+
+bool Hardware::DriveMotorMotionAllowed() const {
+  return teleopWheelActive_?TeleopMotorMotionAllowed():AutonomousMotorMotionAllowed();
 }
 
 Hardware::Hardware() {
@@ -71,9 +74,8 @@ void Hardware::SetWheelPwm(int wheel, double output) {
   if (wheel < 0 || wheel >= localization_config::WHEEL_COUNT) return;
   if (!std::isfinite(output)) output = 0.0;
   if (!DriveMotorMotionAllowed()) output=0;
-  const auto context=TeleopMotorMotionAllowed()?WheelDriveContext::Teleop:WheelDriveContext::Autonomous;
   const double limited = std::max(-1.0, std::min(1.0, output)) *
-                         WheelOutputScale(wheel,context)*localization_config::WHEEL_MOTOR_SIGN[wheel];
+                         localization_config::WHEEL_MOTOR_SIGN[wheel];
   wheelCommands_[wheel] = limited;
   switch (wheel) {
     case 0: leftRearMotor_.Set(limited); break;
@@ -116,9 +118,23 @@ void Hardware::SetLiftPwm(double output) {
   liftMotor_.Set(output);
 }
 
-void Hardware::DriveRobotRelative(double forward,double left,double yawRadps,
-                                           double maxOutput,double dt) {
-  if (!DriveMotorMotionAllowed()) { StopDrive(); return; }
+void Hardware::DriveTeleopRobotRelative(double forward,double left,double yawRadps,
+                                      double maxOutput,double dt) {
+  DriveWithContext(forward,left,yawRadps,maxOutput,dt,WheelDriveContext::Teleop);
+}
+
+void Hardware::DriveAutonomousRobotRelative(double forward,double left,double yawRadps,
+                                          double maxOutput,double dt) {
+  DriveWithContext(forward,left,yawRadps,maxOutput,dt,WheelDriveContext::Autonomous);
+}
+
+void Hardware::DriveWithContext(double forward,double left,double yawRadps,
+                               double maxOutput,double dt,WheelDriveContext context) {
+  const bool teleop=context==WheelDriveContext::Teleop;
+  if (!(teleop?TeleopMotorMotionAllowed():AutonomousMotorMotionAllowed())) {
+    StopDrive(); return;
+  }
+  teleopWheelActive_=teleop;
   // Neutral is an immediate stop and the deliberate reset for a latched fault.
   if (std::isfinite(forward) && std::isfinite(left) && std::isfinite(yawRadps) &&
       std::fabs(forward)<0.01 && std::fabs(left)<0.01 && std::fabs(yawRadps)<0.0001) {
@@ -130,10 +146,8 @@ void Hardware::DriveRobotRelative(double forward,double left,double yawRadps,
         drive_kinematics::LayoutVy(forward,left),yawRadps);
     counts[i]=GetWheelEncoderRaw(i);
   }
-  teleopWheelActive_=TeleopMotorMotionAllowed();
   auto& controller=teleopWheelActive_?teleopWheelDrive_:wheelDrive_;
-  controller.Update(desired,counts,dt,maxOutput,
-      teleopWheelActive_?WheelDriveContext::Teleop:WheelDriveContext::Autonomous);
+  controller.Update(desired,counts,dt,maxOutput,context);
   for (int i=0;i<3;++i) SetWheelPwm(i,controller.Output(i));
 }
 

@@ -28,7 +28,10 @@ class Hardware {
   double GetWheelEncoderRaw(int wheel);
   void SetWheelPwm(int wheel, double output);
   double GetWheelCommand(int wheel) const;
-  void DriveRobotRelative(double forward, double left, double yawRadps,
+  // Explicit callers keep autonomous output treatment out of manual driving.
+  void DriveTeleopRobotRelative(double forward, double left, double yawRadps,
+                               double maxOutput, double dt);
+  void DriveAutonomousRobotRelative(double forward, double left, double yawRadps,
                                    double maxOutput, double dt);
   double GetWheelTargetMMps(int i) const { return ActiveWheelDrive().TargetMMps(i); }
   double GetWheelMeasuredMMps(int i) const { return ActiveWheelDrive().MeasuredMMps(i); }
@@ -67,7 +70,10 @@ class Hardware {
 
  private:
   static bool TeleopMotorMotionAllowed();
+  bool AutonomousMotorMotionAllowed() const;
   bool DriveMotorMotionAllowed() const;
+  void DriveWithContext(double forward,double left,double yawRadps,
+                        double maxOutput,double dt,WheelDriveContext context);
   const WheelDriveController& ActiveWheelDrive() const { return teleopWheelActive_?teleopWheelDrive_:wheelDrive_; }
   bool autonomousDriveEnabled_=false;
   double liftCommand_=0;

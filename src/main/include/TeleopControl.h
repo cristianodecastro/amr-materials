@@ -334,9 +334,6 @@ class TeleopDriveController {
 };
 
 enum class WheelDriveContext { Autonomous, Teleop };
-inline constexpr double WheelOutputScale(int wheel,WheelDriveContext context) {
-  return context==WheelDriveContext::Teleop && wheel==0?localization_config::TELEOP_LEFT_REAR_OUTPUT_SCALE:1.0;
-}
 // Each Hardware instance has separate manual/autonomous controller state.
 // Autonomous uses the direct mixer; the driver's historical startup/ramp is
 // requested explicitly with Teleop context, never inferred from wheel motion.

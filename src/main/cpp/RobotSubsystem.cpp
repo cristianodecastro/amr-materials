@@ -227,7 +227,7 @@ void RobotSubsystem::UpdateAutonomous(double now,double dt) {
     autonomous_.SafetyStop("Stopped: close obstacle or stale sonar in commanded direction");
   }
   if (autonomous_.IsRunning()) {
-    hardware_.DriveRobotRelative(autonomous_.GetForwardMMps(),autonomous_.GetLeftMMps(),
+    hardware_.DriveAutonomousRobotRelative(autonomous_.GetForwardMMps(),autonomous_.GetLeftMMps(),
         autonomous_.GetYawRadps(),autonomous_config::MAX_OUTPUT,dt);
   } else {
     hardware_.StopDrive();
@@ -252,7 +252,7 @@ void RobotSubsystem::UpdateSimpleTask(double now,double dt) {
   }
   hardware_.SetAutonomousDriveEnabled(simpleTask_.IsMotionRunning());
   if (simpleTask_.IsMotionRunning()) {
-    hardware_.DriveRobotRelative(simpleTask_.GetForwardMMps(),simpleTask_.GetLeftMMps(),
+    hardware_.DriveAutonomousRobotRelative(simpleTask_.GetForwardMMps(),simpleTask_.GetLeftMMps(),
         simpleTask_.GetYawRadps(),arena_test_config::MAX_OUTPUT,dt);
     if (hardware_.HasDriveFault()) {
       simpleTask_.Fail(hardware_.GetDriveStatus()); hardware_.SetAutonomousDriveEnabled(false); hardware_.StopDrive();
@@ -284,7 +284,7 @@ void RobotSubsystem::UpdateArenaTest(double now,double dt) {
   arenaTest_.Update(in);
   hardware_.SetAutonomousDriveEnabled(arenaTest_.IsRunning());
   if (arenaTest_.IsRunning()) {
-    hardware_.DriveRobotRelative(arenaTest_.GetForwardMMps(),arenaTest_.GetLeftMMps(),
+    hardware_.DriveAutonomousRobotRelative(arenaTest_.GetForwardMMps(),arenaTest_.GetLeftMMps(),
         arenaTest_.GetYawRadps(),arena_test_config::MAX_OUTPUT,dt);
     if (hardware_.HasDriveFault()) {
       arenaTest_.Fail(hardware_.GetDriveStatus());
@@ -338,7 +338,7 @@ void RobotSubsystem::UpdateTeleopDrive(double dt) {
       driverPov_==-1);
   if (allowed && teleopDrive_.IsArmed()) {
     // Teleop yaw comes only from right X; the gyro is observed for odometry only.
-    hardware_.DriveRobotRelative(teleopDrive_.GetForwardMMps(),teleopDrive_.GetLeftMMps(),
+    hardware_.DriveTeleopRobotRelative(teleopDrive_.GetForwardMMps(),teleopDrive_.GetLeftMMps(),
         teleopDrive_.GetYawRateRadps(),
         localization_config::TELEOP_MAX_MOTOR_OUTPUT,dt);
   } else {
