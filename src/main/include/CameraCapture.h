@@ -61,6 +61,8 @@ class CameraCapture {
   ColourCalibration calibration_=DefaultColourCalibration();
   frc::SendableChooser<int> referenceSlot_;
   nt::NetworkTableEntry roiX_,roiY_,roiWidth_,roiHeight_,applyRoi_,referenceName_,captureReference_,disableReference_;
+  nt::NetworkTableEntry colourCardName_[camera_config::COLOUR_CARD_COUNT];
+  nt::NetworkTableEntry recalibrateColour_[camera_config::COLOUR_CARD_COUNT];
   std::string calibrationStatus_="Using measured photo references; Blue/spare slots need calibration";
   ColourResult colourResult_;
 };

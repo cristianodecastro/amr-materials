@@ -416,8 +416,10 @@ void RobotSubsystem::InitializeTaskDashboard() {
         "Each Run starts from the current pose. Selection changes affect the next Run only. "
         "Stop/Disable cancels. Lift and servos stay off. Keep the piece inside the small ROI box. "
         "Colour uses its average RGB from one fresh photo; camera stays off between requests. "
-        "Use Colour calibration while Disabled to add/recalibrate colours. Re-select Autonomous to return to the arena route.";
-  }).WithPosition(8,5).WithSize(4,5);
+        "To recalibrate: Disable, put the piece in the ROI, edit its card Name above and press that card's Recalibrate. "
+        "Wait for Saved; the typed name is then used for recognition and survives restarts. "
+        "Colour calibration has advanced ROI/extra-slot settings. Re-select Autonomous to return to the arena route.";
+  }).WithPosition(8,10).WithSize(4,5);
 }
 
 void RobotSubsystem::InitializeDashboard() {

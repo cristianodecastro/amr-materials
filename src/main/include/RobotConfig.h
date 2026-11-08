@@ -236,6 +236,13 @@ static constexpr double COLOUR_MAX_DISTANCE = 35.0;
 static constexpr double COLOUR_MIN_MARGIN = 12.0;
 static constexpr double COLOUR_MAX_STDDEV = 25.0;
 static constexpr int COLOUR_REFERENCE_COUNT = 8; // increase to reserve more slots
+// Fixed dashboard cards map to the existing persisted slots; never reorder the
+// reference file just to change the display order. Remaining slots stay available
+// through the advanced Colour calibration tab.
+static constexpr int COLOUR_CARD_COUNT = 5;
+static constexpr int COLOUR_CARD_SLOT[COLOUR_CARD_COUNT] = {1,2,3,0,4};
+static constexpr const char* COLOUR_CARD_TITLE[COLOUR_CARD_COUNT] = {
+    "Green","Yellow","Blue","Red","Surprise colour"};
 // RGB averages measured over the ROI in docs. Red label confirmed by user.
 // Blue has no supplied sample and must be calibrated; spare slots accept ANY
 // name and colour, including a competition surprise colour, without new code.
@@ -244,7 +251,7 @@ static const ColourReference DEFAULT_COLOUR_REFERENCES[COLOUR_REFERENCE_COUNT] =
     {"Green",{17.7432,73.8264,35.2924},true}, // piece-1750888647575289-1562-2.png
     {"Yellow",{166.1108,136.0396,33.9726},true}, // piece-1750888096651251-1562-1.png
     {"Blue",{0,0,0},false},
-    {"Surprise 1",{0,0,0},false},{"Surprise 2",{0,0,0},false},
+    {"Surprise colour",{0,0,0},false},{"Surprise 2",{0,0,0},false},
     {"Surprise 3",{0,0,0},false},{"Surprise 4",{0,0,0},false}};
 static constexpr const char* COLOUR_CALIBRATION_FILE = "/home/pi/SkillsChallenge/colour-calibration.txt";
 }

@@ -14,9 +14,11 @@
 
 #include <cameraserver/CameraServer.h>
 #include <frc/RobotState.h>
+#include <frc/shuffleboard/BuiltInLayouts.h>
 #include <frc/shuffleboard/BuiltInWidgets.h>
 #include <frc/shuffleboard/ComplexWidget.h>
 #include <frc/shuffleboard/Shuffleboard.h>
+#include <frc/shuffleboard/ShuffleboardLayout.h>
 #include <frc/shuffleboard/SimpleWidget.h>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
@@ -92,20 +94,54 @@ void CameraCapture::InitializeColourCalibration() {
   tab.AddNumber("Crop max standard deviation",[this] {
     std::lock_guard<std::mutex> lock(mutex_); return colourResult_.estimate.maxStdDev;
   }).WithPosition(8,4).WithSize(4,1);
+
+  auto& tasks=frc::Shuffleboard::GetTab("Simple tasks");
+  for (int i=0;i<camera_config::COLOUR_CARD_COUNT;++i) {
+    const int slot=camera_config::COLOUR_CARD_SLOT[i];
+    auto& card=tasks.GetLayout(camera_config::COLOUR_CARD_TITLE[i],frc::BuiltInLayouts::kList)
+        .WithPosition(i*2,5).WithSize(i==4?4:2,4);
+    colourCardName_[i]=card.Add("Name",calibration_.references.at(slot).name.c_str())
+        .WithWidget(frc::BuiltInWidgets::kTextView).GetEntry();
+    // Saved robot calibration is authoritative when the program starts.
+    colourCardName_[i].SetString(calibration_.references.at(slot).name);
+    recalibrateColour_[i]=card.Add("Recalibrate",false)
+        .WithWidget(frc::BuiltInWidgets::kToggleButton).GetEntry();
+    recalibrateColour_[i].SetBoolean(false);
+    card.AddBoolean("Calibrated",[this,slot] {
+      std::lock_guard<std::mutex> lock(mutex_); return calibration_.references.at(slot).enabled;
+    });
+    card.AddString("Saved RGB",[this,slot] {
+      std::lock_guard<std::mutex> lock(mutex_);
+      const auto& ref=calibration_.references.at(slot);
+      return ref.enabled?RgbText(ref.mean):std::string("Needs calibration");
+    });
+  }
+  tasks.AddString("Recalibration status",[this] {
+    std::lock_guard<std::mutex> lock(mutex_); return calibrationStatus_;
+  }).WithPosition(0,9).WithSize(12,1);
 }
 
 void CameraCapture::UpdateColourCalibration() {
-  const bool apply=applyRoi_.GetBoolean(false),capture=captureReference_.GetBoolean(false),
-      disable=disableReference_.GetBoolean(false);
+  const bool apply=applyRoi_.GetBoolean(false),disable=disableReference_.GetBoolean(false);
+  bool capture=captureReference_.GetBoolean(false);
+  int actions=int(apply)+int(capture)+int(disable);
+  int slot=referenceSlot_.GetSelected();
+  std::string name=referenceName_.GetString("");
   if (apply) applyRoi_.SetBoolean(false);
   if (capture) captureReference_.SetBoolean(false);
   if (disable) disableReference_.SetBoolean(false);
-  if (!apply && !capture && !disable) return;
-  const int slot=referenceSlot_.GetSelected();
-  const std::string name=referenceName_.GetString("");
+  for (int i=0;i<camera_config::COLOUR_CARD_COUNT;++i) {
+    if (!recalibrateColour_[i].GetBoolean(false)) continue;
+    recalibrateColour_[i].SetBoolean(false);
+    ++actions;
+    capture=true;
+    slot=camera_config::COLOUR_CARD_SLOT[i];
+    name=colourCardName_[i].GetString(""); // snapshot the name with this button press
+  }
+  if (actions==0) return;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (int(apply)+int(capture)+int(disable)>1) { calibrationStatus_="Press only one calibration action"; return; }
+    if (actions>1) { calibrationStatus_="Press only one Recalibrate/calibration action at a time"; return; }
     if (!frc::RobotState::IsDisabled()) { calibrationStatus_="Calibration ignored - Disable the robot, then press again"; return; }
     if (busy_) { calibrationStatus_="Camera busy - wait, then press again"; return; }
     if (slot<0 || slot>=static_cast<int>(calibration_.references.size())) { calibrationStatus_="Invalid reference slot"; return; }
@@ -189,7 +225,7 @@ void CameraCapture::Start() {
     tab.Add("Last captured photo",lastPhoto_)
         .WithWidget(frc::BuiltInWidgets::kCameraStream).WithPosition(0,3).WithSize(12,6);
     frc::Shuffleboard::GetTab("Simple tasks").Add("Last task photo",lastPhoto_)
-        .WithWidget(frc::BuiltInWidgets::kCameraStream).WithPosition(0,5).WithSize(8,5);
+        .WithWidget(frc::BuiltInWidgets::kCameraStream).WithPosition(0,10).WithSize(8,5);
     lastCrop_=server->PutVideo("Piece colour crop",400,200);
     lastCrop_.SetFPS(camera_config::PREVIEW_FPS);
     auto& colours=frc::Shuffleboard::GetTab("Colour calibration");
@@ -198,7 +234,8 @@ void CameraCapture::Start() {
     colours.Add("Crop used for RGB mean",lastCrop_).WithWidget(frc::BuiltInWidgets::kCameraStream)
         .WithPosition(8,5).WithSize(4,3);
     colours.AddString("How to calibrate",[] {
-      return "Disable robot. Put a piece in the ROI; choose a slot, type its name, press Capture reference. "
+      return "Disable robot. In Simple tasks, put a piece in the ROI, edit its card Name and press Recalibrate. "
+          "Advanced: choose a slot here, type its name, press Capture reference. "
           "It takes one new photo and saves the reference on the robot. Blue needs a sample. "
           "Changing ROI disables all references; capture them again. RGB is lighting-dependent: recalibrate under arena lighting.";
     }).WithPosition(8,8).WithSize(4,3);

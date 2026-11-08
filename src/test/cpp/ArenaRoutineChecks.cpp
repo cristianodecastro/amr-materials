@@ -453,12 +453,53 @@ void ColourCalibrationPersistsAndRejectsCorruption() {
   REQUIRE_ARENA(loaded.references[4].name=="Surprise gold"); // malformed file cannot partially replace profiles
   std::remove(path.c_str()); std::remove(corrupt.c_str());
 }
+void FiveColourCardsKeepNamesAndReplaceOnlyTheirReference() {
+  auto calibration=DefaultColourCalibration();
+  const int expectedSlots[5]={1,2,3,0,4}; // existing saved-file order must survive the UI change
+  const char* names[5]={"Arena green","Yellow","Blue","Red","Competition purple"};
+  const RgbColour means[5]={{20,170,40},{220,200,20},{20,30,200},{200,20,20},{130,60,160}};
+  REQUIRE_ARENA(camera_config::COLOUR_CARD_COUNT==5);
+  for (int i=0;i<5;++i) {
+    REQUIRE_ARENA(camera_config::COLOUR_CARD_SLOT[i]==expectedSlots[i]);
+    calibration.references.at(camera_config::COLOUR_CARD_SLOT[i])={names[i],means[i],true};
+  }
+  std::string error;
+  REQUIRE_ARENA(ValidateColourCalibration(calibration,error));
+  auto classify=[](const ColourCalibration& data,RgbColour rgb) {
+    return ClassifyAverageColour(rgb,5,data.references.data(),static_cast<int>(data.references.size()),
+        camera_config::COLOUR_MAX_DISTANCE,camera_config::COLOUR_MIN_MARGIN,camera_config::COLOUR_MAX_STDDEV);
+  };
+  for (int i=0;i<5;++i) REQUIRE_ARENA(classify(calibration,means[i]).name==names[i]);
+  const auto before=calibration;
+  const int surprise=camera_config::COLOUR_CARD_SLOT[4];
+  calibration.references.at(surprise)={"Gray",{120,120,120},true};
+  REQUIRE_ARENA(classify(calibration,means[4]).reference<0); // old surprise sample is replaced
+  REQUIRE_ARENA(classify(calibration,{120,120,120}).name=="Gray");
+  for (int i=0;i<camera_config::COLOUR_REFERENCE_COUNT;++i) if (i!=surprise) {
+    REQUIRE_ARENA(calibration.references[i].name==before.references[i].name);
+    REQUIRE_ARENA(Near(calibration.references[i].mean.red,before.references[i].mean.red));
+    REQUIRE_ARENA(Near(calibration.references[i].mean.green,before.references[i].mean.green));
+    REQUIRE_ARENA(Near(calibration.references[i].mean.blue,before.references[i].mean.blue));
+    REQUIRE_ARENA(calibration.references[i].enabled==before.references[i].enabled);
+  }
+  const char* temporary=std::getenv("TEMP");
+  const std::string path=std::string(temporary?temporary:"/tmp")+"/SkillsChallenge-five-colours-"+
+      std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())+".txt";
+  REQUIRE_ARENA(SaveColourCalibration(path,calibration,error));
+  auto reloaded=DefaultColourCalibration();
+  REQUIRE_ARENA(LoadColourCalibration(path,reloaded,error));
+  for (int i=0;i<4;++i) REQUIRE_ARENA(classify(reloaded,means[i]).name==names[i]);
+  REQUIRE_ARENA(classify(reloaded,{120,120,120}).name=="Gray");
+  REQUIRE_ARENA(reloaded.roi.x==260 && reloaded.roi.y==200 && reloaded.roi.width==100 && reloaded.roi.height==50);
+  std::remove(path.c_str());
+}
 void SimpleTasksAndColourChecks() {
   for (auto task:{SimpleTask::Forward1000,SimpleTask::Backward1000,SimpleTask::Ccw90,
       SimpleTask::Cw90,SimpleTask::Ccw180,SimpleTask::Cw180})
     for (double heading:{0.0,170.0,-170.0,90.0}) SimulateSimpleTask(task,heading);
   SimulateSimpleTask(SimpleTask::Forward1000,170,true);
   SimpleTaskStopHealthAndPhoto(); AverageColourAndSurpriseReferences(); ColourCalibrationPersistsAndRejectsCorruption();
+  FiveColourCardsKeepNamesAndReplaceOnlyTheirReference();
 }
 // Independent installed-wheel model for odometry tests. These expressions do
 // not reuse production projections/inverse helpers, so a matching bug cannot hide.
