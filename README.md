@@ -1,55 +1,46 @@
-# 🤖 Autonomous Mobile Robotics (AMR) Learning Roadmap
+# Mobile Robotics Basics
 
-Welcome! This repository gathers introductory courses available online and general documentation for students interested in mobile robotics.
+A structured collection of practical solutions and implementations covering the fundamentals of Mobile Robotics.
 
----
+This repository includes organized examples and explanations on topics such as:
 
-## 🚦 1: Benchmark Your Knowledge
+- 🚗 Basic Mobility and Kinematics  
+- 📡 Sensors and Perception  
+- 🦾 Manipulators  
+- 🌐 LiDAR Processing  
+- 👁️ Robot Vision  
 
-Before diving in, assess your foundation in basic electronics, instrumentation, and mechanical principles.
+## 🛠️ Development Environment
 
-> **[Take the Robotics Diagnostic Pre-Test](https://www.proprofs.com/quiz-school/story.php?title=robotics-pretest)**  
+All implementations in this repository are developed using **C++** as the primary programming language.
 
----
+The robotic platform used for development and testing is based on a **Studica Robotics kit**, providing a practical hardware environment for experimentation and validation of mobile robotics concepts.
 
-## 🛠️ 2: Hardware & Platform Documentation
+## 🎯 Objective
 
-Get familiar with the hardware and platform specifications for Autonomous Mobile Robots.
+The goal of this repository is to provide clear, hands-on references for students and beginners learning the foundations of mobile robotics.
 
-| Resource | Description | Link |
-| :--- | :--- | :--- |
-| **Studica Robotics Documentation** | Hardware architecture, wiring, and sensor integrations | [View Documentation](https://docs.dev.studica.com/en/latest/) |
-| **WorldSkills AMR Documentation** | Tutorials, training guides, and WorldSkills AMR kit setup | [View Documentation](https://learn.studica.com/docs/ws/intro) |
+Each topic is organized in its own folder, making it easy to navigate and progressively build knowledge.
 
----
+## 👨‍💻 Target Audience
 
-## 📚 3: Recommended Courses
+- Students learning mobile robotics
+- Beginners in robotics development
+- Educators looking for structured examples
+- Robotics enthusiasts building foundational knowledge
 
-Take these courses in the sequence that works best for you.
+## 🚀 Contribution
 
-### 🚗 A: Mobile Robotics & Navigation
+This repository contains personal implementations and study projects.  
+Feel free to explore, fork, and use the material for learning purposes.
 
-| Course | Provider | Focus Area | Link |
-| :--- | :--- | :--- | :--- |
-| **Basic Robotic Behaviors & Odometry** | Coursera | Wheeled locomotion, differential drive, kinematics | [Open Course](https://www.coursera.org/learn/basic-robotic-behaviors-and-odometry/home/module/1) |
-| **Robotic Mapping & Trajectory Generation** | Coursera | Occupancy grids, sensor filtering, trajectory design | [Open Course](https://www.coursera.org/learn/robotic-mapping-trajectory-generation/home/module/1) |
-| **Robotic Path Planning & Task Execution** | Coursera | $A^*$, Dijkstra, obstacle avoidance, mission logic | [Open Course](https://www.coursera.org/learn/robotic-path-planning-task-execution/home/module/1) |
-| **Robotics Foundations I: Robot Modeling** | edX (UniNa) | Direct/inverse kinematics, transformation matrices | [Open Course](https://www.edx.org/learn/robotics/universita-degli-studi-di-napoli-federico-ii-robotics-foundations-i-robot-modeling) |
-| **Robotics Foundations II: Robot Control** | edX (UniNa) | PID loops, trajectory tracking, dynamic control | [Open Course](https://www.edx.org/learn/robotics/universita-degli-studi-di-napoli-federico-ii-robotics-foundation-ii-robot-control) |
 
----
 
-### 💻 B: Robotics Programming
+## Contact
+Youtube: https://youtube.com/@felipeferreira-jt5ci?si=kQxToaWlWOVDDxHx 
 
-| Course | Platform | Link |
-| :--- | :--- | :--- |
-| **Python 3 for Robotics** | The Construct | [Open Course](https://www.theconstruct.ai/robotigniteacademy_learnros/ros-courses-library/python-robotics/) |
-| **C++ for Robotics** | The Construct | [Open Course](https://app.theconstruct.ai/courses/c-for-robotics-59/) |
+Linkedin: https://www.linkedin.com/in/felipeferreira13/
 
 ---
 
-### 👁️ C: Vision & Kinematic Foundations
-
-| Course | Provider | Key Topics | Link |
-| :--- | :--- | :--- | :--- |
-| **Computer Vision & Image Processing** | edX (IBM) | Filters, edge detection, feature extraction | [Open Course](https://www.edx.org/learn/image-processing/ibm-computer-vision-and-image-processing-fundamentals) |
+*Learning robotics through practice.*

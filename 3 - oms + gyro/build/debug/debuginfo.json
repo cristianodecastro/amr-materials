@@ -1,0 +1,37 @@
+[
+  {
+    "artifact": "frcCpp (in project oms + gyro)",
+    "target": "roborio",
+    "component": "frcUserProgram",
+    "debugfile": "frcCpp_roborio.debugconfig",
+    "language": "cpp"
+  },
+  {
+    "artifact": "frcCpp (in project sensor drive - cola)",
+    "target": "roborio",
+    "component": "frcUserProgram",
+    "debugfile": "frcCpp_roborio.debugconfig",
+    "language": "cpp"
+  },
+  {
+    "artifact": "frcCpp (in project template C++ - Move - Copy)",
+    "target": "roborio",
+    "component": "frcUserProgram",
+    "debugfile": "frcCpp_roborio.debugconfig",
+    "language": "cpp"
+  },
+  {
+    "artifact": "frcCpp (in project template C++ - Move)",
+    "target": "roborio",
+    "component": "frcUserProgram",
+    "debugfile": "frcCpp_roborio.debugconfig",
+    "language": "cpp"
+  },
+  {
+    "artifact": "frcCpp (in project timed)",
+    "target": "roborio",
+    "component": "frcUserProgram",
+    "debugfile": "frcCpp_roborio.debugconfig",
+    "language": "cpp"
+  }
+]

@@ -1,0 +1,38 @@
+-o
+"C:\\Users\\felip\\OneDrive - ACTVET (Abu Dhabi Center for Technical and Vocational Education and Training)\\Desktop\\template C++ - Move - Copy\\build\\exe\\frcUserProgram\\debug\\frcUserProgram"
+"C:\\Users\\felip\\OneDrive - ACTVET (Abu Dhabi Center for Technical and Vocational Education and Training)\\Desktop\\template C++ - Move - Copy\\build\\objs\\frcUserProgram\\debug\\frcUserProgramCpp\\3bg5a77l7vd4edmrxq5jco6ri\\Robot.o"
+"C:\\Users\\felip\\OneDrive - ACTVET (Abu Dhabi Center for Technical and Vocational Education and Training)\\Desktop\\template C++ - Move - Copy\\build\\objs\\frcUserProgram\\debug\\frcUserProgramCpp\\4pp012wp49e4wyig4l1gsgrr\\Hardware.o"
+"C:\\Users\\felip\\OneDrive - ACTVET (Abu Dhabi Center for Technical and Vocational Education and Training)\\Desktop\\template C++ - Move - Copy\\build\\objs\\frcUserProgram\\debug\\frcUserProgramCpp\\974au7t8s3h2aa2h8px2ajftu\\Movement.o"
+"C:\\Users\\felip\\OneDrive - ACTVET (Abu Dhabi Center for Technical and Vocational Education and Training)\\Desktop\\template C++ - Move - Copy\\build\\objs\\frcUserProgram\\debug\\frcUserProgramCpp\\blk3i8q12ny5ymi72007zmlvr\\Functions.o"
+C:\\Users\\felip\\.gradle\\caches\\transforms-2\\files-2.1\\a655ca32c0fba24c4c8e12e4524f4a44\\wpilibc-cpp-2020.3.2-linuxraspbiandebug\\linux\\raspbian\\shared\\libwpilibcd.so
+C:\\Users\\felip\\.gradle\\caches\\transforms-2\\files-2.1\\9ec5fe7579f8638204f1a2b47ea7b218\\ntcore-cpp-2020.3.2-linuxraspbiandebug\\linux\\raspbian\\shared\\libntcored.so
+C:\\Users\\felip\\.gradle\\caches\\transforms-2\\files-2.1\\16bc1165b5f35d1c20114d7ffa7c57c9\\hal-cpp-2020.3.2-vmxpi-20-linuxraspbiandebug\\linux\\raspbian\\shared\\libCTRE_PhoenixPlatform.so
+C:\\Users\\felip\\.gradle\\caches\\transforms-2\\files-2.1\\16bc1165b5f35d1c20114d7ffa7c57c9\\hal-cpp-2020.3.2-vmxpi-20-linuxraspbiandebug\\linux\\raspbian\\shared\\libwpiHald.so
+C:\\Users\\felip\\.gradle\\caches\\transforms-2\\files-2.1\\470e6874a69e6f8d10ca7a8c922b5c98\\wpiutil-cpp-2020.3.2-linuxraspbiandebug\\linux\\raspbian\\shared\\libwpiutild.so
+C:\\Users\\felip\\.gradle\\caches\\transforms-2\\files-2.1\\09d83d304a965a086601d273fd307793\\vmxpi-hal-1.1.249-linuxraspbiandebug\\linux\\mau\\shared\\libvmxpi_hal_cpp.so
+C:\\Users\\felip\\.gradle\\caches\\transforms-2\\files-2.1\\14e5f2894ea8d55e49aaaf9c977fda4a\\cameraserver-cpp-2020.3.2-linuxraspbiandebug\\linux\\raspbian\\shared\\libcameraserverd.so
+C:\\Users\\felip\\.gradle\\caches\\transforms-2\\files-2.1\\99967b24362b64ae3095661bb01149aa\\cscore-cpp-2020.3.2-linuxraspbiandebug\\linux\\raspbian\\shared\\libcscored.so
+C:\\Users\\felip\\.gradle\\caches\\transforms-2\\files-2.1\\14f641b3c2be3e1521089b118152195b\\opencv-cpp-3.4.7-2-linuxraspbiandebug\\linux\\raspbian\\shared\\libopencv_calib3dd.so.3.4
+C:\\Users\\felip\\.gradle\\caches\\transforms-2\\files-2.1\\14f641b3c2be3e1521089b118152195b\\opencv-cpp-3.4.7-2-linuxraspbiandebug\\linux\\raspbian\\shared\\libopencv_cored.so.3.4
+C:\\Users\\felip\\.gradle\\caches\\transforms-2\\files-2.1\\14f641b3c2be3e1521089b118152195b\\opencv-cpp-3.4.7-2-linuxraspbiandebug\\linux\\raspbian\\shared\\libopencv_features2dd.so.3.4
+C:\\Users\\felip\\.gradle\\caches\\transforms-2\\files-2.1\\14f641b3c2be3e1521089b118152195b\\opencv-cpp-3.4.7-2-linuxraspbiandebug\\linux\\raspbian\\shared\\libopencv_flannd.so.3.4
+C:\\Users\\felip\\.gradle\\caches\\transforms-2\\files-2.1\\14f641b3c2be3e1521089b118152195b\\opencv-cpp-3.4.7-2-linuxraspbiandebug\\linux\\raspbian\\shared\\libopencv_highguid.so.3.4
+C:\\Users\\felip\\.gradle\\caches\\transforms-2\\files-2.1\\14f641b3c2be3e1521089b118152195b\\opencv-cpp-3.4.7-2-linuxraspbiandebug\\linux\\raspbian\\shared\\libopencv_imgcodecsd.so.3.4
+C:\\Users\\felip\\.gradle\\caches\\transforms-2\\files-2.1\\14f641b3c2be3e1521089b118152195b\\opencv-cpp-3.4.7-2-linuxraspbiandebug\\linux\\raspbian\\shared\\libopencv_imgprocd.so.3.4
+C:\\Users\\felip\\.gradle\\caches\\transforms-2\\files-2.1\\14f641b3c2be3e1521089b118152195b\\opencv-cpp-3.4.7-2-linuxraspbiandebug\\linux\\raspbian\\shared\\libopencv_mld.so.3.4
+C:\\Users\\felip\\.gradle\\caches\\transforms-2\\files-2.1\\14f641b3c2be3e1521089b118152195b\\opencv-cpp-3.4.7-2-linuxraspbiandebug\\linux\\raspbian\\shared\\libopencv_objdetectd.so.3.4
+C:\\Users\\felip\\.gradle\\caches\\transforms-2\\files-2.1\\14f641b3c2be3e1521089b118152195b\\opencv-cpp-3.4.7-2-linuxraspbiandebug\\linux\\raspbian\\shared\\libopencv_photod.so.3.4
+C:\\Users\\felip\\.gradle\\caches\\transforms-2\\files-2.1\\14f641b3c2be3e1521089b118152195b\\opencv-cpp-3.4.7-2-linuxraspbiandebug\\linux\\raspbian\\shared\\libopencv_shaped.so.3.4
+C:\\Users\\felip\\.gradle\\caches\\transforms-2\\files-2.1\\14f641b3c2be3e1521089b118152195b\\opencv-cpp-3.4.7-2-linuxraspbiandebug\\linux\\raspbian\\shared\\libopencv_stitchingd.so.3.4
+C:\\Users\\felip\\.gradle\\caches\\transforms-2\\files-2.1\\14f641b3c2be3e1521089b118152195b\\opencv-cpp-3.4.7-2-linuxraspbiandebug\\linux\\raspbian\\shared\\libopencv_superresd.so.3.4
+C:\\Users\\felip\\.gradle\\caches\\transforms-2\\files-2.1\\14f641b3c2be3e1521089b118152195b\\opencv-cpp-3.4.7-2-linuxraspbiandebug\\linux\\raspbian\\shared\\libopencv_videod.so.3.4
+C:\\Users\\felip\\.gradle\\caches\\transforms-2\\files-2.1\\14f641b3c2be3e1521089b118152195b\\opencv-cpp-3.4.7-2-linuxraspbiandebug\\linux\\raspbian\\shared\\libopencv_videoiod.so.3.4
+C:\\Users\\felip\\.gradle\\caches\\transforms-2\\files-2.1\\14f641b3c2be3e1521089b118152195b\\opencv-cpp-3.4.7-2-linuxraspbiandebug\\linux\\raspbian\\shared\\libopencv_videostabd.so.3.4
+C:\\Users\\felip\\.gradle\\caches\\transforms-2\\files-2.1\\e41e534ee9d1d798253f890c7c73f346\\navx-cpp-3.1.413-linuxraspbianstaticdebug\\linux\\raspbian\\static\\libnavx_frcd.a
+C:\\Users\\felip\\.gradle\\caches\\transforms-2\\files-2.1\\75047537681f771499441d874bb4294e\\Studica-cpp-1.1.28-linuxraspbianstaticdebug\\linux\\raspbian\\static\\libStudica.a
+C:\\Users\\felip\\.gradle\\caches\\transforms-2\\files-2.1\\0b2e45399624c4c280aa6c771edf521f\\Studica-driver-1.1.28-linuxraspbianstaticdebug\\linux\\raspbian\\static\\libStudicaDriver.a
+C:\\Users\\felip\\.gradle\\caches\\transforms-2\\files-2.1\\b47470da15a493edf36cd8e17a682c4a\\wpilibOldCommands-cpp-2020.3.2-linuxraspbiandebug\\linux\\raspbian\\shared\\libwpilibOldCommandsd.so
+-rdynamic
+-pthread
+-ldl
+-latomic

@@ -1,0 +1,13 @@
+See file:///C:/Users/felip/OneDrive%20-%20ACTVET%20(Abu%20Dhabi%20Center%20for%20Technical%20and%20Vocational%20Education%20and%20Training)/Desktop/sensor%20drive/build/tmp/compileFrcUserProgramDebugExecutableFrcUserProgramCpp/output.txt for all output for compileFrcUserProgramDebugExecutableFrcUserProgramCpp.
+compiling Robot.cpp successful.
+
+compiling Movement.cpp successful.
+C:\Users\felip\OneDrive - ACTVET (Abu Dhabi Center for Technical and Vocational Education and Training)\Desktop\sensor drive\src\main\cpp\Movement.cpp: In member function 'void Movement::line_align(std::__cxx11::string)':
+C:\Users\felip\OneDrive - ACTVET (Abu Dhabi Center for Technical and Vocational Education and Training)\Desktop\sensor drive\src\main\cpp\Movement.cpp:258:10: warning: variable 'cobra_l' set but not used [-Wunused-but-set-variable]
+     bool cobra_l = false;
+          ^~~~~~~
+C:\Users\felip\OneDrive - ACTVET (Abu Dhabi Center for Technical and Vocational Education and Training)\Desktop\sensor drive\src\main\cpp\Movement.cpp:259:10: warning: variable 'cobra_r' set but not used [-Wunused-but-set-variable]
+     bool cobra_r = false;
+          ^~~~~~~
+
+Finished compileFrcUserProgramDebugExecutableFrcUserProgramCpp, see full log file:///C:/Users/felip/OneDrive%20-%20ACTVET%20(Abu%20Dhabi%20Center%20for%20Technical%20and%20Vocational%20Education%20and%20Training)/Desktop/sensor%20drive/build/tmp/compileFrcUserProgramDebugExecutableFrcUserProgramCpp/output.txt.

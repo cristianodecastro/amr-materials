@@ -1,0 +1,396 @@
+[
+  {
+    "name": "linuxraspbian",
+    "architecture": "arm-v7",
+    "operatingSystem": "linux",
+    "flavor": "default",
+    "buildType": "debug",
+    "cppPath": "C:\\Users\\user\\.gradle\\toolchains\\raspbian10\\bin\\arm-raspbian10-linux-gnueabihf-g++.exe",
+    "cPath": "C:\\Users\\user\\.gradle\\toolchains\\raspbian10\\bin\\arm-raspbian10-linux-gnueabihf-gcc.exe",
+    "msvc": false,
+    "gcc": true,
+    "systemCppMacros": [],
+    "systemCppArgs": [],
+    "systemCMacros": [],
+    "systemCArgs": [],
+    "allLibFiles": [
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\ff9edb412f9bf307a884ff6bab49aeaf\\wpilibc-cpp-2020.3.2-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\b58843b1f00f0d5e8fbfbed26394c68f\\ntcore-cpp-2020.3.2-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\ec3678a54c9e1f1b862e3ae23ac2a96a\\hal-cpp-2020.3.2-vmxpi-20-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\d01ccebd826ea195c6d473a39bb3deb1\\wpiutil-cpp-2020.3.2-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\d02c251a3c4bd9565e00d9b2412ebe33\\vmxpi-hal-1.1.249-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\0b41d9990f30f34478c212d0faedef0a\\cameraserver-cpp-2020.3.2-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\5056c58cd650601dbd1f1e8df12b409c\\cscore-cpp-2020.3.2-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\6b563da17dd0166c76aff89d7c987ea7\\opencv-cpp-3.4.7-2-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\6d9bac357027c49727c799a8c04ad63a\\navx-cpp-3.1.413-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\9ae18650563e5c96681ab704edf6bdda\\Studica-cpp-1.1.28-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\4535df45800b8dedb9b39736e6b98391\\Studica-driver-1.1.28-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\e1dc881582828e6c382ea9901f3d1100\\wpilibOldCommands-cpp-2020.3.2-headers\\",
+      "C:\\Users\\user\\Downloads\\oms + gyro\\src\\main\\include\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\2ce33f4258e050a29acd336de6f3de33\\wpilibc-cpp-2020.3.2-sources\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\2235c500aaffd63c3faea001ea3717ea\\ntcore-cpp-2020.3.2-sources\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\cc4d11565b776d814bb3b41fa2100671\\hal-cpp-2020.3.2-vmxpi-20-sources\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\cb0bf769b3629b77850b8eefbd01cb6d\\wpiutil-cpp-2020.3.2-sources\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\0d6c8b437f68985ad8527597fc65a263\\cameraserver-cpp-2020.3.2-sources\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\06bc5eb4b46244a197375d7f59240c58\\cscore-cpp-2020.3.2-sources\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\5342a1b0093868e4956ec136c7f88818\\opencv-cpp-3.4.7-2-sources\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\34095379bb7f7f5ab66ad70bb1404513\\navx-cpp-3.1.413-sources\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\3c22d8cc43ab48dddfac0768e6f8b419\\wpilibOldCommands-cpp-2020.3.2-sources\\"
+    ],
+    "allLibSources": [
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\2ce33f4258e050a29acd336de6f3de33\\wpilibc-cpp-2020.3.2-sources\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\2235c500aaffd63c3faea001ea3717ea\\ntcore-cpp-2020.3.2-sources\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\cc4d11565b776d814bb3b41fa2100671\\hal-cpp-2020.3.2-vmxpi-20-sources\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\cb0bf769b3629b77850b8eefbd01cb6d\\wpiutil-cpp-2020.3.2-sources\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\0d6c8b437f68985ad8527597fc65a263\\cameraserver-cpp-2020.3.2-sources\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\06bc5eb4b46244a197375d7f59240c58\\cscore-cpp-2020.3.2-sources\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\5342a1b0093868e4956ec136c7f88818\\opencv-cpp-3.4.7-2-sources\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\34095379bb7f7f5ab66ad70bb1404513\\navx-cpp-3.1.413-sources\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\3c22d8cc43ab48dddfac0768e6f8b419\\wpilibOldCommands-cpp-2020.3.2-sources\\"
+    ],
+    "allLibHeaders": [
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\ff9edb412f9bf307a884ff6bab49aeaf\\wpilibc-cpp-2020.3.2-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\b58843b1f00f0d5e8fbfbed26394c68f\\ntcore-cpp-2020.3.2-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\ec3678a54c9e1f1b862e3ae23ac2a96a\\hal-cpp-2020.3.2-vmxpi-20-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\d01ccebd826ea195c6d473a39bb3deb1\\wpiutil-cpp-2020.3.2-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\d02c251a3c4bd9565e00d9b2412ebe33\\vmxpi-hal-1.1.249-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\0b41d9990f30f34478c212d0faedef0a\\cameraserver-cpp-2020.3.2-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\5056c58cd650601dbd1f1e8df12b409c\\cscore-cpp-2020.3.2-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\6b563da17dd0166c76aff89d7c987ea7\\opencv-cpp-3.4.7-2-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\6d9bac357027c49727c799a8c04ad63a\\navx-cpp-3.1.413-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\9ae18650563e5c96681ab704edf6bdda\\Studica-cpp-1.1.28-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\4535df45800b8dedb9b39736e6b98391\\Studica-driver-1.1.28-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\e1dc881582828e6c382ea9901f3d1100\\wpilibOldCommands-cpp-2020.3.2-headers\\",
+      "C:\\Users\\user\\Downloads\\oms + gyro\\src\\main\\include\\"
+    ],
+    "binaries": [
+      {
+        "componentName": "frcUserProgram",
+        "sourceSets": [
+          {
+            "source": {
+              "srcDirs": [
+                "C:\\Users\\user\\Downloads\\oms + gyro\\src\\main\\cpp\\"
+              ],
+              "includes": [
+                "**/*.cpp",
+                "**/*.cc"
+              ],
+              "excludes": []
+            },
+            "exportedHeaders": {
+              "srcDirs": [
+                "C:\\Users\\user\\Downloads\\oms + gyro\\src\\main\\include\\"
+              ],
+              "includes": [
+                "**/*.cpp",
+                "**/*.cc"
+              ],
+              "excludes": []
+            },
+            "cpp": true,
+            "args": [
+              "-Wall",
+              "-Wextra",
+              "-std=c++17",
+              "-Wformat=2",
+              "-pedantic",
+              "-Wno-psabi",
+              "-g",
+              "-Wno-unused-parameter",
+              "-Wno-error=deprecated-declarations",
+              "-fPIC",
+              "-rdynamic",
+              "-pthread",
+              "-Og"
+            ],
+            "macros": []
+          }
+        ],
+        "libHeaders": [
+          "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\ff9edb412f9bf307a884ff6bab49aeaf\\wpilibc-cpp-2020.3.2-headers\\",
+          "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\b58843b1f00f0d5e8fbfbed26394c68f\\ntcore-cpp-2020.3.2-headers\\",
+          "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\ec3678a54c9e1f1b862e3ae23ac2a96a\\hal-cpp-2020.3.2-vmxpi-20-headers\\",
+          "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\d01ccebd826ea195c6d473a39bb3deb1\\wpiutil-cpp-2020.3.2-headers\\",
+          "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\d02c251a3c4bd9565e00d9b2412ebe33\\vmxpi-hal-1.1.249-headers\\",
+          "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\0b41d9990f30f34478c212d0faedef0a\\cameraserver-cpp-2020.3.2-headers\\",
+          "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\5056c58cd650601dbd1f1e8df12b409c\\cscore-cpp-2020.3.2-headers\\",
+          "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\6b563da17dd0166c76aff89d7c987ea7\\opencv-cpp-3.4.7-2-headers\\",
+          "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\6d9bac357027c49727c799a8c04ad63a\\navx-cpp-3.1.413-headers\\",
+          "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\9ae18650563e5c96681ab704edf6bdda\\Studica-cpp-1.1.28-headers\\",
+          "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\4535df45800b8dedb9b39736e6b98391\\Studica-driver-1.1.28-headers\\",
+          "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\e1dc881582828e6c382ea9901f3d1100\\wpilibOldCommands-cpp-2020.3.2-headers\\",
+          "C:\\Users\\user\\Downloads\\oms + gyro\\src\\main\\include\\"
+        ],
+        "sharedLibrary": false,
+        "executable": true
+      }
+    ],
+    "sourceBinaries": [
+      {
+        "source": {
+          "srcDirs": [
+            "C:\\Users\\user\\Downloads\\oms + gyro\\src\\main\\cpp\\"
+          ],
+          "includes": [
+            "**/*.cpp",
+            "**/*.cc"
+          ],
+          "excludes": []
+        },
+        "componentName": "frcUserProgram",
+        "cpp": true,
+        "args": [
+          "-Wall",
+          "-Wextra",
+          "-std=c++17",
+          "-Wformat=2",
+          "-pedantic",
+          "-Wno-psabi",
+          "-g",
+          "-Wno-unused-parameter",
+          "-Wno-error=deprecated-declarations",
+          "-fPIC",
+          "-rdynamic",
+          "-pthread",
+          "-Og"
+        ],
+        "macros": [],
+        "sharedLibrary": false,
+        "executable": true
+      },
+      {
+        "source": {
+          "srcDirs": [
+            "C:\\Users\\user\\Downloads\\oms + gyro\\src\\main\\include\\"
+          ],
+          "includes": [
+            "**/*.cpp",
+            "**/*.cc"
+          ],
+          "excludes": []
+        },
+        "componentName": "frcUserProgram",
+        "cpp": true,
+        "args": [
+          "-Wall",
+          "-Wextra",
+          "-std=c++17",
+          "-Wformat=2",
+          "-pedantic",
+          "-Wno-psabi",
+          "-g",
+          "-Wno-unused-parameter",
+          "-Wno-error=deprecated-declarations",
+          "-fPIC",
+          "-rdynamic",
+          "-pthread",
+          "-Og"
+        ],
+        "macros": [],
+        "sharedLibrary": false,
+        "executable": true
+      }
+    ],
+    "nameBinaryMap": {
+      "frcUserProgram": 0
+    }
+  },
+  {
+    "name": "linuxraspbian",
+    "architecture": "arm-v7",
+    "operatingSystem": "linux",
+    "flavor": "default",
+    "buildType": "release",
+    "cppPath": "C:\\Users\\user\\.gradle\\toolchains\\raspbian10\\bin\\arm-raspbian10-linux-gnueabihf-g++.exe",
+    "cPath": "C:\\Users\\user\\.gradle\\toolchains\\raspbian10\\bin\\arm-raspbian10-linux-gnueabihf-gcc.exe",
+    "msvc": false,
+    "gcc": true,
+    "systemCppMacros": [],
+    "systemCppArgs": [],
+    "systemCMacros": [],
+    "systemCArgs": [],
+    "allLibFiles": [
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\ff9edb412f9bf307a884ff6bab49aeaf\\wpilibc-cpp-2020.3.2-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\b58843b1f00f0d5e8fbfbed26394c68f\\ntcore-cpp-2020.3.2-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\ec3678a54c9e1f1b862e3ae23ac2a96a\\hal-cpp-2020.3.2-vmxpi-20-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\d01ccebd826ea195c6d473a39bb3deb1\\wpiutil-cpp-2020.3.2-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\d02c251a3c4bd9565e00d9b2412ebe33\\vmxpi-hal-1.1.249-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\0b41d9990f30f34478c212d0faedef0a\\cameraserver-cpp-2020.3.2-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\5056c58cd650601dbd1f1e8df12b409c\\cscore-cpp-2020.3.2-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\6b563da17dd0166c76aff89d7c987ea7\\opencv-cpp-3.4.7-2-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\6d9bac357027c49727c799a8c04ad63a\\navx-cpp-3.1.413-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\9ae18650563e5c96681ab704edf6bdda\\Studica-cpp-1.1.28-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\4535df45800b8dedb9b39736e6b98391\\Studica-driver-1.1.28-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\e1dc881582828e6c382ea9901f3d1100\\wpilibOldCommands-cpp-2020.3.2-headers\\",
+      "C:\\Users\\user\\Downloads\\oms + gyro\\src\\main\\include\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\2ce33f4258e050a29acd336de6f3de33\\wpilibc-cpp-2020.3.2-sources\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\2235c500aaffd63c3faea001ea3717ea\\ntcore-cpp-2020.3.2-sources\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\cc4d11565b776d814bb3b41fa2100671\\hal-cpp-2020.3.2-vmxpi-20-sources\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\cb0bf769b3629b77850b8eefbd01cb6d\\wpiutil-cpp-2020.3.2-sources\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\0d6c8b437f68985ad8527597fc65a263\\cameraserver-cpp-2020.3.2-sources\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\06bc5eb4b46244a197375d7f59240c58\\cscore-cpp-2020.3.2-sources\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\5342a1b0093868e4956ec136c7f88818\\opencv-cpp-3.4.7-2-sources\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\34095379bb7f7f5ab66ad70bb1404513\\navx-cpp-3.1.413-sources\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\3c22d8cc43ab48dddfac0768e6f8b419\\wpilibOldCommands-cpp-2020.3.2-sources\\"
+    ],
+    "allLibSources": [
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\2ce33f4258e050a29acd336de6f3de33\\wpilibc-cpp-2020.3.2-sources\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\2235c500aaffd63c3faea001ea3717ea\\ntcore-cpp-2020.3.2-sources\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\cc4d11565b776d814bb3b41fa2100671\\hal-cpp-2020.3.2-vmxpi-20-sources\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\cb0bf769b3629b77850b8eefbd01cb6d\\wpiutil-cpp-2020.3.2-sources\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\0d6c8b437f68985ad8527597fc65a263\\cameraserver-cpp-2020.3.2-sources\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\06bc5eb4b46244a197375d7f59240c58\\cscore-cpp-2020.3.2-sources\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\5342a1b0093868e4956ec136c7f88818\\opencv-cpp-3.4.7-2-sources\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\34095379bb7f7f5ab66ad70bb1404513\\navx-cpp-3.1.413-sources\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\3c22d8cc43ab48dddfac0768e6f8b419\\wpilibOldCommands-cpp-2020.3.2-sources\\"
+    ],
+    "allLibHeaders": [
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\ff9edb412f9bf307a884ff6bab49aeaf\\wpilibc-cpp-2020.3.2-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\b58843b1f00f0d5e8fbfbed26394c68f\\ntcore-cpp-2020.3.2-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\ec3678a54c9e1f1b862e3ae23ac2a96a\\hal-cpp-2020.3.2-vmxpi-20-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\d01ccebd826ea195c6d473a39bb3deb1\\wpiutil-cpp-2020.3.2-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\d02c251a3c4bd9565e00d9b2412ebe33\\vmxpi-hal-1.1.249-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\0b41d9990f30f34478c212d0faedef0a\\cameraserver-cpp-2020.3.2-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\5056c58cd650601dbd1f1e8df12b409c\\cscore-cpp-2020.3.2-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\6b563da17dd0166c76aff89d7c987ea7\\opencv-cpp-3.4.7-2-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\6d9bac357027c49727c799a8c04ad63a\\navx-cpp-3.1.413-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\9ae18650563e5c96681ab704edf6bdda\\Studica-cpp-1.1.28-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\4535df45800b8dedb9b39736e6b98391\\Studica-driver-1.1.28-headers\\",
+      "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\e1dc881582828e6c382ea9901f3d1100\\wpilibOldCommands-cpp-2020.3.2-headers\\",
+      "C:\\Users\\user\\Downloads\\oms + gyro\\src\\main\\include\\"
+    ],
+    "binaries": [
+      {
+        "componentName": "frcUserProgram",
+        "sourceSets": [
+          {
+            "source": {
+              "srcDirs": [
+                "C:\\Users\\user\\Downloads\\oms + gyro\\src\\main\\cpp\\"
+              ],
+              "includes": [
+                "**/*.cpp",
+                "**/*.cc"
+              ],
+              "excludes": []
+            },
+            "exportedHeaders": {
+              "srcDirs": [
+                "C:\\Users\\user\\Downloads\\oms + gyro\\src\\main\\include\\"
+              ],
+              "includes": [
+                "**/*.cpp",
+                "**/*.cc"
+              ],
+              "excludes": []
+            },
+            "cpp": true,
+            "args": [
+              "-Wall",
+              "-Wextra",
+              "-std=c++17",
+              "-Wformat=2",
+              "-pedantic",
+              "-Wno-psabi",
+              "-g",
+              "-Wno-unused-parameter",
+              "-Wno-error=deprecated-declarations",
+              "-fPIC",
+              "-rdynamic",
+              "-pthread",
+              "-O2"
+            ],
+            "macros": []
+          }
+        ],
+        "libHeaders": [
+          "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\ff9edb412f9bf307a884ff6bab49aeaf\\wpilibc-cpp-2020.3.2-headers\\",
+          "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\b58843b1f00f0d5e8fbfbed26394c68f\\ntcore-cpp-2020.3.2-headers\\",
+          "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\ec3678a54c9e1f1b862e3ae23ac2a96a\\hal-cpp-2020.3.2-vmxpi-20-headers\\",
+          "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\d01ccebd826ea195c6d473a39bb3deb1\\wpiutil-cpp-2020.3.2-headers\\",
+          "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\d02c251a3c4bd9565e00d9b2412ebe33\\vmxpi-hal-1.1.249-headers\\",
+          "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\0b41d9990f30f34478c212d0faedef0a\\cameraserver-cpp-2020.3.2-headers\\",
+          "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\5056c58cd650601dbd1f1e8df12b409c\\cscore-cpp-2020.3.2-headers\\",
+          "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\6b563da17dd0166c76aff89d7c987ea7\\opencv-cpp-3.4.7-2-headers\\",
+          "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\6d9bac357027c49727c799a8c04ad63a\\navx-cpp-3.1.413-headers\\",
+          "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\9ae18650563e5c96681ab704edf6bdda\\Studica-cpp-1.1.28-headers\\",
+          "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\4535df45800b8dedb9b39736e6b98391\\Studica-driver-1.1.28-headers\\",
+          "C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\e1dc881582828e6c382ea9901f3d1100\\wpilibOldCommands-cpp-2020.3.2-headers\\",
+          "C:\\Users\\user\\Downloads\\oms + gyro\\src\\main\\include\\"
+        ],
+        "sharedLibrary": false,
+        "executable": true
+      }
+    ],
+    "sourceBinaries": [
+      {
+        "source": {
+          "srcDirs": [
+            "C:\\Users\\user\\Downloads\\oms + gyro\\src\\main\\cpp\\"
+          ],
+          "includes": [
+            "**/*.cpp",
+            "**/*.cc"
+          ],
+          "excludes": []
+        },
+        "componentName": "frcUserProgram",
+        "cpp": true,
+        "args": [
+          "-Wall",
+          "-Wextra",
+          "-std=c++17",
+          "-Wformat=2",
+          "-pedantic",
+          "-Wno-psabi",
+          "-g",
+          "-Wno-unused-parameter",
+          "-Wno-error=deprecated-declarations",
+          "-fPIC",
+          "-rdynamic",
+          "-pthread",
+          "-O2"
+        ],
+        "macros": [],
+        "sharedLibrary": false,
+        "executable": true
+      },
+      {
+        "source": {
+          "srcDirs": [
+            "C:\\Users\\user\\Downloads\\oms + gyro\\src\\main\\include\\"
+          ],
+          "includes": [
+            "**/*.cpp",
+            "**/*.cc"
+          ],
+          "excludes": []
+        },
+        "componentName": "frcUserProgram",
+        "cpp": true,
+        "args": [
+          "-Wall",
+          "-Wextra",
+          "-std=c++17",
+          "-Wformat=2",
+          "-pedantic",
+          "-Wno-psabi",
+          "-g",
+          "-Wno-unused-parameter",
+          "-Wno-error=deprecated-declarations",
+          "-fPIC",
+          "-rdynamic",
+          "-pthread",
+          "-O2"
+        ],
+        "macros": [],
+        "sharedLibrary": false,
+        "executable": true
+      }
+    ],
+    "nameBinaryMap": {
+      "frcUserProgram": 0
+    }
+  }
+]

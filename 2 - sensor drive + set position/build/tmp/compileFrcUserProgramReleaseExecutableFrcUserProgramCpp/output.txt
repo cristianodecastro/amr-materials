@@ -1,0 +1,4 @@
+See file:///C:/Users/felip/OneDrive%20-%20ACTVET%20(Abu%20Dhabi%20Center%20for%20Technical%20and%20Vocational%20Education%20and%20Training)/Desktop/sensor%20drive/build/tmp/compileFrcUserProgramReleaseExecutableFrcUserProgramCpp/output.txt for all output for compileFrcUserProgramReleaseExecutableFrcUserProgramCpp.
+compiling Robot.cpp successful.
+
+Finished compileFrcUserProgramReleaseExecutableFrcUserProgramCpp, see full log file:///C:/Users/felip/OneDrive%20-%20ACTVET%20(Abu%20Dhabi%20Center%20for%20Technical%20and%20Vocational%20Education%20and%20Training)/Desktop/sensor%20drive/build/tmp/compileFrcUserProgramReleaseExecutableFrcUserProgramCpp/output.txt.

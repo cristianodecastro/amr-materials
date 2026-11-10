@@ -1,0 +1,47 @@
+See file:///C:/Users/felip/OneDrive/Competition/2026%20-%20EmiratesSkills/6.%20Training/5.%20Training%20Sessions/4.%20Lidar/lidar/build/tmp/compileFrcUserProgramDebugExecutableFrcUserProgramCpp/output.txt for all output for compileFrcUserProgramDebugExecutableFrcUserProgramCpp.
+compiling Constants.cpp successful.
+
+compiling Interface.cpp successful.
+
+compiling Utils.cpp successful.
+
+compiling mini.cpp successful.
+
+compiling linux_lidar.cpp successful.
+
+compiling Lidar.cpp successful.
+
+compiling Functions.cpp successful.
+
+compiling Robot.cpp failed.
+In file included from C:\Users\felip\OneDrive\Competition\2026 - EmiratesSkills\6. Training\5. Training Sessions\4. Lidar\lidar\src\main\cpp\Robot.cpp:23:
+C:\Users\felip\OneDrive\Competition\2026 - EmiratesSkills\6. Training\5. Training Sessions\4. Lidar\lidar\src\main\include/linux_lidar.h:8:7: error: redefinition of 'class Lidar'
+ class Lidar
+       ^~~~~
+In file included from C:\Users\felip\OneDrive\Competition\2026 - EmiratesSkills\6. Training\5. Training Sessions\4. Lidar\lidar\src\main\cpp\Robot.cpp:12:
+C:\Users\felip\OneDrive\Competition\2026 - EmiratesSkills\6. Training\5. Training Sessions\4. Lidar\lidar\src\main\include/mini.h:17:11: note: previous definition of 'class Lidar'
+     class Lidar
+           ^~~~~
+C:\Users\felip\OneDrive\Competition\2026 - EmiratesSkills\6. Training\5. Training Sessions\4. Lidar\lidar\src\main\cpp\Robot.cpp: In function 'int main()':
+C:\Users\felip\OneDrive\Competition\2026 - EmiratesSkills\6. Training\5. Training Sessions\4. Lidar\lidar\src\main\cpp\Robot.cpp:201:11: warning: unused variable 'lidar' [-Wunused-variable]
+     Lidar lidar;
+           ^~~~~
+
+compiling Movement.cpp successful.
+C:\Users\felip\OneDrive\Competition\2026 - EmiratesSkills\6. Training\5. Training Sessions\4. Lidar\lidar\src\main\cpp\Movement.cpp: In member function 'void Movement::PositionDriver(double, double, double)':
+C:\Users\felip\OneDrive\Competition\2026 - EmiratesSkills\6. Training\5. Training Sessions\4. Lidar\lidar\src\main\cpp\Movement.cpp:49:16: warning: unused variable 'delta_th' [-Wunused-variable]
+         double delta_th = vth * delta_time;
+                ^~~~~~~~
+C:\Users\felip\OneDrive\Competition\2026 - EmiratesSkills\6. Training\5. Training Sessions\4. Lidar\lidar\src\main\cpp\Movement.cpp: In member function 'void Movement::line_align(std::__cxx11::string)':
+C:\Users\felip\OneDrive\Competition\2026 - EmiratesSkills\6. Training\5. Training Sessions\4. Lidar\lidar\src\main\cpp\Movement.cpp:268:10: warning: variable 'cobra_l' set but not used [-Wunused-but-set-variable]
+     bool cobra_l  = false;
+          ^~~~~~~
+C:\Users\felip\OneDrive\Competition\2026 - EmiratesSkills\6. Training\5. Training Sessions\4. Lidar\lidar\src\main\cpp\Movement.cpp:269:10: warning: variable 'cobra_r' set but not used [-Wunused-but-set-variable]
+     bool cobra_r  = false;
+          ^~~~~~~
+
+compiling Oms.cpp successful.
+
+compiling Hardware.cpp successful.
+
+Finished compileFrcUserProgramDebugExecutableFrcUserProgramCpp, see full log file:///C:/Users/felip/OneDrive/Competition/2026%20-%20EmiratesSkills/6.%20Training/5.%20Training%20Sessions/4.%20Lidar/lidar/build/tmp/compileFrcUserProgramDebugExecutableFrcUserProgramCpp/output.txt.

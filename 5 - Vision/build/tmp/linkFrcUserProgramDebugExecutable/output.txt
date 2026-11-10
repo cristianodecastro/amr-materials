@@ -1,0 +1,4 @@
+See file:///C:/Users/felip/OneDrive/Competition/2026%20-%20EmiratesSkills/6.%20Training/5.%20Training%20Sessions/5.%20Robot%20Vision/Movement%20+%20OMS%20+%20Vision/build/tmp/linkFrcUserProgramDebugExecutable/output.txt for all output for linkFrcUserProgramDebugExecutable.
+linking frcUserProgram successful.
+
+Finished linkFrcUserProgramDebugExecutable, see full log file:///C:/Users/felip/OneDrive/Competition/2026%20-%20EmiratesSkills/6.%20Training/5.%20Training%20Sessions/5.%20Robot%20Vision/Movement%20+%20OMS%20+%20Vision/build/tmp/linkFrcUserProgramDebugExecutable/output.txt.

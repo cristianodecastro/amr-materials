@@ -1,0 +1,39 @@
+See file:///C:/Users/user/Downloads/oms%20+%20gyro/build/tmp/compileFrcUserProgramDebugExecutableFrcUserProgramCpp/output.txt for all output for compileFrcUserProgramDebugExecutableFrcUserProgramCpp.
+compiling Robot.cpp failed.
+C:\Users\user\Downloads\oms + gyro\src\main\cpp\Robot.cpp:56:6: error: 'oms' does not name a type; did you mean 'Oms'?
+      oms.oms_driver(20);
+      ^~~
+      Oms
+C:\Users\user\Downloads\oms + gyro\src\main\cpp\Robot.cpp:58:10: error: expected constructor, destructor, or type conversion before '(' token
+     delay(500);
+          ^
+C:\Users\user\Downloads\oms + gyro\src\main\cpp\Robot.cpp:66:11: error: expected constructor, destructor, or type conversion before '(' token
+     delay (500);
+           ^
+C:\Users\user\Downloads\oms + gyro\src\main\cpp\Robot.cpp:71:5: error: 'hard' does not name a type; did you mean 'fadd'?
+     hard.SetRunningLED(false);
+     ^~~~
+     fadd
+C:\Users\user\Downloads\oms + gyro\src\main\cpp\Robot.cpp:73:5: error: expected unqualified-id before 'return'
+     return 0;
+     ^~~~~~
+C:\Users\user\Downloads\oms + gyro\src\main\cpp\Robot.cpp:74:1: error: expected declaration before '}' token
+ }
+ ^
+
+compiling Oms.cpp successful.
+
+compiling Movement.cpp successful.
+C:\Users\user\Downloads\oms + gyro\src\main\cpp\Movement.cpp: In member function 'void Movement::PositionDriver(double, double, double)':
+C:\Users\user\Downloads\oms + gyro\src\main\cpp\Movement.cpp:49:16: warning: unused variable 'delta_th' [-Wunused-variable]
+         double delta_th = vth * delta_time;
+                ^~~~~~~~
+C:\Users\user\Downloads\oms + gyro\src\main\cpp\Movement.cpp: In member function 'void Movement::line_align(std::__cxx11::string)':
+C:\Users\user\Downloads\oms + gyro\src\main\cpp\Movement.cpp:268:10: warning: variable 'cobra_l' set but not used [-Wunused-but-set-variable]
+     bool cobra_l  = false;
+          ^~~~~~~
+C:\Users\user\Downloads\oms + gyro\src\main\cpp\Movement.cpp:269:10: warning: variable 'cobra_r' set but not used [-Wunused-but-set-variable]
+     bool cobra_r  = false;
+          ^~~~~~~
+
+Finished compileFrcUserProgramDebugExecutableFrcUserProgramCpp, see full log file:///C:/Users/user/Downloads/oms%20+%20gyro/build/tmp/compileFrcUserProgramDebugExecutableFrcUserProgramCpp/output.txt.

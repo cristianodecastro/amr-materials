@@ -1,0 +1,4 @@
+See file:///C:/Users/user/Downloads/oms%20+%20gyro/build/tmp/compileFrcUserProgramReleaseExecutableFrcUserProgramCpp/output.txt for all output for compileFrcUserProgramReleaseExecutableFrcUserProgramCpp.
+compiling Robot.cpp successful.
+
+Finished compileFrcUserProgramReleaseExecutableFrcUserProgramCpp, see full log file:///C:/Users/user/Downloads/oms%20+%20gyro/build/tmp/compileFrcUserProgramReleaseExecutableFrcUserProgramCpp/output.txt.

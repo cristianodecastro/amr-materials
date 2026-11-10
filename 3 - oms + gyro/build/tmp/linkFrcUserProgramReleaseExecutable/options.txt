@@ -1,0 +1,39 @@
+-o
+"C:\\Users\\user\\Downloads\\oms + gyro\\build\\exe\\frcUserProgram\\release\\frcUserProgram"
+"C:\\Users\\user\\Downloads\\oms + gyro\\build\\objs\\frcUserProgram\\release\\frcUserProgramCpp\\3bg5a77l7vd4edmrxq5jco6ri\\Robot.o"
+"C:\\Users\\user\\Downloads\\oms + gyro\\build\\objs\\frcUserProgram\\release\\frcUserProgramCpp\\4pp012wp49e4wyig4l1gsgrr\\Hardware.o"
+"C:\\Users\\user\\Downloads\\oms + gyro\\build\\objs\\frcUserProgram\\release\\frcUserProgramCpp\\974au7t8s3h2aa2h8px2ajftu\\Movement.o"
+"C:\\Users\\user\\Downloads\\oms + gyro\\build\\objs\\frcUserProgram\\release\\frcUserProgramCpp\\blk3i8q12ny5ymi72007zmlvr\\Functions.o"
+"C:\\Users\\user\\Downloads\\oms + gyro\\build\\objs\\frcUserProgram\\release\\frcUserProgramCpp\\cfud2x6b82wz2w29zk3o4e3wy\\Oms.o"
+C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\17827931f817082956cf8fd7dc33f328\\wpilibc-cpp-2020.3.2-linuxraspbian\\linux\\raspbian\\shared\\libwpilibc.so
+C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\2627da22610284e7d1a70325581e37f6\\ntcore-cpp-2020.3.2-linuxraspbian\\linux\\raspbian\\shared\\libntcore.so
+C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\cdae69f02d9d951e5db6295c31331eee\\hal-cpp-2020.3.2-vmxpi-20-linuxraspbian\\linux\\raspbian\\shared\\libCTRE_PhoenixPlatform.so
+C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\cdae69f02d9d951e5db6295c31331eee\\hal-cpp-2020.3.2-vmxpi-20-linuxraspbian\\linux\\raspbian\\shared\\libwpiHal.so
+C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\c3b2adefebebab27c7127354d0e835dc\\wpiutil-cpp-2020.3.2-linuxraspbian\\linux\\raspbian\\shared\\libwpiutil.so
+C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\5d56c4d3c82adad34e03963c9108b856\\vmxpi-hal-1.1.249-linuxraspbian\\linux\\mau\\shared\\libvmxpi_hal_cpp.so
+C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\490da139261a96252f00272cc0368735\\cameraserver-cpp-2020.3.2-linuxraspbian\\linux\\raspbian\\shared\\libcameraserver.so
+C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\027be1042416cc06558a40592f59b7d1\\cscore-cpp-2020.3.2-linuxraspbian\\linux\\raspbian\\shared\\libcscore.so
+C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\4dbfa44393cbb8c40e1588ec07603086\\opencv-cpp-3.4.7-2-linuxraspbian\\linux\\raspbian\\shared\\libopencv_calib3d.so.3.4
+C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\4dbfa44393cbb8c40e1588ec07603086\\opencv-cpp-3.4.7-2-linuxraspbian\\linux\\raspbian\\shared\\libopencv_core.so.3.4
+C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\4dbfa44393cbb8c40e1588ec07603086\\opencv-cpp-3.4.7-2-linuxraspbian\\linux\\raspbian\\shared\\libopencv_features2d.so.3.4
+C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\4dbfa44393cbb8c40e1588ec07603086\\opencv-cpp-3.4.7-2-linuxraspbian\\linux\\raspbian\\shared\\libopencv_flann.so.3.4
+C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\4dbfa44393cbb8c40e1588ec07603086\\opencv-cpp-3.4.7-2-linuxraspbian\\linux\\raspbian\\shared\\libopencv_highgui.so.3.4
+C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\4dbfa44393cbb8c40e1588ec07603086\\opencv-cpp-3.4.7-2-linuxraspbian\\linux\\raspbian\\shared\\libopencv_imgcodecs.so.3.4
+C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\4dbfa44393cbb8c40e1588ec07603086\\opencv-cpp-3.4.7-2-linuxraspbian\\linux\\raspbian\\shared\\libopencv_imgproc.so.3.4
+C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\4dbfa44393cbb8c40e1588ec07603086\\opencv-cpp-3.4.7-2-linuxraspbian\\linux\\raspbian\\shared\\libopencv_ml.so.3.4
+C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\4dbfa44393cbb8c40e1588ec07603086\\opencv-cpp-3.4.7-2-linuxraspbian\\linux\\raspbian\\shared\\libopencv_objdetect.so.3.4
+C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\4dbfa44393cbb8c40e1588ec07603086\\opencv-cpp-3.4.7-2-linuxraspbian\\linux\\raspbian\\shared\\libopencv_photo.so.3.4
+C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\4dbfa44393cbb8c40e1588ec07603086\\opencv-cpp-3.4.7-2-linuxraspbian\\linux\\raspbian\\shared\\libopencv_shape.so.3.4
+C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\4dbfa44393cbb8c40e1588ec07603086\\opencv-cpp-3.4.7-2-linuxraspbian\\linux\\raspbian\\shared\\libopencv_stitching.so.3.4
+C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\4dbfa44393cbb8c40e1588ec07603086\\opencv-cpp-3.4.7-2-linuxraspbian\\linux\\raspbian\\shared\\libopencv_superres.so.3.4
+C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\4dbfa44393cbb8c40e1588ec07603086\\opencv-cpp-3.4.7-2-linuxraspbian\\linux\\raspbian\\shared\\libopencv_video.so.3.4
+C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\4dbfa44393cbb8c40e1588ec07603086\\opencv-cpp-3.4.7-2-linuxraspbian\\linux\\raspbian\\shared\\libopencv_videoio.so.3.4
+C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\4dbfa44393cbb8c40e1588ec07603086\\opencv-cpp-3.4.7-2-linuxraspbian\\linux\\raspbian\\shared\\libopencv_videostab.so.3.4
+C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\4d3048959d9405d8874c68ecf0c73735\\navx-cpp-3.1.413-linuxraspbianstatic\\linux\\raspbian\\static\\libnavx_frc.a
+C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\3fa9447080e4c3f3cb0b7fb3cd65556f\\Studica-cpp-1.1.28-linuxraspbianstatic\\linux\\raspbian\\static\\libStudica.a
+C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\c1e303166adab113315808926ae79b76\\Studica-driver-1.1.28-linuxraspbianstatic\\linux\\raspbian\\static\\libStudicaDriver.a
+C:\\Users\\user\\.gradle\\caches\\transforms-2\\files-2.1\\4097a00b7ad35a0fdb61deed3034d48a\\wpilibOldCommands-cpp-2020.3.2-linuxraspbian\\linux\\raspbian\\shared\\libwpilibOldCommands.so
+-rdynamic
+-pthread
+-ldl
+-latomic

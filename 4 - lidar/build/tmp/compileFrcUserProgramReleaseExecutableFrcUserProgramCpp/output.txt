@@ -1,0 +1,16 @@
+See file:///C:/Users/felip/OneDrive/Competition/2026%20-%20EmiratesSkills/6.%20Training/5.%20Training%20Sessions/4.%20Lidar/lidar/build/tmp/compileFrcUserProgramReleaseExecutableFrcUserProgramCpp/output.txt for all output for compileFrcUserProgramReleaseExecutableFrcUserProgramCpp.
+compiling Lidar.cpp successful.
+C:\Users\felip\OneDrive\Competition\2026 - EmiratesSkills\6. Training\5. Training Sessions\4. Lidar\lidar\src\main\cpp\Lidar.cpp: In member function 'void Lidar::readLidar()':
+C:\Users\felip\OneDrive\Competition\2026 - EmiratesSkills\6. Training\5. Training Sessions\4. Lidar\lidar\src\main\cpp\Lidar.cpp:105:17: warning: unused variable 'intensity' [-Wunused-variable]
+         uint8_t intensity = sample_data[i * 3 + 0]; // Si(1) Intensity
+                 ^~~~~~~~~
+C:\Users\felip\OneDrive\Competition\2026 - EmiratesSkills\6. Training\5. Training Sessions\4. Lidar\lidar\src\main\cpp\Lidar.cpp:80:13: warning: unused variable 'CT' [-Wunused-variable]
+     uint8_t CT  = header[0];    // Scanning frequency & package type
+             ^~
+C:\Users\felip\OneDrive\Competition\2026 - EmiratesSkills\6. Training\5. Training Sessions\4. Lidar\lidar\src\main\cpp\Lidar.cpp:85:14: warning: unused variable 'CS' [-Wunused-variable]
+     uint16_t CS  = header[6] | (header[7] << 8);    // Check code
+              ^~
+
+compiling Robot.cpp successful.
+
+Finished compileFrcUserProgramReleaseExecutableFrcUserProgramCpp, see full log file:///C:/Users/felip/OneDrive/Competition/2026%20-%20EmiratesSkills/6.%20Training/5.%20Training%20Sessions/4.%20Lidar/lidar/build/tmp/compileFrcUserProgramReleaseExecutableFrcUserProgramCpp/output.txt.

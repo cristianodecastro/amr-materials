@@ -1,0 +1,25 @@
+See file:///C:/Users/felip/OneDrive/Competition/2026%20-%20EmiratesSkills/6.%20Training/5.%20Training%20Sessions/5.%20Robot%20Vision/Movement%20+%20OMS%20+%20Vision/build/tmp/compileFrcUserProgramReleaseExecutableFrcUserProgramCpp/output.txt for all output for compileFrcUserProgramReleaseExecutableFrcUserProgramCpp.
+compiling Functions.cpp successful.
+
+compiling Oms.cpp successful.
+
+compiling Hardware.cpp successful.
+
+compiling Movement.cpp successful.
+C:\Users\felip\OneDrive\Competition\2026 - EmiratesSkills\6. Training\5. Training Sessions\5. Robot Vision\Movement + OMS + Vision\src\main\cpp\Movement.cpp: In member function 'void Movement::PositionDriver(double, double, double)':
+C:\Users\felip\OneDrive\Competition\2026 - EmiratesSkills\6. Training\5. Training Sessions\5. Robot Vision\Movement + OMS + Vision\src\main\cpp\Movement.cpp:49:16: warning: unused variable 'delta_th' [-Wunused-variable]
+         double delta_th = vth * delta_time;
+                ^~~~~~~~
+C:\Users\felip\OneDrive\Competition\2026 - EmiratesSkills\6. Training\5. Training Sessions\5. Robot Vision\Movement + OMS + Vision\src\main\cpp\Movement.cpp: In member function 'void Movement::line_align(std::__cxx11::string)':
+C:\Users\felip\OneDrive\Competition\2026 - EmiratesSkills\6. Training\5. Training Sessions\5. Robot Vision\Movement + OMS + Vision\src\main\cpp\Movement.cpp:269:10: warning: variable 'cobra_l' set but not used [-Wunused-but-set-variable]
+     bool cobra_l  = false;
+          ^~~~~~~
+C:\Users\felip\OneDrive\Competition\2026 - EmiratesSkills\6. Training\5. Training Sessions\5. Robot Vision\Movement + OMS + Vision\src\main\cpp\Movement.cpp:270:10: warning: variable 'cobra_r' set but not used [-Wunused-but-set-variable]
+     bool cobra_r  = false;
+          ^~~~~~~
+
+compiling Robot.cpp successful.
+
+compiling Camera.cpp successful.
+
+Finished compileFrcUserProgramReleaseExecutableFrcUserProgramCpp, see full log file:///C:/Users/felip/OneDrive/Competition/2026%20-%20EmiratesSkills/6.%20Training/5.%20Training%20Sessions/5.%20Robot%20Vision/Movement%20+%20OMS%20+%20Vision/build/tmp/compileFrcUserProgramReleaseExecutableFrcUserProgramCpp/output.txt.
