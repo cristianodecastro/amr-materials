@@ -13,27 +13,25 @@ void ClearOldTelemetry(nt::NetworkTable& table) {
 }
 void Robot::RobotInit() {
   frc::LiveWindow::GetInstance()->DisableAllTelemetry();
-  camera_.Start();
-  if (!localization_config::ENABLE_DETAILED_TELEMETRY) {
-    auto dashboard=nt::NetworkTableInstance::GetDefault().GetTable("SmartDashboard");
-    ClearOldTelemetry(*dashboard->GetSubTable("Diagnostics"));
-    ClearOldTelemetry(*dashboard->GetSubTable("Localization"));
-  }
+  // Clear old published entries and tab metadata before building the two tabs.
+  auto network=nt::NetworkTableInstance::GetDefault();
+  ClearOldTelemetry(*network.GetTable("Shuffleboard"));
+  ClearOldTelemetry(*network.GetTable("SmartDashboard"));
+  subsystem_.InitializeDashboard();
   frc::Shuffleboard::Update();
-  frc::Shuffleboard::SelectTab("Teleop");
+  frc::Shuffleboard::SelectTab("Motion");
 }
 void Robot::RobotPeriodic() {
   frc2::CommandScheduler::GetInstance().Run();
-  camera_.Periodic();
 }
 void Robot::DisabledInit() { subsystem_.StopAll(); }
 void Robot::AutonomousInit() {
   subsystem_.EnterAutonomous();
-  frc::Shuffleboard::SelectTab(subsystem_.HasSimpleTaskSelection()?"Simple tasks":"Autonomous");
+  frc::Shuffleboard::SelectTab("Motion");
 }
 void Robot::TeleopInit() {
   subsystem_.StopAll();
-  frc::Shuffleboard::SelectTab("Teleop");
+  frc::Shuffleboard::SelectTab("Motion");
 }
 void Robot::TestInit() { subsystem_.StopAll(); }
 

@@ -5,6 +5,24 @@
 #include <string>
 #include "RobotConfig.h"
 
+inline IrReading SharpIrFromVoltage(double voltage) {
+  IrReading reading;
+  // Keep raw finite voltage visible even when it cannot yield a valid range.
+  if (!std::isfinite(voltage)) return reading;
+  reading.voltage=voltage;
+  if (voltage<=0 || voltage>localization_config::IR_MAX_INPUT_V) return reading;
+  // Studica's GP2Y0A21 approximation is 27.726*V^-1.2045 in CENTIMETRES.
+  // Convert exactly once to mm. Do not clamp an invalid range to a valid edge.
+  const double distance=277.26*std::pow(voltage,-1.2045);
+  if (!std::isfinite(distance) || distance<localization_config::IR_MIN_RANGE_MM ||
+      distance>localization_config::IR_MAX_RANGE_MM) return reading;
+  reading.distanceMM=distance;
+  reading.valid=true;
+  // The physical response is ambiguous below 100 mm: voltage alone cannot
+  // reliably detect every too-close target or a floating/disconnected input.
+  return reading;
+}
+
 // Cobra line readings and calibration checks.
 // Positive error: tape lies LEFT of array center. Calibration supports either
 // light or dark tape; no assumed voltage polarity.
@@ -57,10 +75,19 @@ class CobraCheck {
       start_=lastSample_=now; samples_=0;
       for (int i=0;i<4;++i) { sum_[i]=0; minimum_[i]=1e9; maximum_[i]=-1e9; }
     }
-    if (!VoltagesValid()) {
-      capture_=0; status_="Invalid voltage: check Cobra power, J1/I2C cable and supply"; return;
+    const bool recovered=!readingWasValid_ && VoltagesValid();
+    readingWasValid_=VoltagesValid();
+    if (!readingWasValid_) {
+      capture_=0;
+      status_=reading_.communicationValid?"Invalid Cobra voltage: check sensor power and reference voltage":
+          "No Cobra I2C response: check analog module J1, power and VMX I2C cable";
+      return;
     }
-    if (!capture_) return;
+    if (!capture_) {
+      if (recovered) status_=Ready()?"Ready: sweep tape across CH0..3; green means black":
+          "I2C responding: capture WHITE floor and BLACK tape under all four sensors";
+      return;
+    }
     if (now<lastSample_ || now-lastSample_>0.20) {
       capture_=0; status_="Capture cancelled: readings interrupted; retry"; return;
     }
@@ -89,9 +116,10 @@ class CobraCheck {
     status_="Ready: sweep tape across CH0..3; green means black";
   }
   bool VoltagesValid() const {
+    if (!reading_.communicationValid) return false;
     for (double v:reading_.volts)
       if (!std::isfinite(v) || v<0 || v>autonomous_config::COBRA_REFERENCE_V+0.05) return false;
-    return true; // electrical range only; the vendor API exposes no I2C ACK flag
+    return true;
   }
   bool ChannelCalibrated(int i) const {
     return haveWhite_ && haveBlack_ && std::fabs(black_[i]-white_[i])>=0.30;
@@ -101,9 +129,18 @@ class CobraCheck {
     for (int i=0;i<4;++i) if (!ChannelCalibrated(i)) return false;
     return true;
   }
+  bool Capturing() const { return capture_!=0; }
   bool IsBlack(int i) const {
     return Ready() && VoltagesValid() &&
         (reading_.volts[i]-white_[i])/(black_[i]-white_[i])>=0.5;
+  }
+  double BlackLevel(int i) const {
+    if (i<0 || i>=4 || !Ready() || !VoltagesValid()) return -1;
+    return std::max(0.0,std::min(1.0,(reading_.volts[i]-white_[i])/(black_[i]-white_[i])));
+  }
+  bool ChannelReadingValid(int i) const {
+    return i>=0 && i<4 && reading_.communicationValid && std::isfinite(reading_.volts[i]) &&
+        reading_.volts[i]>=0 && reading_.volts[i]<=autonomous_config::COBRA_REFERENCE_V+0.05;
   }
   double White(int i) const { return haveWhite_?white_[i]:-1; }
   double Black(int i) const { return haveBlack_?black_[i]:-1; }
@@ -111,6 +148,7 @@ class CobraCheck {
  private:
   LineReading reading_;
   bool haveWhite_=false,haveBlack_=false;
+  bool readingWasValid_=false;
   int capture_=0,samples_=0;
   double start_=0,lastSample_=0;
   double white_[4]={},black_[4]={},sum_[4]={},minimum_[4]={},maximum_[4]={};

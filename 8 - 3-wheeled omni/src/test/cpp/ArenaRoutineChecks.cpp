@@ -1,5 +1,6 @@
 #include "Autonomous.h"
 #include "TeleopControl.h"
+#include "Sensors.h"
 
 #include <cmath>
 #include <limits>
@@ -493,6 +494,75 @@ void FiveColourCardsKeepNamesAndReplaceOnlyTheirReference() {
   REQUIRE_ARENA(reloaded.roi.x==260 && reloaded.roi.y==200 && reloaded.roi.width==100 && reloaded.roi.height==50);
   std::remove(path.c_str());
 }
+void SharpAnalogConversionAndValidity() {
+  const auto oneVolt=SharpIrFromVoltage(1);
+  REQUIRE_ARENA(oneVolt.valid && Near(oneVolt.distanceMM,277.26)); // official cm -> mm conversion
+  const auto halfVolt=SharpIrFromVoltage(0.5),twoVolts=SharpIrFromVoltage(2);
+  REQUIRE_ARENA(halfVolt.valid && twoVolts.valid);
+  REQUIRE_ARENA(halfVolt.distanceMM>630 && halfVolt.distanceMM<645);
+  REQUIRE_ARENA(twoVolts.distanceMM>120 && twoVolts.distanceMM<121);
+  REQUIRE_ARENA(halfVolt.distanceMM>oneVolt.distanceMM && oneVolt.distanceMM>twoVolts.distanceMM);
+  for (double target:{101.0,200.0,400.0,600.0,799.0}) {
+    const double voltage=std::pow(target/277.26,-1/1.2045);
+    const auto reading=SharpIrFromVoltage(voltage);
+    REQUIRE_ARENA(reading.valid && Near(reading.distanceMM,target));
+    REQUIRE_ARENA(Near(reading.voltage,voltage));
+  }
+  for (double voltage:{-1.0,0.0,0.01,0.4,2.5,5.0,5.1,1e-300,
+      std::numeric_limits<double>::infinity(),std::numeric_limits<double>::quiet_NaN()}) {
+    const auto reading=SharpIrFromVoltage(voltage);
+    REQUIRE_ARENA(!reading.valid && reading.distanceMM==-1);
+    REQUIRE_ARENA(std::isfinite(reading.voltage)); // dashboard must never receive NaN/Inf
+  }
+  REQUIRE_ARENA(Near(SharpIrFromVoltage(0.4).voltage,0.4)); // invalid range retains diagnostic voltage
+}
+void CobraValidityAndFreshSurfaceCalibration() {
+  CobraCheck check;
+  LineReading reading;
+  check.Update(reading,0,true,false,false);
+  REQUIRE_ARENA(!check.VoltagesValid() && !check.Ready());
+  // A numeric zero is insufficient: an I2C response is required as well.
+  for (auto& voltage:reading.volts) voltage=0;
+  check.Update(reading,0.05,true,false,false);
+  REQUIRE_ARENA(!check.ChannelReadingValid(0));
+  reading.communicationValid=true;
+  const double white[4]={4,1,3,2},black[4]={0.5,4,1,4.5}; // either voltage polarity
+  for (int i=0;i<4;++i) reading.volts[i]=white[i];
+  for (int tick=0;tick<=16;++tick)
+    check.Update(reading,0.1+tick*0.05,true,tick==0,false);
+  REQUIRE_ARENA(check.VoltagesValid() && !check.Ready() && !check.Capturing());
+  for (int i=0;i<4;++i) REQUIRE_ARENA(Near(check.White(i),white[i]));
+  for (int i=0;i<4;++i) reading.volts[i]=black[i];
+  for (int tick=0;tick<=16;++tick)
+    check.Update(reading,1+tick*0.05,true,false,tick==0);
+  REQUIRE_ARENA(check.Ready());
+  for (int i=0;i<4;++i) REQUIRE_ARENA(check.ChannelReadingValid(i) && check.IsBlack(i));
+  reading.volts[0]=white[0]; reading.volts[2]=white[2];
+  check.Update(reading,1.85,true,false,false);
+  REQUIRE_ARENA(!check.IsBlack(0) && check.IsBlack(1) && !check.IsBlack(2) && check.IsBlack(3));
+  reading.communicationValid=false;
+  check.Update(reading,1.9,true,false,false);
+  REQUIRE_ARENA(!check.VoltagesValid() && !check.IsBlack(1));
+  for (int i=0;i<4;++i) REQUIRE_ARENA(!check.ChannelReadingValid(i));
+  reading.communicationValid=true;
+  check.Update(reading,1.95,true,false,false);
+  REQUIRE_ARENA(check.Status().find("Ready")!=std::string::npos && check.IsBlack(1));
+  reading.volts[0]=5.2;
+  check.Update(reading,2,true,false,false);
+  REQUIRE_ARENA(!check.VoltagesValid() && !check.ChannelReadingValid(0) && check.ChannelReadingValid(1));
+  reading.volts[0]=white[0];
+  check.Update(reading,2.05,true,true,false);
+  check.Update(reading,2.1,false,false,false); // enabling cancels sampling
+  REQUIRE_ARENA(!check.Capturing() && !check.Ready());
+  check.Update(reading,2.15,true,true,true);
+  REQUIRE_ARENA(!check.Capturing());
+  CobraCheck lowContrast;
+  for (auto& voltage:reading.volts) voltage=2;
+  for (int tick=0;tick<=16;++tick) lowContrast.Update(reading,3+tick*0.05,true,tick==0,false);
+  for (auto& voltage:reading.volts) voltage=2.1;
+  for (int tick=0;tick<=16;++tick) lowContrast.Update(reading,4+tick*0.05,true,false,tick==0);
+  REQUIRE_ARENA(!lowContrast.Ready() && !lowContrast.IsBlack(0));
+}
 void SimpleTasksAndColourChecks() {
   for (auto task:{SimpleTask::Forward1000,SimpleTask::Backward1000,SimpleTask::Ccw90,
       SimpleTask::Cw90,SimpleTask::Ccw180,SimpleTask::Cw180})
@@ -638,6 +708,158 @@ void AutonomousDistanceScaleDoesNotChangeTeleopOrHeading() {
     REQUIRE_ARENA(Near(sideways?autonomous.Pose().y_MM:autonomous.Pose().x_MM,direction*1000));
   }
 }
+TapeRoutineInput TapeInput() {
+  TapeRoutineInput in;
+  in.motion={{950,900,0},0,0.02,true,true,false,false,0}; // pre-reference pose is deliberately unrelated
+  in.leftRangeMM=150; in.rearRangeMM=100;
+  in.leftTime=in.rearTime=in.cobraTime=0;
+  in.leftValid=in.rearValid=in.cobraCalibrated=true;
+  in.line.communicationValid=true;
+  for (int i=0;i<4;++i) { in.line.volts[i]=0.5; in.blackLevel[i]=0; }
+  return in;
+}
+void FreshTapeTick(TapeRoutineInput& in) {
+  in.motion.now+=in.motion.dt;
+  in.leftTime=in.rearTime=in.cobraTime=in.motion.now;
+}
+void AnchorTapeRoutine(TapeAlignmentRoutine& routine,TapeRoutineInput& in) {
+  routine.Enter(); in.motion.startRequested=true; routine.Update(in); in.motion.startRequested=false;
+  for (int i=0;i<3;++i) { FreshTapeTick(in); routine.Update(in); }
+  REQUIRE_ARENA(routine.NeedsPoseReset());
+  in.motion.pose=routine.GetReferencePose();
+  routine.ConfirmPoseReset(in.motion.now);
+  REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::DriveToPoint);
+}
+void ReachTapeWaypoint(TapeAlignmentRoutine& routine,TapeRoutineInput& in) {
+  AnchorTapeRoutine(routine,in);
+  in.motion.pose={250,500,robot_geometry::PI/2};
+  for (int tick=0;tick<30 && routine.GetState()==TapeAlignmentRoutine::State::DriveToPoint;++tick) {
+    FreshTapeTick(in); routine.Update(in);
+  }
+  REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::SearchRight);
+}
+void TapeReferenceRejectsInvalidStaleAndRepeatedSamples() {
+  RobotPose pose;
+  REQUIRE_ARENA(TapeAlignmentRoutine::PoseFromWalls(150,100,pose));
+  REQUIRE_ARENA(Near(pose.x_MM,300) && Near(pose.y_MM,275) && Near(pose.headingRad,robot_geometry::PI/2));
+  REQUIRE_ARENA(!TapeAlignmentRoutine::PoseFromWalls(90,100,pose));
+  REQUIRE_ARENA(!TapeAlignmentRoutine::PoseFromWalls(150,-1,pose));
+  REQUIRE_ARENA(!TapeAlignmentRoutine::PoseFromWalls(std::numeric_limits<double>::quiet_NaN(),100,pose));
+  TapeAlignmentRoutine routine;
+  auto in=TapeInput(); routine.Enter();
+  in.motion.startRequested=true; routine.Update(in); in.motion.startRequested=false;
+  in.leftValid=false;
+  for (int i=0;i<4;++i) { FreshTapeTick(in); routine.Update(in); }
+  REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::Reference && !routine.NeedsPoseReset());
+  REQUIRE_ARENA(routine.GetForwardMMps()==0 && routine.GetLeftMMps()==0);
+  in.leftValid=true; FreshTapeTick(in); routine.Update(in); // first valid pair
+  const double cachedRearTime=in.rearTime;
+  for (int i=0;i<7;++i) {
+    FreshTapeTick(in); in.rearTime=cachedRearTime; routine.Update(in);
+  }
+  REQUIRE_ARENA(!routine.NeedsPoseReset()); // never average repeated rear samples
+  for (int i=0;i<2;++i) { FreshTapeTick(in); routine.Update(in); }
+  REQUIRE_ARENA(routine.NeedsPoseReset()); // cached-frame waits did not clear the valid first pair
+  REQUIRE_ARENA(Near(routine.GetReferencePose().x_MM,300));
+  routine.ConfirmPoseReset(in.motion.now);
+  in.motion.pose=routine.GetReferencePose();
+  FreshTapeTick(in); routine.Update(in);
+  REQUIRE_ARENA(routine.GetForwardMMps()>0 && routine.GetLeftMMps()>0); // north-west toward (250,500)
+  routine.Abort();
+  REQUIRE_ARENA(!routine.IsRunning() && routine.GetForwardMMps()==0 && routine.GetYawRadps()==0);
+  in=TapeInput(); routine.Enter(); in.cobraCalibrated=false; in.motion.startRequested=true; routine.Update(in);
+  REQUIRE_ARENA(!routine.IsRunning());
+  in=TapeInput(); AnchorTapeRoutine(routine,in);
+  FreshTapeTick(in); in.cobraTime=in.motion.now-1; routine.Update(in);
+  REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::Fault && routine.GetLeftMMps()==0);
+}
+void TapeEqualityRequiresActualTapeAndStableStop() {
+  TapeAlignmentRoutine routine; auto in=TapeInput(); ReachTapeWaypoint(routine,in);
+  FreshTapeTick(in); routine.Update(in);
+  REQUIRE_ARENA(routine.GetLeftMMps()<0 && routine.GetForwardMMps()==0); // robot-right
+  REQUIRE_ARENA(std::fabs(routine.GetLeftMMps())<=tape_test_config::SCAN_ACCEL_MMPS2*in.motion.dt+1e-6);
+  REQUIRE_ARENA(routine.GetState()!=TapeAlignmentRoutine::State::VerifyTape); // white == white is not tape
+  for (int i=0;i<4;++i) { in.blackLevel[i]=1; in.line.volts[i]=4.5; }
+  FreshTapeTick(in); routine.Update(in);
+  REQUIRE_ARENA(routine.GetState()!=TapeAlignmentRoutine::State::VerifyTape); // all-black is not a centred stripe
+  in.blackLevel[0]=in.blackLevel[3]=0; in.line.volts[0]=in.line.volts[3]=0.5;
+  FreshTapeTick(in); routine.Update(in);
+  REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::VerifyTape);
+  REQUIRE_ARENA(routine.GetForwardMMps()==0 && routine.GetLeftMMps()==0);
+  for (int tick=0;tick<6;++tick) { FreshTapeTick(in); routine.Update(in); }
+  REQUIRE_ARENA(routine.GetState()!=TapeAlignmentRoutine::State::Complete);
+  in.blackLevel[1]=0.5; in.line.volts[1]=2.5; // disturbed while settling: resume correction
+  FreshTapeTick(in); routine.Update(in);
+  REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::CenterTape && routine.GetLeftMMps()<0);
+  in.blackLevel[1]=1; in.line.volts[1]=4.5;
+  for (int tick=0;tick<22;++tick) { FreshTapeTick(in); routine.Update(in); }
+  REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::Complete && routine.GetLeftMMps()==0);
+}
+void TapeLimitsAndCenterDirection() {
+  TapeAlignmentRoutine routine; auto in=TapeInput(); ReachTapeWaypoint(routine,in);
+  in.blackLevel[1]=0.2; in.blackLevel[2]=0.9; in.line.volts[1]=1.3; in.line.volts[2]=4.1;
+  FreshTapeTick(in); routine.Update(in);
+  REQUIRE_ARENA(routine.GetLeftMMps()<0); // more tape on CH2 -> right
+  in.blackLevel[1]=0.9; in.blackLevel[2]=0.2; in.line.volts[1]=4.1; in.line.volts[2]=1.3;
+  for (int tick=0;tick<8;++tick) { FreshTapeTick(in); routine.Update(in); }
+  REQUIRE_ARENA(routine.GetLeftMMps()>0); // more tape on CH1 -> left, after ramp reversal
+  in.motion.pose.x_MM+=tape_test_config::SCAN_MAX_TRAVEL_MM+1;
+  FreshTapeTick(in); routine.Update(in);
+  REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::Fault && routine.GetLeftMMps()==0);
+  in=TapeInput(); ReachTapeWaypoint(routine,in);
+  in.motion.now+=tape_test_config::SCAN_TIMEOUT_S+1;
+  FreshTapeTick(in); routine.Update(in);
+  REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::Fault);
+  in=TapeInput(); AnchorTapeRoutine(routine,in);
+  in.motion.stopRequested=true; FreshTapeTick(in); routine.Update(in);
+  REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::Aborted && routine.GetForwardMMps()==0);
+}
+void SimulateCornerToWaypointToTape() {
+  TapeAlignmentRoutine routine; auto in=TapeInput();
+  routine.Enter(); in.motion.startRequested=true; routine.Update(in); in.motion.startRequested=false;
+  bool drove=false,scanned=false,matched=false;
+  const double tapeX=330;
+  double previousForward=0,previousLeft=0,previousYaw=0;
+  for (int tick=1;tick<=2500 && routine.GetState()!=TapeAlignmentRoutine::State::Complete;++tick) {
+    in.motion.now=tick*0.02;
+    // Sensor streams have independent real rates: ~20 Hz I2C/IR and 5 Hz sonar.
+    if (tick%3==0) {
+      in.leftTime=in.cobraTime=in.motion.now;
+      for (int ch=0;ch<4;++ch) {
+        const double sensorX=in.motion.pose.x_MM+(ch-1.5)*9;
+        const double level=std::max(0.0,std::min(1.0,(12-std::fabs(sensorX-tapeX))/4));
+        in.blackLevel[ch]=level; in.line.volts[ch]=0.5+4*level;
+      }
+    }
+    if (tick%10==0) in.rearTime=in.motion.now;
+    in.motion.stationary=std::hypot(previousForward,previousLeft)<=8 && std::fabs(previousYaw)<=0.5*robot_geometry::PI/180;
+    in.motion.yawRateRadps=previousYaw;
+    routine.Update(in);
+    if (routine.NeedsPoseReset()) {
+      in.motion.pose=routine.GetReferencePose(); routine.ConfirmPoseReset(in.motion.now);
+    }
+    if (routine.GetState()==TapeAlignmentRoutine::State::Fault)
+      throw std::runtime_error("Tape routine simulation: "+routine.GetStatus());
+    drove=drove || routine.GetState()==TapeAlignmentRoutine::State::DriveToPoint;
+    scanned=scanned || routine.GetState()==TapeAlignmentRoutine::State::SearchRight;
+    matched=matched || routine.GetState()==TapeAlignmentRoutine::State::VerifyTape;
+    const double forward=routine.GetForwardMMps(),left=routine.GetLeftMMps(),yaw=routine.GetYawRadps();
+    const double theta=in.motion.pose.headingRad+yaw*0.01;
+    in.motion.pose.x_MM+=(std::cos(theta)*forward-std::sin(theta)*left)*0.02;
+    in.motion.pose.y_MM+=(std::sin(theta)*forward+std::cos(theta)*left)*0.02;
+    in.motion.pose.headingRad=robot_geometry::Wrap(in.motion.pose.headingRad+yaw*0.02);
+    previousForward=forward; previousLeft=left; previousYaw=yaw;
+  }
+  REQUIRE_ARENA(drove && scanned && matched);
+  REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::Complete);
+  REQUIRE_ARENA(std::fabs(in.motion.pose.x_MM-tapeX)<10 && std::fabs(in.motion.pose.y_MM-500)<=15);
+  REQUIRE_ARENA(Near(in.motion.pose.headingRad,robot_geometry::PI/2));
+  REQUIRE_ARENA(routine.GetForwardMMps()==0 && routine.GetLeftMMps()==0 && routine.GetYawRadps()==0);
+}
+void TapeRoutineChecks() {
+  TapeReferenceRejectsInvalidStaleAndRepeatedSamples(); TapeEqualityRequiresActualTapeAndStableStop();
+  TapeLimitsAndCenterDirection(); SimulateCornerToWaypointToTape();
+}
 } // namespace
 
 #ifdef ARENA_TEST_STANDALONE
@@ -652,8 +874,11 @@ int main() {
     Simulate(true,true,true,0.25);
     SimpleTasksAndColourChecks();
     EncoderGyroOdometryChecks();
+    CobraValidityAndFreshSurfaceCalibration();
+    SharpAnalogConversionAndValidity();
+    TapeRoutineChecks();
     AutonomousDistanceScaleDoesNotChangeTeleopOrHeading();
-    std::cout<<"PASS: direct encoder/gyro odometry, forward/inverse wheel projections, timing jitter and sparse counts, exact turn integration; motion tasks, arena route and colour calibration regressions\n";
+    std::cout<<"PASS: corner reference -> (250,500) -> Cobra tape alignment; sensor validity/calibration, odometry, motion and colour regressions\n";
   } catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }
 }
 #else
@@ -675,4 +900,7 @@ TEST(ArenaRoutine, SlowerMotorResponseSimulation) { EXPECT_NO_THROW(Simulate(tru
 TEST(SimpleTasks, MotionAndColour) { EXPECT_NO_THROW(SimpleTasksAndColourChecks()); }
 TEST(Odometry, EncoderGyroAndTiming) { EXPECT_NO_THROW(EncoderGyroOdometryChecks()); }
 TEST(Odometry, AutonomousOnlyDistanceScale) { EXPECT_NO_THROW(AutonomousDistanceScaleDoesNotChangeTeleopOrHeading()); }
+TEST(Sensing, CobraValidityAndFreshSurfaceCalibration) { EXPECT_NO_THROW(CobraValidityAndFreshSurfaceCalibration()); }
+TEST(Sensing, SharpAnalogConversionAndValidity) { EXPECT_NO_THROW(SharpAnalogConversionAndValidity()); }
+TEST(Autonomous, CornerReferenceAndTapeAlignment) { EXPECT_NO_THROW(TapeRoutineChecks()); }
 #endif

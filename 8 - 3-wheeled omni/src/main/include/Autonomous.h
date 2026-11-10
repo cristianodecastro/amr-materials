@@ -42,6 +42,51 @@ class HeadingMotionControl {
   int direction_=0;
 };
 
+struct TapeRoutineInput {
+  ArenaTestInput motion;
+  double leftRangeMM=-1,rearRangeMM=-1,leftTime=-1,rearTime=-1,cobraTime=-1;
+  bool leftValid=false,rearValid=false,cobraCalibrated=false;
+  LineReading line;
+  double blackLevel[4]={-1,-1,-1,-1}; // CH0 leftmost -> CH3 rightmost
+};
+
+class TapeAlignmentRoutine {
+ public:
+  enum class State { Waiting, Reference, ReferenceReady, DriveToPoint, SearchRight,
+    CenterTape, VerifyTape, Complete, Fault, Aborted };
+  void Enter();
+  void Update(const TapeRoutineInput& in);
+  void ConfirmPoseReset(double now);
+  void Abort();
+  void Fail(const std::string& reason);
+  bool IsRunning() const { return state_>=State::Reference && state_<=State::VerifyTape; }
+  bool NeedsPoseReset() const { return state_==State::ReferenceReady; }
+  State GetState() const { return state_; }
+  const RobotPose& GetReferencePose() const { return referencePose_; }
+  const std::string& GetStatus() const { return status_; }
+  double GetForwardMMps() const { return forward_; }
+  double GetLeftMMps() const { return left_; }
+  double GetYawRadps() const { return yaw_; }
+  double GetScanTravelMM() const { return scanTravel_; }
+  static bool PoseFromWalls(double leftGap,double rearGap,RobotPose& pose);
+ private:
+  void Stop() { forward_=left_=yaw_=0; }
+  void Begin(const TapeRoutineInput& in);
+  void SampleReference(const TapeRoutineInput& in);
+  bool CobraHealthy(const TapeRoutineInput& in) const;
+  bool Centered(const TapeRoutineInput& in) const;
+  void LimitTranslation(double oldForward,double oldLeft,double acceleration,double dt);
+  State state_=State::Waiting;
+  std::string status_="Calibrate Cobra while Disabled; select Autonomous, enable, then Start tape test";
+  RobotPose referencePose_{0,0,0},scanStart_{0,0,0},progressPose_{0,0,0};
+  double forward_=0,left_=0,yaw_=0,stateTime_=0,scanTime_=0,settleTime_=-1,lostTime_=-1;
+  double progressTime_=0,scanTravel_=0;
+  double lastLeftTime_=-1,lastRearTime_=-1;
+  double sumLeft_=0,sumRear_=0,minLeft_=0,maxLeft_=0,minRear_=0,maxRear_=0;
+  int referenceSamples_=0;
+  HeadingMotionControl heading_;
+};
+
 enum class SimpleTask { None, Forward1000, Backward1000, Ccw90, Cw90, Ccw180, Cw180, Colour };
 const char* SimpleTaskName(SimpleTask task);
 // Relative tasks snapshot their start; there are no arena/map prerequisites.

@@ -139,7 +139,7 @@ ArenaRayHit ArenaMap::Raycast(ArenaPoint origin, double angle) const {
 
 ArenaRayHit ArenaMap::SonarHit(int sensor,const RobotPose& pose,double offset) const {
   if (sensor<0 || sensor>=4 || !robot_geometry::Finite(pose)) return {};
-  const auto& mount=localization_config::SONARS[sensor];
+  const auto& mount=localization_config::RANGE_SENSOR_MOUNTS[sensor];
   const double c=std::cos(pose.headingRad),s=std::sin(pose.headingRad);
   return Raycast({pose.x_MM+c*mount.mountX_MM-s*mount.mountY_MM,
       pose.y_MM+s*mount.mountX_MM+c*mount.mountY_MM},
@@ -368,6 +368,193 @@ std::string HeadingMotionControl::CheckFeedback(double previousRequest,double me
           "Yaw direction mismatch: commanded CCW, gyro reported CW - stopped";
   }
   return {};
+}
+
+namespace tt=tape_test_config;
+namespace {
+bool FreshSample(double now,double stamp,double maximumAge) {
+  return std::isfinite(stamp) && stamp>=0 && now>=stamp && now-stamp<=maximumAge;
+}
+}
+void TapeAlignmentRoutine::Enter() {
+  *this=TapeAlignmentRoutine{};
+}
+void TapeAlignmentRoutine::Abort() {
+  Stop();
+  if (IsRunning() || state_==State::Waiting) {
+    state_=State::Aborted; status_="Stopped; return to the reference corner before starting again";
+  }
+}
+void TapeAlignmentRoutine::Fail(const std::string& reason) {
+  Stop(); state_=State::Fault; status_=reason;
+}
+bool TapeAlignmentRoutine::PoseFromWalls(double leftGap,double rearGap,RobotPose& pose) {
+  if (!std::isfinite(leftGap) || !std::isfinite(rearGap) ||
+      leftGap<localization_config::IR_MIN_RANGE_MM || leftGap>localization_config::IR_MAX_RANGE_MM ||
+      rearGap<localization_config::SONAR_MIN_RANGE_MM || rearGap>localization_config::SONAR_MAX_RANGE_MM) return false;
+  const double theta=robot_geometry::Radians(tt::START_HEADING_DEG),c=std::cos(theta),s=std::sin(theta);
+  const auto& left=localization_config::RANGE_SENSOR_MOUNTS[0];
+  const auto& rear=localization_config::RANGE_SENSOR_MOUNTS[1];
+  const double leftRay=std::cos(theta+robot_geometry::Radians(left.beamAngleDeg));
+  const double rearRay=std::sin(theta+robot_geometry::Radians(rear.beamAngleDeg));
+  // These particular walls require left looking west and rear looking south.
+  if (leftRay> -0.98 || rearRay> -0.98) return false;
+  pose={tt::LEFT_WALL_X_MM-(c*left.mountX_MM-s*left.mountY_MM)-leftRay*leftGap,
+      tt::REAR_WALL_Y_MM-(s*rear.mountX_MM+c*rear.mountY_MM)-rearRay*rearGap,
+      robot_geometry::Wrap(theta)};
+  return robot_geometry::Finite(pose) && pose.x_MM>=0 && pose.x_MM<=localization_config::ARENA_WIDTH_MM &&
+      pose.y_MM>=0 && pose.y_MM<=localization_config::ARENA_HEIGHT_MM;
+}
+bool TapeAlignmentRoutine::CobraHealthy(const TapeRoutineInput& in) const {
+  if (!in.cobraCalibrated || !in.line.communicationValid ||
+      !FreshSample(in.motion.now,in.cobraTime,localization_config::SENSOR_STALE_S)) return false;
+  for (int i=0;i<4;++i) {
+    if (!std::isfinite(in.line.volts[i]) || in.line.volts[i]<0 ||
+        in.line.volts[i]>autonomous_config::COBRA_REFERENCE_V+0.05 ||
+        !std::isfinite(in.blackLevel[i]) || in.blackLevel[i]<0 || in.blackLevel[i]>1) return false;
+  }
+  return true;
+}
+bool TapeAlignmentRoutine::Centered(const TapeRoutineInput& in) const {
+  const auto& b=in.blackLevel;
+  // Equality alone also occurs on all-white/all-black background. Require a
+  // dark centre, lighter outside, and agreement of BOTH raw and calibrated data.
+  return b[1]>=tt::CENTER_BLACK_MIN && b[2]>=tt::CENTER_BLACK_MIN &&
+      std::min(b[1],b[2])-0.5*(b[0]+b[3])>=tt::CENTER_OUTER_CONTRAST &&
+      std::fabs(b[1]-b[2])<=tt::CENTER_LEVEL_TOLERANCE &&
+      std::fabs(in.line.volts[1]-in.line.volts[2])<=tt::CENTER_VOLTAGE_TOLERANCE_V;
+}
+void TapeAlignmentRoutine::Begin(const TapeRoutineInput& in) {
+  if (!in.motion.stationary) { status_="Start ignored: wait until the robot is stationary"; return; }
+  if (!CobraHealthy(in)) { status_="Start ignored: capture Cobra white/black while Disabled and check its readings"; return; }
+  Stop(); heading_.Reset(); state_=State::Reference; stateTime_=in.motion.now;
+  // All reference samples must have been acquired AFTER the Start click.
+  referenceSamples_=0; lastLeftTime_=in.leftTime; lastRearTime_=in.rearTime;
+  sumLeft_=sumRear_=0; scanTravel_=0; settleTime_=-1;
+  status_="Referencing: hold still; rear -> Y=0 wall, left -> X=0 wall";
+}
+void TapeAlignmentRoutine::SampleReference(const TapeRoutineInput& in) {
+  if (in.motion.now-stateTime_>tt::REFERENCE_TIMEOUT_S) {
+    Fail("Reference timeout: need stable valid left IR (100-800 mm gap) and rear sonar"); return;
+  }
+  const bool valid=in.motion.stationary && in.leftValid && in.rearValid &&
+      FreshSample(in.motion.now,in.leftTime,localization_config::SENSOR_STALE_S) &&
+      FreshSample(in.motion.now,in.rearTime,localization_config::SONAR_READING_STALE_S);
+  RobotPose candidate;
+  if (!valid || !PoseFromWalls(in.leftRangeMM,in.rearRangeMM,candidate)) {
+    referenceSamples_=0; sumLeft_=sumRear_=0;
+    status_="Waiting for valid reference gaps; keep left IR at least 100 mm from wall"; return;
+  }
+  // In particular, never count one cached sonar return multiple times.
+  if (in.leftTime<=lastLeftTime_ || in.rearTime<=lastRearTime_) return;
+  if (std::fabs(in.leftTime-in.rearTime)>tt::REFERENCE_MAX_PAIR_AGE_S) return;
+  lastLeftTime_=in.leftTime; lastRearTime_=in.rearTime;
+  if (referenceSamples_==0) { minLeft_=maxLeft_=in.leftRangeMM; minRear_=maxRear_=in.rearRangeMM; }
+  minLeft_=std::min(minLeft_,in.leftRangeMM); maxLeft_=std::max(maxLeft_,in.leftRangeMM);
+  minRear_=std::min(minRear_,in.rearRangeMM); maxRear_=std::max(maxRear_,in.rearRangeMM);
+  if (maxLeft_-minLeft_>tt::REFERENCE_MAX_SPREAD_MM || maxRear_-minRear_>tt::REFERENCE_MAX_SPREAD_MM) {
+    referenceSamples_=0; sumLeft_=sumRear_=0; status_="Reference readings unstable; hold still"; return;
+  }
+  sumLeft_+=in.leftRangeMM; sumRear_+=in.rearRangeMM; ++referenceSamples_;
+  if (referenceSamples_<tt::REFERENCE_SAMPLES) return;
+  if (!PoseFromWalls(sumLeft_/referenceSamples_,sumRear_/referenceSamples_,referencePose_)) {
+    Fail("Cannot calculate corner reference from these walls/heading"); return;
+  }
+  state_=State::ReferenceReady; status_="Wall reference ready; anchoring encoder/gyro pose";
+}
+void TapeAlignmentRoutine::ConfirmPoseReset(double now) {
+  if (!NeedsPoseReset()) return;
+  Stop(); heading_.Reset(); state_=State::DriveToPoint; stateTime_=progressTime_=now;
+  progressPose_=referencePose_; settleTime_=-1;
+  status_="Driving to (250,500); holding the manually aligned starting heading";
+}
+void TapeAlignmentRoutine::LimitTranslation(double oldForward,double oldLeft,double acceleration,double dt) {
+  const double df=forward_-oldForward,dl=left_-oldLeft,delta=std::hypot(df,dl),step=acceleration*dt;
+  if (delta>step) { forward_=oldForward+df*step/delta; left_=oldLeft+dl*step/delta; }
+}
+void TapeAlignmentRoutine::Update(const TapeRoutineInput& in) {
+  const auto& m=in.motion;
+  const double oldForward=forward_,oldLeft=left_,oldYaw=yaw_;
+  Stop();
+  if (m.stopRequested) { Abort(); return; }
+  if (!IsRunning() && !m.startRequested) return;
+  if (!robot_geometry::Finite(m.pose) || !std::isfinite(m.now) || !std::isfinite(m.dt) ||
+      !std::isfinite(m.yawRateRadps) || m.dt<=0 || m.dt>autonomous_config::MAX_CONTROL_GAP_S || !m.healthy) {
+    Fail("Unhealthy IMU/odometry, disconnected Control Station or stale timing - stopped"); return;
+  }
+  if (!IsRunning()) { Begin(in); return; }
+  if (!CobraHealthy(in)) { Fail("Cobra disconnected, invalid, uncalibrated or stale - stopped"); return; }
+  if (state_==State::Reference) { SampleReference(in); return; }
+  if (state_==State::ReferenceReady) return; // wait for the explicit pose-reset handshake
+  const auto yawFault=heading_.CheckFeedback(oldYaw,m.yawRateRadps,m.dt);
+  if (!yawFault.empty()) { Fail(yawFault); return; }
+  const double headingError=robot_geometry::Wrap(referencePose_.headingRad-m.pose.headingRad);
+  yaw_=heading_.Request(headingError,oldYaw,m.yawRateRadps,m.dt,true);
+  if (state_==State::DriveToPoint) {
+    if (m.now-stateTime_>tt::DRIVE_TIMEOUT_S) { Fail("Drive to (250,500) timed out - stopped"); return; }
+    const double dx=tt::TARGET.x-m.pose.x_MM,dy=tt::TARGET.y-m.pose.y_MM,distance=std::hypot(dx,dy);
+    if (distance<=tt::POSITION_TOLERANCE_MM) {
+      if (m.stationary && std::fabs(headingError)<=arena_test_config::HEADING_TOLERANCE_RAD) {
+        if (settleTime_<0) settleTime_=m.now;
+        if (m.now-settleTime_>=tt::WAYPOINT_SETTLE_S) {
+          Stop(); heading_.Reset(); scanStart_=progressPose_=m.pose;
+          scanTime_=progressTime_=m.now; scanTravel_=0; lostTime_=-1; settleTime_=-1;
+          state_=State::SearchRight; status_="At (250,500): scanning slowly to robot-right for tape";
+        }
+      } else settleTime_=-1;
+      return;
+    }
+    settleTime_=-1;
+    const double braking=std::sqrt(2*tt::DRIVE_ACCEL_MMPS2*(distance-tt::POSITION_TOLERANCE_MM));
+    const double speed=std::min(tt::DRIVE_SPEED_MMPS,std::max(tt::MIN_APPROACH_MMPS,
+        std::min(distance*tt::POSITION_KP,braking)));
+    const double c=std::cos(m.pose.headingRad),s=std::sin(m.pose.headingRad);
+    forward_=(c*dx+s*dy)*speed/distance; left_=(-s*dx+c*dy)*speed/distance;
+    LimitTranslation(oldForward,oldLeft,tt::DRIVE_ACCEL_MMPS2,m.dt);
+  } else {
+    scanTravel_=std::hypot(m.pose.x_MM-scanStart_.x_MM,m.pose.y_MM-scanStart_.y_MM);
+    if (scanTravel_>tt::SCAN_MAX_TRAVEL_MM || m.now-scanTime_>tt::SCAN_TIMEOUT_S) {
+      Fail("Tape scan limit reached without a stable CH1/CH2 match - stopped"); return;
+    }
+    if (Centered(in)) {
+      if (state_!=State::VerifyTape) { state_=State::VerifyTape; settleTime_=-1; }
+      status_="CH1/CH2 match on tape: stopped, verifying alignment";
+      if (m.stationary && std::fabs(headingError)<=arena_test_config::HEADING_TOLERANCE_RAD) {
+        if (settleTime_<0) settleTime_=m.now;
+        if (m.now-settleTime_>=tt::TAPE_SETTLE_S) {
+          Stop(); state_=State::Complete; status_="Complete: wall reference -> (250,500) -> tape centred on CH1/CH2";
+        }
+      } else settleTime_=-1;
+      return;
+    }
+    if (state_==State::VerifyTape) {
+      state_=State::CenterTape; settleTime_=-1; progressTime_=m.now; progressPose_=m.pose;
+    }
+    const double peak=std::max(in.blackLevel[1],in.blackLevel[2]);
+    if (peak>=tt::TAPE_ACQUIRE_LEVEL) {
+      state_=State::CenterTape; lostTime_=-1;
+    } else if (state_==State::CenterTape) {
+      if (lostTime_<0) lostTime_=m.now;
+      if (m.now-lostTime_>=tt::TAPE_LOST_S) { state_=State::SearchRight; lostTime_=-1; }
+    }
+    if (state_==State::SearchRight) {
+      left_=-tt::SCAN_SPEED_MMPS;
+      status_="Scanning to robot-right; equal white/background channels are ignored";
+    } else {
+      const double error=in.blackLevel[1]-in.blackLevel[2];
+      // CH0 is leftmost: more black on CH1 means tape is left of centre.
+      const double magnitude=std::min(tt::SCAN_SPEED_MMPS,
+          std::max(tt::CENTER_MIN_SPEED_MMPS,std::fabs(error)*tt::CENTER_KP_MMPS));
+      left_=error>0?magnitude:-magnitude;
+      status_="Centring on tape using CH1/CH2; holding starting heading";
+    }
+    LimitTranslation(oldForward,oldLeft,tt::SCAN_ACCEL_MMPS2,m.dt);
+  }
+  if (std::hypot(m.pose.x_MM-progressPose_.x_MM,m.pose.y_MM-progressPose_.y_MM)>=tt::PROGRESS_MM) {
+    progressPose_=m.pose; progressTime_=m.now;
+  } else if (m.now-progressTime_>tt::NO_PROGRESS_TIMEOUT_S && std::hypot(forward_,left_)>20) {
+    Fail("No motion progress: check wheels/encoders or increase the configured scan speed");
+  }
 }
 
 const char* SimpleTaskName(SimpleTask task) {

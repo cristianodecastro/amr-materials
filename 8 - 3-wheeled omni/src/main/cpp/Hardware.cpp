@@ -2,6 +2,7 @@
 #include "TeleopControl.h"
 #include <frc/RobotState.h>
 #include <frc/DriverStation.h>
+#include <hal/I2C.h>
 
 #include <algorithm>
 #include <cmath>
@@ -40,12 +41,13 @@ bool Hardware::DriveMotorMotionAllowed() const {
 
 Hardware::Hardware() {
   StopServos();
-  // Manual, staggered pings keep the four sonars from interfering. Ping()
+  // Manual, staggered pings keep the two sonars from interfering. Ping()
   // resets the echo counter and sends WPILib's 10 us active-high pulse.
   // Do not also enable the global ultrasonic automatic-mode thread.
   frc::Ultrasonic::SetAutomaticMode(false);
-  if (autonomous_config::COBRA_INSTALLED)
+  if (autonomous_config::COBRA_INSTALLED) {
     cobra_.reset(new studica::Cobra(static_cast<float>(autonomous_config::COBRA_REFERENCE_V)));
+  }
   if (manipulator_config::LIMIT_DIO[0]>=0)
     liftUpperLimit_.reset(new frc::DigitalInput(manipulator_config::LIMIT_DIO[0]));
   if (manipulator_config::LIMIT_DIO[1]>=0)
@@ -194,39 +196,50 @@ bool Hardware::IsImuCalibrating() { return imu_.IsCalibrating(); }
 
 void Hardware::PingSonar(int index) {
   switch (index) {
-    case 0: leftSonar_.Ping(); break;
+    case 0: frontSonar_.Ping(); break;
     case 1: rearSonar_.Ping(); break;
-    case 2: rightSonar_.Ping(); break;
-    case 3: frontSonar_.Ping(); break;
     default: break;
   }
 }
 
 double Hardware::GetSonarRangeMM(int index) const {
   switch (index) {
-    case 0: return leftSonar_.GetRangeMM();
+    case 0: return frontSonar_.GetRangeMM();
     case 1: return rearSonar_.GetRangeMM();
-    case 2: return rightSonar_.GetRangeMM();
-    case 3: return frontSonar_.GetRangeMM();
     default: return -1.0;
   }
 }
 
 bool Hardware::IsSonarRangeValid(int index) const {
   switch (index) {
-    case 0: return leftSonar_.IsRangeValid();
+    case 0: return frontSonar_.IsRangeValid();
     case 1: return rearSonar_.IsRangeValid();
-    case 2: return rightSonar_.IsRangeValid();
-    case 3: return frontSonar_.IsRangeValid();
     default: return false;
   }
 }
 
+IrReading Hardware::ReadIr(int index) {
+  if (index<0 || index>=localization_config::IR_COUNT) return {};
+  auto& input=index==0?leftIr_:rightIr_;
+  const double voltage=input.GetAverageVoltage();
+  if (input.StatusIsFatal()) return {};
+  return SharpIrFromVoltage(voltage);
+}
+
 LineReading Hardware::ReadLine() {
   if (!cobra_) return {};
+  // A real read verifies that the ADC responds. All-zero vendor readings alone
+  // cannot distinguish a disconnected module from a dark/low-voltage surface.
+  // Use the bus already opened by studica::Cobra. VMX HAL has one I2C resource;
+  // constructing another frc::I2C would attempt to allocate it a second time.
+  // A read does not write or change ADC configuration. Negative means aborted.
+  uint8_t response[2]={};
+  if (HAL_ReadI2C(HAL_I2C_kOnboard,autonomous_config::COBRA_I2C_ADDRESS,response,2)<0) return {};
   double volts[4];
   for (int i=0;i<4;++i) volts[i]=cobra_->GetVoltage(i);
-  return TrackLine(volts);
+  auto reading=TrackLine(volts);
+  reading.communicationValid=true;
+  return reading;
 }
 
 void Hardware::StopManipulator() {

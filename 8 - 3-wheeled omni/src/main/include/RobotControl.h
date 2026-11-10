@@ -3,21 +3,21 @@
 #include <memory>
 #include <string>
 #include <frc/DigitalInput.h>
+#include <frc/AnalogInput.h>
 #include <frc/SPI.h>
 #include <frc/Ultrasonic.h>
 #include <frc/Timer.h>
 #include <frc/Joystick.h>
 #include <frc2/command/SubsystemBase.h>
 #include <networktables/NetworkTableEntry.h>
-#include <frc/smartdashboard/SendableChooser.h>
 #include <studica/TitanQuad.h>
 #include <studica/TitanQuadEncoder.h>
 #include <studica/Cobra.h>
 #include <studica/Servo.h>
 #include "AHRS.h"
-#include "Autonomous.h"
 #include "Sensors.h"
 #include "TeleopControl.h"
+#include "Autonomous.h"
 
 // Physical IO and final output gating.
 class Hardware {
@@ -65,6 +65,7 @@ class Hardware {
   void PingSonar(int index);
   double GetSonarRangeMM(int index) const;
   bool IsSonarRangeValid(int index) const;
+  IrReading ReadIr(int index);
   LineReading ReadLine();
   void StopManipulator();
 
@@ -110,14 +111,12 @@ class Hardware {
       frontMotor_, localization_config::WHEEL_TITAN_PORT[2],
       localization_config::ENCODER_MM_PER_COUNT};
 
-  frc::Ultrasonic leftSonar_{localization_config::SONARS[0].triggerDio,
-                           localization_config::SONARS[0].echoDio};
+  frc::Ultrasonic frontSonar_{localization_config::SONARS[0].triggerDio,
+                            localization_config::SONARS[0].echoDio};
   frc::Ultrasonic rearSonar_{localization_config::SONARS[1].triggerDio,
                            localization_config::SONARS[1].echoDio};
-  frc::Ultrasonic rightSonar_{localization_config::SONARS[2].triggerDio,
-                            localization_config::SONARS[2].echoDio};
-  frc::Ultrasonic frontSonar_{localization_config::SONARS[3].triggerDio,
-                            localization_config::SONARS[3].echoDio};
+  frc::AnalogInput leftIr_{localization_config::IR_ANALOG_CHANNEL[0]};
+  frc::AnalogInput rightIr_{localization_config::IR_ANALOG_CHANNEL[1]};
 
   AHRS imu_{frc::SPI::Port::kMXP}; // preserve the original device sampling configuration
 };
@@ -142,42 +141,28 @@ class Localization {
   drive_kinematics::TeleopPoseTelemetry teleopTelemetry_;
   bool autonomousMode_=false;
 };
-// Robot scheduler, modes and dashboard integration.
-class CameraCapture;
+// Project 8: manual driving and one explicit-start sensor/tape test.
 class RobotSubsystem : public frc2::SubsystemBase {
  public:
-  explicit RobotSubsystem(CameraCapture* camera=nullptr);
+  RobotSubsystem();
   void Periodic() override;
-  // Explicit lifecycle entry/exit: no autonomous state survives a mode change.
+  void InitializeDashboard(); // called after stale NetworkTables are cleared
   void EnterAutonomous();
   void StopAll();
-  bool HasSimpleTaskSelection() { return taskChooser_.GetSelected()!=static_cast<int>(SimpleTask::None); }
 
  private:
-  std::string PreflightError() const;
-  void InitializeDashboard();
-  void InitializeTeleopDashboard();
-  void InitializeCobraDashboard();
-  void InitializeTaskDashboard();
-  void UpdateSimpleTask(double now,double dt);
+  void InitializeMotionDashboard();
+  void InitializeSensingDashboard();
   void UpdateTeleopDrive(double dt);
   void UpdateSonarPoll(double now, bool enabled);
-  void UpdateAutonomous(double now, double dt);
-  void UpdateArenaTest(double now, double dt);
-  void PublishDiagnostics();
-  bool SonarMotionSafe(double now) const;
+  void UpdateTapeRoutine(double now,double dt,bool start,bool stop);
 
   Hardware hardware_;
   Localization localization_{&hardware_};
-  AutonomousController autonomous_;
-  ArenaTestController arenaTest_;
-  SimpleTaskController simpleTask_;
-  CameraCapture* camera_;
-  frc::SendableChooser<int> taskChooser_;
-  nt::NetworkTableEntry runTask_,stopTask_;
-  bool runTaskRequested_=false,stopTaskRequested_=false,simpleSession_=false;
-  unsigned colourRequest_=0;
-  std::string taskNotice_="Choose a task; requests run only in enabled Autonomous";
+  TapeAlignmentRoutine tapeRoutine_;
+  nt::NetworkTableEntry startTape_,stopTape_;
+  bool autonomousSession_=false;
+  std::string routineNotice_;
   frc::Joystick driver_{localization_config::DRIVER_JOYSTICK_PORT};
   TeleopDriveController teleopDrive_;
   bool driverConnected_=false;
@@ -189,23 +174,17 @@ class RobotSubsystem : public frc2::SubsystemBase {
   ServoTeleopController servoTeleop_;
   bool driverTriangle_=false;
   bool driverL1_=false,driverR1_=false;
-  bool autoSession_=false;
-  bool poseAnchored_=false;
   LineReading line_;
   CobraCheck cobraCheck_;
   nt::NetworkTableEntry captureCobraWhite_,captureCobraBlack_;
-  nt::NetworkTableEntry startRoutine_,stopRoutine_;
-  nt::NetworkTableEntry setSpReference_;
-  std::string poseReferenceStatus_="Disabled only: place at SP facing +X, then Set SP reference";
-  bool startRoutineRequested_=false,stopRoutineRequested_=false;
   double lastLoopTime_=0;
-  double controlDt_=localization_config::CONTROL_PERIOD_S,maxControlDt_=0;
-  double imuRateWindowTime_=0,imuRateWindowCount_=0,imuMeasuredHz_=0;
-  unsigned lateUpdates_=0;
+  double controlDt_=localization_config::CONTROL_PERIOD_S;
+  double lastSensorTime_=-1;
+  IrReading irReading_[localization_config::IR_COUNT];
   int nextSonarIndex_=0;
   bool sonarAwaitingEcho_=false;
   double sonarPingTime_=0,lastSonarPingTime_=0;
-  double sonarRanges_MM_[4]={-1,-1,-1,-1};
-  double sonarReadTime_[4]={-1,-1,-1,-1};
-  bool sonarRangeValid_[4]={false,false,false,false};
+  double sonarRanges_MM_[localization_config::SONAR_COUNT]={-1,-1};
+  double sonarReadTime_[localization_config::SONAR_COUNT]={-1,-1};
+  bool sonarRangeValid_[localization_config::SONAR_COUNT]={false,false};
 };

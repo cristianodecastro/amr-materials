@@ -106,23 +106,37 @@ static constexpr double REAR_SENSOR_OFFSET_MM = 175.0;
 static constexpr double LEFT_SENSOR_OFFSET_MM = 150.0;
 static constexpr double RIGHT_SENSOR_OFFSET_MM = 150.0;
 
-struct SonarConfig {
-  int triggerDio;
-  int echoDio;
+// Geometry used by the retained route library, independent of sensor type.
+struct RangeSensorMount {
   double mountX_MM;
   double mountY_MM;
   double beamAngleDeg;
   const char* name;
 };
 
-// FlexDIO lower/even channel = trigger (A), upper/odd channel = echo (B).
-// Index order follows physical pairs: left, rear, right, front. All beams
-// point outward, with angles measured CCW from robot-forward.
-static constexpr SonarConfig SONARS[4] = {
-    {0, 1, 0.0, LEFT_SENSOR_OFFSET_MM, 90.0, "Left"},
-    {2, 3, -REAR_SENSOR_OFFSET_MM, 0.0, 180.0, "Rear"},
-    {4, 5, 0.0, -RIGHT_SENSOR_OFFSET_MM, -90.0, "Right"},
-    {6, 7, FRONT_SENSOR_OFFSET_MM, 0.0, 0.0, "Front"}};
+static constexpr RangeSensorMount RANGE_SENSOR_MOUNTS[4] = {
+    {0.0, LEFT_SENSOR_OFFSET_MM, 90.0, "Left"},
+    {-REAR_SENSOR_OFFSET_MM, 0.0, 180.0, "Rear"},
+    {0.0, -RIGHT_SENSOR_OFFSET_MM, -90.0, "Right"},
+    {FRONT_SENSOR_OFFSET_MM, 0.0, 0.0, "Front"}};
+
+struct SonarConfig { int triggerDio,echoDio; const char* name; };
+static constexpr int SONAR_COUNT=2;
+// Only these two physical ultrasonic sensors are instantiated and triggered.
+static constexpr SonarConfig SONARS[SONAR_COUNT] = {{6,7,"Front"},{2,3,"Rear"}};
+
+// Sharp 2Y0A21 / GP2Y0A21YK0F: ANALOG output, 100..800 mm range.
+// VMX Analog In 0 = left, Analog In 1 = right. FlexDIO 10/11 are not used.
+static constexpr int IR_COUNT=2;
+static constexpr int IR_ANALOG_CHANNEL[IR_COUNT]={0,1};
+static_assert(IR_ANALOG_CHANNEL[0]>=0 && IR_ANALOG_CHANNEL[0]<4 &&
+    IR_ANALOG_CHANNEL[1]>=0 && IR_ANALOG_CHANNEL[1]<4 &&
+    IR_ANALOG_CHANNEL[0]!=IR_ANALOG_CHANNEL[1],"IR sensors require distinct VMX Analog In channels 0..3");
+static constexpr double IR_MIN_RANGE_MM=100.0;
+static constexpr double IR_MAX_RANGE_MM=800.0;
+static constexpr double IR_MAX_INPUT_V=5.0;
+static constexpr double SENSOR_UPDATE_PERIOD_S=0.050;
+static constexpr double SENSOR_STALE_S=0.200;
 
 // No physical start button is installed. FlexDIO 8 is now a servo output.
 
@@ -134,6 +148,7 @@ static constexpr double SONAR_PING_SPACING_S = 0.040;
 static constexpr double SONAR_ECHO_SETTLE_S = 0.060;
 static constexpr double SONAR_MIN_RANGE_MM = 20.0;
 static constexpr double SONAR_MAX_RANGE_MM = 4000.0;
+static constexpr double SONAR_READING_STALE_S = 0.350;
 
 // Autonomous position uses encoder increments only and reset-relative gyro
 // heading. Teleop pose telemetry retains its separate legacy blend below.
@@ -306,6 +321,7 @@ static constexpr int JOB_COUNT = 4;
 static constexpr bool COBRA_INSTALLED = true; // user connected analog module J1 to VMX I2C
 static constexpr bool COBRA_CALIBRATED = false;
 static constexpr double COBRA_REFERENCE_V = 5.0;
+static constexpr int COBRA_I2C_ADDRESS = 0x48; // analog module default address
 static constexpr double COBRA_FORWARD_MM = 180.0; // PLACEHOLDER from robot center
 static constexpr double COBRA_LEFT_MM = 0.0; // PLACEHOLDER array center
 static constexpr double COBRA_CHANNEL_LEFT_MM[4] = {22.5,7.5,-7.5,-22.5}; // PLACEHOLDER order/spacing
@@ -393,3 +409,38 @@ static constexpr double ROUTINE_TIMEOUT_S = 120.0;
 static constexpr double STATIONARY_SPEED_MMPS = 8.0;
 static constexpr double STATIONARY_YAW_DPS = 0.5;
 } // namespace arena_test_config
+
+// Project 8 corner-reference / Cobra alignment test. Arena +X is right/east,
+// +Y forward/north on the drawing, with CCW-positive heading. The operator
+// aligns the robot facing +Y; gyro yaw is reset-relative to this known heading.
+namespace tape_test_config {
+static constexpr double START_HEADING_DEG=90.0;
+static constexpr ArenaPoint TARGET={250.0,500.0};
+static constexpr double LEFT_WALL_X_MM=0,REAR_WALL_Y_MM=0;
+static constexpr int REFERENCE_SAMPLES=3;
+static constexpr double REFERENCE_MAX_SPREAD_MM=15.0;
+static constexpr double REFERENCE_TIMEOUT_S=6.0;
+static constexpr double REFERENCE_MAX_PAIR_AGE_S=0.10;
+static constexpr double DRIVE_SPEED_MMPS=localization_config::TELEOP_SPEED_MMPS;
+static constexpr double DRIVE_ACCEL_MMPS2=localization_config::TELEOP_ACCELERATION_MMPS2;
+static constexpr double POSITION_TOLERANCE_MM=15.0;
+static constexpr double POSITION_KP=1.0;
+static constexpr double MIN_APPROACH_MMPS=120.0;
+static constexpr double WAYPOINT_SETTLE_S=0.30;
+static constexpr double DRIVE_TIMEOUT_S=35.0;
+static constexpr double SCAN_SPEED_MMPS=60.0;
+static constexpr double SCAN_ACCEL_MMPS2=80.0;
+static constexpr double CENTER_MIN_SPEED_MMPS=30.0;
+static constexpr double CENTER_KP_MMPS=100.0;
+static constexpr double SCAN_MAX_TRAVEL_MM=300.0;
+static constexpr double SCAN_TIMEOUT_S=20.0;
+static constexpr double TAPE_ACQUIRE_LEVEL=0.40;
+static constexpr double CENTER_BLACK_MIN=0.55;
+static constexpr double CENTER_LEVEL_TOLERANCE=0.10;
+static constexpr double CENTER_VOLTAGE_TOLERANCE_V=0.20;
+static constexpr double CENTER_OUTER_CONTRAST=0.20;
+static constexpr double TAPE_SETTLE_S=0.30;
+static constexpr double TAPE_LOST_S=0.40;
+static constexpr double NO_PROGRESS_TIMEOUT_S=2.0;
+static constexpr double PROGRESS_MM=2.0;
+}

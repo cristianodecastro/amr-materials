@@ -19,11 +19,17 @@ inline bool Finite(const RobotPose& p) {
 }
 }
 
+struct IrReading {
+  double voltage=-1,distanceMM=-1;
+  bool valid=false; // plausible in-range measurement, not proof of a connected sensor
+};
+
 struct LineReading {
   bool valid = false;
   double leftErrorMM = 0.0;
   double strength = 0.0;
   double volts[4] = {-1,-1,-1,-1};
+  bool communicationValid = false; // a fresh I2C read completed successfully
 };
 
 enum class ObjectActionStatus { Unavailable, Busy, Complete, Failed };
