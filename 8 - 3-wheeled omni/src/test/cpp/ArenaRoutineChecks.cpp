@@ -949,6 +949,54 @@ void WaypointSettlingDoesNotExpireProgressWatchdog() {
   REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::Fault && routine.GetForwardMMps()==0);
   REQUIRE_ARENA(routine.GetStatus().find("Waypoint correction stalled")!=std::string::npos);
 }
+// Exercise the REAL wheel-output path, rather than assuming a requested body
+// velocity is achievable. Simulate loaded motors with friction and coasting;
+// include a deliberately imperfect floor calibration (10% vs our 15%).
+void WaypointThroughMotorOutputFloor(double friction,double lag,bool screenshotStart) {
+  TapeAlignmentRoutine routine; auto in=TapeInput(); AnchorTapeRoutine(routine,in);
+  RobotPose physical=in.motion.pose;
+  if (screenshotStart) physical={256.037002,486.136416,robot_geometry::PI/2};
+  WheelDriveController drive;
+  double counts[3]={},wheelSpeed[3]={},forward=0,left=0,yaw=0;
+  int tick=0;
+  for (;tick<1600 && routine.GetState()==TapeAlignmentRoutine::State::DriveToPoint;++tick) {
+    FreshTapeTick(in);
+    in.motion.stationary=std::hypot(forward,left)<=8 && std::fabs(yaw)<=robot_geometry::Radians(0.5);
+    in.motion.yawRateRadps=yaw;
+    if (tick%3==0) {
+      in.motion.pose=physical; in.bodyForwardMMps=forward; in.bodyLeftMMps=left;
+    }
+    routine.Update(in);
+    if (routine.GetState()==TapeAlignmentRoutine::State::SearchRight) break;
+    REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::DriveToPoint);
+    const double vx=drive_kinematics::LayoutVx(routine.GetForwardMMps(),routine.GetLeftMMps());
+    const double vy=drive_kinematics::LayoutVy(routine.GetForwardMMps(),routine.GetLeftMMps());
+    double desired[3]={},travel[3]={};
+    for (int i=0;i<3;++i) desired[i]=drive_kinematics::WheelSpeedMMps(i,vx,vy,routine.GetYawRadps());
+    drive.Update(desired,counts,0.02,localization_config::TELEOP_MAX_MOTOR_OUTPUT);
+    REQUIRE_ARENA(!drive.HasFault());
+    for (int i=0;i<3;++i) {
+      const double duty=drive.Output(i),magnitude=std::fabs(duty);
+      REQUIRE_ARENA(duty==0 || magnitude>=motor_output_config::MIN_RUNNING_OUTPUT);
+      const double speed=std::max(0.0,magnitude-friction)/(0.9-friction)*0.9*
+          localization_config::MAX_WHEEL_SPEED_MMPS*(duty<0?-1:1);
+      wheelSpeed[i]+=(lag==0?1:0.02/(lag+0.02))*(speed-wheelSpeed[i]);
+      travel[i]=wheelSpeed[i]*0.02;
+      counts[i]+=travel[i]/localization_config::ENCODER_MM_PER_COUNT;
+    }
+    yaw=-(wheelSpeed[0]+wheelSpeed[1]+wheelSpeed[2])/(3*168);
+    double stepForward=0,stepLeft=0;
+    REQUIRE_ARENA(drive_kinematics::BodyDisplacement(travel,yaw*0.02,stepForward,stepLeft));
+    forward=stepForward/0.02; left=stepLeft/0.02;
+    const double midpoint=physical.headingRad+yaw*0.01;
+    physical.x_MM+=std::cos(midpoint)*stepForward-std::sin(midpoint)*stepLeft;
+    physical.y_MM+=std::sin(midpoint)*stepForward+std::cos(midpoint)*stepLeft;
+    physical.headingRad=robot_geometry::Wrap(physical.headingRad+yaw*0.02);
+  }
+  REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::SearchRight);
+  REQUIRE_ARENA(std::hypot(physical.x_MM-250,physical.y_MM-500)<=15);
+  REQUIRE_ARENA(std::fabs(robot_geometry::Wrap(physical.headingRad-robot_geometry::PI/2))<=robot_geometry::Radians(1));
+}
 } // namespace
 
 #ifdef ARENA_TEST_STANDALONE
@@ -968,10 +1016,12 @@ int main() {
     SharpAnalogConversionAndValidity();
     TapeRoutineChecks();
     WaypointSettlingDoesNotExpireProgressWatchdog();
+    for (double friction:{0.10,0.15}) for (double lag:{0.0,0.12,0.25})
+      for (bool screenshot:{false,true}) WaypointThroughMotorOutputFloor(friction,lag,screenshot);
     for (double lag:{0.0,0.12,0.25}) for (double deadband:{0.0,70.0,100.0})
       for (bool screenshot:{false,true}) WaypointWithCoastingAndMotorDeadband(lag,deadband,screenshot);
     AutonomousDistanceScaleDoesNotChangeTeleopOrHeading();
-    std::cout<<"PASS: persistent Cobra calibration; 18 waypoint coasting/deadband cases, screenshot boundary/stall regressions; tape alignment, odometry, motion and colour checks\n";
+    std::cout<<"PASS: shared motor floor; 12 electrical motor/waypoint simulations; persistent Cobra calibration; 18 waypoint coasting/deadband cases, screenshot boundary/stall regressions; tape alignment, odometry, motion and colour checks\n";
   } catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }
 }
 #else
@@ -998,6 +1048,10 @@ TEST(Sensing, CobraCalibrationPersistence) { EXPECT_NO_THROW(CobraCalibrationRet
 TEST(Sensing, SharpAnalogConversionAndValidity) { EXPECT_NO_THROW(SharpAnalogConversionAndValidity()); }
 TEST(Autonomous, CornerReferenceAndTapeAlignment) { EXPECT_NO_THROW(TapeRoutineChecks()); }
 TEST(Autonomous, WaypointSettling) { EXPECT_NO_THROW(WaypointSettlingDoesNotExpireProgressWatchdog()); }
+TEST(Autonomous, WaypointWithElectricalMotorFloor) {
+  for (double friction:{0.10,0.15}) for (double lag:{0.0,0.12,0.25})
+    for (bool screenshot:{false,true}) EXPECT_NO_THROW(WaypointThroughMotorOutputFloor(friction,lag,screenshot));
+}
 TEST(Autonomous, WaypointCoastAndDeadband) {
   for (double lag:{0.0,0.12,0.25}) for (double deadband:{0.0,70.0,100.0})
     for (bool screenshot:{false,true}) EXPECT_NO_THROW(WaypointWithCoastingAndMotorDeadband(lag,deadband,screenshot));

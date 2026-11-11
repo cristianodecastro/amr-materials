@@ -81,7 +81,7 @@ static constexpr double WHEEL_MOTOR_SIGN[WHEEL_COUNT] = {1.0, 1.0, 1.0};
 // Maverick 75001 speeds are already at the 61:1 gearbox OUTPUT shaft.
 // MOTOR_TO_WHEEL_RATIO represents external gearing only; do not divide by 61
 // again. This estimates the speed/PWM scale. Drive is currently open-loop;
-// Autonomous uses direct wheel outputs; Teleop startup and smoothing settings
+// Both modes use the shared static-friction output floor. Teleop startup and smoothing settings
 // are isolated in teleop_wheel_config below. Neither mode uses motor trim.
 static constexpr double MAVERICK_MAX_NO_LOAD_RPM = 112.0;
 static constexpr double MAVERICK_NOMINAL_NO_LOAD_RPM = 100.0;
@@ -163,6 +163,15 @@ static constexpr double DISTANCE_SCALE = 0.9555;
 static_assert(DISTANCE_SCALE>0 && DISTANCE_SCALE<=2.0,"Invalid autonomous odometry distance scale");
 }
 
+// Shared minimum for Titan DC motor commands, in BOTH operating modes.
+// 15% is an initial loaded-robot calibration, not a Studica motor specification.
+// A stop is always exactly zero. Servos use positional pulses, not this duty.
+namespace motor_output_config {
+static constexpr double MIN_RUNNING_OUTPUT = 0.15;
+static_assert(MIN_RUNNING_OUTPUT>0 && MIN_RUNNING_OUTPUT<1,
+    "Motor output floor must be between zero and full output");
+}
+
 // Lift and servo settings.
 // Manual lift and servo configuration. Autonomous pickup remains unimplemented.
 namespace manipulator_config {
@@ -170,6 +179,8 @@ namespace manipulator_config {
 static constexpr int TITAN_MOTOR_PORT = 1;
 // Conservative manual open-loop power cap; there are currently NO end switches.
 static constexpr double LIFT_OUTPUT = 0.20;
+static_assert(LIFT_OUTPUT>=motor_output_config::MIN_RUNNING_OUTPUT,
+    "Lift cap must allow the shared motor output floor");
 static constexpr double LIFT_UP_SIGN = 1.0; // reverse if installed motor polarity lowers on positive
 static constexpr int DRIVER_POV_INDEX = 0;
 static constexpr int DRIVER_POV_UP_DEG = 0;

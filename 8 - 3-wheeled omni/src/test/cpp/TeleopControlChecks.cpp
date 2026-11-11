@@ -432,14 +432,18 @@ static_assert(drive_kinematics::OutputDenominator(kBadSpeeds, 1.0) == 0.0,
 namespace wheel_checks {
 constexpr double Abs(double x) { return x<0?-x:x; }
 constexpr bool Near(double a,double b) { return Abs(a-b)<1e-7; }
-constexpr bool DirectOutputsPreserveRatios() {
+constexpr double Applied(double demand,double cap=0.9) {
+  return motor_output::WheelOutput(demand,cap);
+}
+constexpr bool OutputsPreserveSpeedRatiosAboveFriction() {
   WheelDriveController control;
   const double desired[3]={-150,-150,300},zero[3]={};
   control.Update(desired,zero,0.02,0.9);
-  return !control.HasFault() && Near(control.Output(0),-150/localization_config::MAX_WHEEL_SPEED_MMPS) &&
-      Near(control.Output(0),control.Output(1)) && Near(control.Output(2),-2*control.Output(0));
+  const double floor=motor_output_config::MIN_RUNNING_OUTPUT;
+  return !control.HasFault() && Near(control.Output(0),Applied(-150/localization_config::MAX_WHEEL_SPEED_MMPS)) &&
+      Near(control.Output(0),control.Output(1)) && Near(control.Output(2)-floor,-2*(control.Output(0)+floor));
 }
-static_assert(DirectOutputsPreserveRatios(),"First-tick outputs follow only the common-normalized kinematics");
+static_assert(OutputsPreserveSpeedRatiosAboveFriction(),"Speed-dependent outputs preserve kinematics above the common friction allowance");
 constexpr bool EarlyEncoderResponseNeverChangesOutput() {
   WheelDriveController control;
   const double desired[3]={-80,-80,160};
@@ -450,11 +454,11 @@ constexpr bool EarlyEncoderResponseNeverChangesOutput() {
     if (tick==12) counts[1]=-3;
     control.Update(desired,counts,0.02,0.9);
     for (int i=0;i<3;++i)
-      if (!Near(control.Output(i),desired[i]/localization_config::MAX_WHEEL_SPEED_MMPS)) return false;
+      if (!Near(control.Output(i),Applied(desired[i]/localization_config::MAX_WHEEL_SPEED_MMPS))) return false;
   }
   return !control.HasFault();
 }
-static_assert(EarlyEncoderResponseNeverChangesOutput(),"No early-moving wheel may be held, trimmed or boosted");
+static_assert(EarlyEncoderResponseNeverChangesOutput(),"Autonomous floor is identical for all wheels and independent of early encoder response");
 constexpr bool EncoderSpeedDoesNotCompensatePower() {
   WheelDriveController a,b;
   const double desired[3]={-120,-120,240};
@@ -479,20 +483,22 @@ constexpr bool CardinalDirectionsAreSymmetric() {
     WheelDriveController a,b;
     a.Update(forward,zero,0.02,0.9); b.Update(sideways,zero,0.02,0.9);
     if (!Near(a.Output(0),-a.Output(1)) || a.Output(2)!=0 ||
-        !Near(b.Output(0),b.Output(1)) || !Near(b.Output(2),-2*b.Output(0))) return false;
+        !Near(b.Output(0),b.Output(1)) ||
+        !Near(b.Output(2),Applied(-100.0*direction/localization_config::MAX_WHEEL_SPEED_MMPS))) return false;
   }
   return true;
 }
-static_assert(CardinalDirectionsAreSymmetric(),"Forward/back rear outputs mirror; lateral front is twice either rear");
+static_assert(CardinalDirectionsAreSymmetric(),"Forward/back rear outputs mirror; lateral rear outputs remain equal");
 constexpr bool CommonSaturationAndNeutral() {
   WheelDriveController control;
   const double desired[3]={2000,-1000,500},counts[3]={},zero[3]={};
   control.Update(desired,counts,0.02,0.25);
-  if (!Near(control.Output(0),0.25) || !Near(control.Output(1),-0.125) || !Near(control.Output(2),0.0625)) return false;
+  if (!Near(control.Output(0),0.25) || !Near(control.Output(1),Applied(-0.125,0.25)) ||
+      !Near(control.Output(2),Applied(0.0625,0.25))) return false;
   control.Update(zero,counts,0.02,0.25);
   return control.Output(0)==0 && control.Output(1)==0 && control.Output(2)==0;
 }
-static_assert(CommonSaturationAndNeutral(),"Common cap preserves wheel ratios; neutral stops all outputs");
+static_assert(CommonSaturationAndNeutral(),"Shared friction allowance respects the cap; neutral stops all outputs");
 constexpr bool EncoderFaultsStopAllWheels() {
   WheelDriveController control;
   const double desired[3]={-120,-120,240}; double counts[3]={};
@@ -508,20 +514,65 @@ constexpr bool TeleopLegacyRampAndHoldAreIsolated() {
   const double desired[3]={-150,-150,300}; double counts[3]={};
   manual.Update(desired,counts,0.02,0.9,WheelDriveContext::Teleop);
   automatic.Update(desired,counts,0.02,0.9,WheelDriveContext::Autonomous);
-  if (!Near(manual.Output(2),0.015) || !Near(manual.Output(0),-0.0075) || !manual.IsStarting()) return false;
-  if (!Near(automatic.Output(2),300/localization_config::MAX_WHEEL_SPEED_MMPS) || automatic.IsStarting()) return false;
+  if (!Near(manual.Output(2),Applied(0.015)) || !Near(manual.Output(0),Applied(-0.0075)) || !manual.IsStarting()) return false;
+  if (!Near(automatic.Output(2),Applied(300/localization_config::MAX_WHEEL_SPEED_MMPS)) || automatic.IsStarting()) return false;
   counts[2]=3;
   for (int tick=0;tick<25;++tick) {
     manual.Update(desired,counts,0.02,0.9,WheelDriveContext::Teleop);
     automatic.Update(desired,counts,0.02,0.9,WheelDriveContext::Autonomous);
   }
   if (manual.Output(2)!=0 || !manual.IsStarting() || manual.WaitingWheel()!=0) return false;
-  if (!Near(automatic.Output(2),300/localization_config::MAX_WHEEL_SPEED_MMPS)) return false;
+  if (!Near(automatic.Output(2),Applied(300/localization_config::MAX_WHEEL_SPEED_MMPS))) return false;
   counts[0]=counts[1]=-3;
   manual.Update(desired,counts,0.02,0.9,WheelDriveContext::Teleop);
-  if (manual.IsStarting() || !Near(manual.Output(2),0.015)) return false;
+  if (manual.IsStarting() || !Near(manual.Output(2),Applied(0.015))) return false;
   manual.Reset(); automatic.Reset();
   return !manual.IsStarting() && manual.Output(0)==0 && automatic.Output(2)==0;
 }
 static_assert(TeleopLegacyRampAndHoldAreIsolated(),"Legacy startup/ramp is Teleop-only and state is separate");
+
+constexpr bool EveryRunningMotorRespectsFloor() {
+  const double floor=motor_output_config::MIN_RUNNING_OUTPUT;
+  for (double cap:{0.15,0.25,0.9,1.0}) for (int n=-1000;n<=1000;++n) {
+    const double demand=n/1000.0;
+    const double applied=motor_output::WheelOutput(demand,cap);
+    if (n==0) { if (applied!=0) return false; }
+    else if (Abs(applied)<floor || Abs(applied)>cap || applied*demand<=0) return false;
+    if (motor_output::EnforceFloor(applied,cap)!=applied) return false; // final guard cannot double-boost
+  }
+  return motor_output::EnforceFloor(0,0.9)==0 &&
+      motor_output::EnforceFloor(0.01,manipulator_config::LIFT_OUTPUT)==floor &&
+      motor_output::EnforceFloor(-0.01,manipulator_config::LIFT_OUTPUT)==-floor &&
+      motor_output::EnforceFloor(manipulator_config::LIFT_OUTPUT,manipulator_config::LIFT_OUTPUT)==manipulator_config::LIFT_OUTPUT &&
+      motor_output::WheelOutput(0.1,floor/2)==0 &&
+      motor_output::WheelOutput(std::numeric_limits<double>::quiet_NaN(),0.9)==0 &&
+      motor_output::EnforceFloor(std::numeric_limits<double>::infinity(),0.9)==0;
+}
+static_assert(EveryRunningMotorRespectsFloor(),"All nonzero DC motor commands respect the floor, sign and cap; stops/invalid commands remain zero");
+
+constexpr bool RampsAndReversalNeverEmitSubFloorDuty() {
+  for (bool teleop:{false,true}) {
+    WheelDriveController drive;
+    double counts[3]={};
+    for (int tick=0;tick<160;++tick) {
+      const double speed=tick<70?30:(tick<140?-30:0);
+      const double desired[3]={speed,speed,-2*speed};
+      drive.Update(desired,counts,0.02,0.9,teleop?WheelDriveContext::Teleop:WheelDriveContext::Autonomous);
+      if (drive.HasFault()) return false;
+      for (int i=0;i<3;++i) {
+        const double duty=drive.Output(i);
+        if (duty!=0 && (Abs(duty)<motor_output_config::MIN_RUNNING_OUTPUT || Abs(duty)>0.9)) return false;
+        counts[i]+=duty*30; // signed encoder response without requiring physical calibration
+      }
+    }
+    for (int i=0;i<3;++i) if (drive.Output(i)!=0) return false;
+    const double tinyWheel[3]={30,-30,1e-10};
+    drive.Update(tinyWheel,counts,0.02,0.9);
+    if (drive.Output(2)!=0) return false; // no amplification of numerical zero
+    drive.Reset(); drive.Update(tinyWheel,counts,0.02,0.10);
+    if (!drive.HasFault() || drive.Output(0)!=0) return false;
+  }
+  return true;
+}
+static_assert(RampsAndReversalNeverEmitSubFloorDuty(),"Teleop/autonomous ramps and reversals use the shared floor and still stop at neutral/fault");
 }

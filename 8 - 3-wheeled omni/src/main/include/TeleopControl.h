@@ -4,6 +4,30 @@
 #include <algorithm>
 #include "RobotConfig.h"
 
+namespace motor_output {
+// Final electrical guard, also used by direct Hardware setters. An unusable
+// cap rejects motion rather than silently exceeding that caller's limit.
+inline constexpr double EnforceFloor(double output,double cap) {
+  const double floor=motor_output_config::MIN_RUNNING_OUTPUT;
+  if (!std::isfinite(output) || !std::isfinite(cap) || cap<floor || cap>1 ||
+      std::fabs(output)<=1e-12) return 0;
+  const double magnitude=std::min(cap,std::max(floor,std::fabs(output)));
+  return output<0?-magnitude:magnitude;
+}
+
+// kS-style static-friction allowance plus the ramped wheel speed demand.
+// Unlike max(floor, demand), this retains different slow wheel requests above
+// the friction allowance. Equal requests still receive equal outputs; no trim.
+// The available range is rescaled so the existing electrical cap is preserved.
+inline constexpr double WheelOutput(double demand,double cap) {
+  const double floor=motor_output_config::MIN_RUNNING_OUTPUT;
+  if (!std::isfinite(demand) || !std::isfinite(cap) || cap<floor || cap>1 ||
+      std::fabs(demand)<=1e-12) return 0;
+  const double magnitude=floor+(cap-floor)*std::min(cap,std::fabs(demand))/cap;
+  return EnforceFloor(demand<0?-magnitude:magnitude,cap);
+}
+}
+
 // Wheel geometry and shared output normalization.
 namespace drive_kinematics {
 
@@ -335,7 +359,7 @@ class TeleopDriveController {
 
 enum class WheelDriveContext { Autonomous, Teleop };
 // Each Hardware instance has separate manual/autonomous controller state.
-// Autonomous uses the direct mixer; the driver's historical startup/ramp is
+// Both modes apply the shared floor AFTER mixing/ramping. The startup/ramp is
 // requested explicitly with Teleop context, never inferred from wheel motion.
 class WheelDriveController {
  public:
@@ -344,7 +368,7 @@ class WheelDriveController {
                         WheelDriveContext context=WheelDriveContext::Autonomous) {
     if (fault_) return;
     if (!Finite(dt) || dt<=0 || dt>wheel_drive_config::MAX_SAMPLE_S ||
-        !Finite(maxOutput) || maxOutput<=0 || maxOutput>1) {
+        !Finite(maxOutput) || maxOutput<motor_output_config::MIN_RUNNING_OUTPUT || maxOutput>1) {
       Fault("Invalid drive timing/output limit",-1); return;
     }
     double peak=0;
@@ -355,6 +379,7 @@ class WheelDriveController {
     if (peak<=wheel_drive_config::ZERO_SPEED_MMPS) { Reset(); return; }
     const double denominator=drive_kinematics::OutputDenominator(desired,maxOutput);
     if (!(denominator>0)) { Fault("Invalid wheel normalization",-1); return; }
+    maxOutput_=maxOutput;
     const double scale=localization_config::MAX_WHEEL_SPEED_MMPS/denominator;
     const bool teleop=context==WheelDriveContext::Teleop;
     if (teleop && !baseline_) BeginStartup(desired,counts,peak);
@@ -372,8 +397,10 @@ class WheelDriveController {
         }
         measured_[i]+=alpha*(measured-measured_[i]); previousCounts_[i]=counts[i];
       }
-      target_[i]=desired[i]*scale;
-      wanted[i]=desired[i]/denominator;
+      // Suppress numerical tangent residuals and deliberately stationary wheels;
+      // they must not be promoted to the running floor.
+      target_[i]=Abs(desired[i])<=wheel_drive_config::ZERO_SPEED_MMPS?0:desired[i]*scale;
+      wanted[i]=target_[i]==0?0:desired[i]/denominator;
     }
     if (!baseline_ || observe) sampleElapsed_=0;
     baseline_=true;
@@ -414,10 +441,10 @@ class WheelDriveController {
         stallTime_[i]=wrongDirectionTime_[i]=directionTime_[i]=0; direction_[i]=direction;
       }
       if (direction==0) continue;
-      directionTime_[i]=direction*output_[i]>0?directionTime_[i]+dt:0;
+      directionTime_[i]=direction*Output(i)>0?directionTime_[i]+dt:0;
       const bool stalled=Abs(request)>=wheel_drive_config::STALL_REQUEST_MMPS &&
           Abs(measured_[i])<wheel_drive_config::STALL_MEASURED_MMPS &&
-          direction*output_[i]>=wheel_drive_config::STALL_OUTPUT;
+          direction*Output(i)>=wheel_drive_config::STALL_OUTPUT;
       stallTime_[i]=stalled?stallTime_[i]+dt:0;
       const bool backwards=directionTime_[i]>wheel_drive_config::DIRECTION_GRACE_S &&
           direction*measured_[i]< -wheel_drive_config::STALL_REQUEST_MMPS;
@@ -426,10 +453,12 @@ class WheelDriveController {
       if (wrongDirectionTime_[i]>=wheel_drive_config::WRONG_DIRECTION_TIMEOUT_S) { Fault("Encoder direction mismatch",i); return; }
     }
     status_=teleop?(starting_?"Startup - waiting for wheel encoder response":
-        "Teleop mixer; encoders monitored; no power boost"):
-        "Autonomous direct wheel mixer; no per-wheel corrections or holds";
+        "Teleop mixer; shared motor floor; encoders monitored"):
+        "Autonomous mixer; shared motor floor; no per-wheel trim";
   }
-  constexpr double Output(int i) const { return i>=0 && i<3?output_[i]:0; }
+  constexpr double Output(int i) const {
+    return i>=0 && i<3?motor_output::WheelOutput(output_[i],maxOutput_):0;
+  }
   constexpr double TargetMMps(int i) const { return i>=0 && i<3?target_[i]:0; }
   constexpr double MeasuredMMps(int i) const { return i>=0 && i<3?measured_[i]:0; }
   constexpr bool HasFault() const { return fault_; }
@@ -458,6 +487,9 @@ class WheelDriveController {
     for (int i=0;i<3;++i) output_[i]=0;
   }
   double previousCounts_[3]={},measured_[3]={},target_[3]={},output_[3]={};
+  // output_ is the latent speed/PWM ramp, NOT the applied electrical duty.
+  // Keep it separate so the floor cannot ratchet the next ramp step upwards.
+  double maxOutput_=1;
   double stallTime_[3]={},wrongDirectionTime_[3]={},directionTime_[3]={};
   int direction_[3]={};
   bool baseline_=false,fault_=false;

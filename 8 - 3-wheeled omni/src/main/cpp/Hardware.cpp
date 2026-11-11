@@ -76,7 +76,7 @@ void Hardware::SetWheelPwm(int wheel, double output) {
   if (wheel < 0 || wheel >= localization_config::WHEEL_COUNT) return;
   if (!std::isfinite(output)) output = 0.0;
   if (!DriveMotorMotionAllowed()) output=0;
-  const double limited = std::max(-1.0, std::min(1.0, output)) *
+  const double limited = motor_output::EnforceFloor(output,1.0) *
                          localization_config::WHEEL_MOTOR_SIGN[wheel];
   wheelCommands_[wheel] = limited;
   switch (wheel) {
@@ -112,7 +112,7 @@ void Hardware::SetLiftPwm(double output) {
       cap<=0 || cap>1 || !std::isfinite(manipulator_config::LIFT_UP_SIGN) ||
       std::fabs(manipulator_config::LIFT_UP_SIGN)!=1) output=0;
   else {
-    output=std::max(-cap,std::min(cap,output));
+    output=motor_output::EnforceFloor(output,cap);
     const double direction=output*manipulator_config::LIFT_UP_SIGN;
     if ((direction>0 && GetLiftUpperLimit()) || (direction<0 && GetLiftLowerLimit())) output=0;
   }
