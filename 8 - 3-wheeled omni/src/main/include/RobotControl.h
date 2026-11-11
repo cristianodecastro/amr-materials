@@ -157,12 +157,12 @@ class RobotSubsystem : public frc2::SubsystemBase {
   void InitializeManipulatorDashboard();
   void UpdateTeleopDrive(double dt);
   void UpdateSonarPoll(double now, bool enabled);
-  void UpdateTapeRoutine(double now,double dt,bool start,bool stop);
+  void UpdateTapeRoutine(double now,double dt,bool startLeft,bool startRight,bool stop);
 
   Hardware hardware_;
   Localization localization_{&hardware_};
   TapeAlignmentRoutine tapeRoutine_;
-  nt::NetworkTableEntry startTape_,stopTape_;
+  nt::NetworkTableEntry startTapeLeft_,startTapeRight_,stopTape_;
   bool autonomousSession_=false;
   std::string routineNotice_;
   frc::Joystick driver_{localization_config::DRIVER_JOYSTICK_PORT};

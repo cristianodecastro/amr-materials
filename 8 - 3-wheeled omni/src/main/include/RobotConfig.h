@@ -415,7 +415,17 @@ static constexpr double YAW_DIRECTION_ERROR_RAD = 5.0*robot_geometry::PI/180.0;
 static constexpr double YAW_DIRECTION_CHECK_MIN_RADPS = 0.1*robot_geometry::PI/180.0;
 static constexpr double POSITION_TOLERANCE_MM = autonomous_config::POSITION_TOLERANCE_MM;
 static constexpr double HEADING_TOLERANCE_RAD = autonomous_config::HEADING_TOLERANCE_RAD;
-static constexpr double HOLD_HEADING_DEADBAND_RAD = HEADING_TOLERANCE_RAD;
+// Autonomous hold reacts before the 1 degree completion limit is exceeded.
+// It must not inherit the driver's deliberately slow rotation ramp.
+static constexpr double HOLD_HEADING_DEADBAND_RAD = 0.25*robot_geometry::PI/180.0;
+static constexpr double HOLD_HEADING_KP = 3.0;
+static constexpr double HOLD_YAW_RATE_DAMPING = 0.65;
+static constexpr double HOLD_YAW_ACCEL_RADPS2 = 180.0*robot_geometry::PI/180.0;
+static constexpr double HOLD_BRAKE_RESPONSE_S = 0.18;
+// After releasing turning power near the reference, allow a fresh IMU pose
+// before another minimum-PWM correction. No delay before the first correction.
+static constexpr double HOLD_RECHECK_S = 0.060;
+static constexpr double HOLD_RECHECK_WINDOW_RAD = 2.0*robot_geometry::PI/180.0;
 static constexpr double HOLD_HEADING_MAX_YAW_RADPS = 20.0*robot_geometry::PI/180.0;
 static constexpr double SETTLE_S = 0.40;
 static constexpr double LEG_TIMEOUT_S = 40.0;
@@ -429,7 +439,8 @@ static constexpr double STATIONARY_YAW_DPS = 0.5;
 // aligns the robot facing +Y; gyro yaw is reset-relative to this known heading.
 namespace tape_test_config {
 static constexpr double START_HEADING_DEG=90.0;
-static constexpr ArenaPoint TARGET={250.0,500.0};
+static constexpr ArenaPoint TARGET_FROM_LEFT={220.0,500.0};
+static constexpr ArenaPoint TARGET_FROM_RIGHT={580.0,500.0};
 static constexpr double LEFT_WALL_X_MM=0,REAR_WALL_Y_MM=0;
 static constexpr int REFERENCE_SAMPLES=3;
 static constexpr double REFERENCE_MAX_SPREAD_MM=15.0;
@@ -442,8 +453,10 @@ static constexpr double POSITION_KP=1.5;
 static constexpr double MIN_APPROACH_MMPS=120.0;
 static constexpr double CAPTURE_RADIUS_MM=7.0; // aim inside the 15 mm acceptance radius
 static constexpr double NEAR_TARGET_MM=60.0;
-static constexpr double BRAKE_ACCEL_MMPS2=600.0;
-static constexpr double BRAKE_RESPONSE_S=0.12;
+// Use the achievable commanded deceleration, not the previous optimistic
+// 600 mm/s^2. Include velocity-estimate and motor response in stopping distance.
+static constexpr double BRAKE_ACCEL_MMPS2=DRIVE_ACCEL_MMPS2;
+static constexpr double BRAKE_RESPONSE_S=0.18;
 static constexpr double VELOCITY_FILTER_S=0.08;
 static constexpr double CORRECTION_MAX_S=0.50;
 static constexpr double CORRECTION_REST_S=0.18;

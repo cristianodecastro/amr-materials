@@ -218,6 +218,30 @@ double ArenaTestController::GetHeadingTargetDeg() const {
 }
 double HeadingMotionControl::Request(double error,double oldYaw,double measuredYaw,double dt,bool hold) {
   const double deadband=hold?at::HOLD_HEADING_DEADBAND_RAD:at::HEADING_TOLERANCE_RAD;
+  if (hold) {
+    holdRecheck_=std::max(0.0,holdRecheck_-dt);
+    if (holdRecheck_>1e-9 && std::fabs(error)<at::HOLD_RECHECK_WINDOW_RAD) return 0;
+    const double toward=(error<0?-1:1)*measuredYaw;
+    // Stop applying turning power BEFORE coasting carries us through the
+    // reference. The running PWM floor must not override this zero request.
+    const bool coastingToward=toward>robot_geometry::Radians(at::STATIONARY_YAW_DPS) &&
+        toward*(at::HOLD_BRAKE_RESPONSE_S+dt)>=std::fabs(error)-deadband;
+    const double limit=std::min(at::MAX_YAW_RADPS,at::HOLD_HEADING_MAX_YAW_RADPS);
+    const double request=std::max(-limit,std::min(limit,
+        error*at::HOLD_HEADING_KP-measuredYaw*at::HOLD_YAW_RATE_DAMPING));
+    // Rate damping releases power; it must not command an opposite turn while
+    // still on the same side of the reference. Once the error crosses zero,
+    // discard the old turn ramp so it cannot push farther past the reference.
+    if (std::fabs(error)<=deadband || coastingToward || request*error<=0) {
+      // Minimum-duty pulses are real motion even for a tiny yaw request. Do
+      // not repeat them against the same cached angle during gyro refresh.
+      if (std::fabs(oldYaw)>0.0001) holdRecheck_=at::HOLD_RECHECK_S;
+      return 0;
+    }
+    if (oldYaw*error<0) oldYaw=0;
+    const double step=at::HOLD_YAW_ACCEL_RADPS2*dt;
+    return oldYaw+std::max(-step,std::min(step,request-oldYaw));
+  }
   if (!hold) {
     const double stoppedRate=robot_geometry::Radians(at::STATIONARY_YAW_DPS);
     // Once braking, wait for the gyro to confirm the turn has stopped before
@@ -426,12 +450,16 @@ bool TapeAlignmentRoutine::Centered(const TapeRoutineInput& in) const {
 }
 void TapeAlignmentRoutine::Begin(const TapeRoutineInput& in) {
   if (!in.motion.stationary) { status_="Start ignored: wait until the robot is stationary"; return; }
-  if (!CobraHealthy(in)) { status_="Start ignored: capture Cobra white/black while Disabled and check its readings"; return; }
+  if (!CobraHealthy(in)) { status_="Start ignored: check Cobra I2C and fresh valid readings; supplied calibration is already configured"; return; }
+  if (in.approach!=TapeApproach::FromLeft && in.approach!=TapeApproach::FromRight) {
+    status_="Start ignored: invalid tape approach selection"; return;
+  }
+  approach_=in.approach;
   Stop(); heading_.Reset(); state_=State::Reference; stateTime_=in.motion.now;
   // All reference samples must have been acquired AFTER the Start click.
   referenceSamples_=0; lastLeftTime_=in.leftTime; lastRearTime_=in.rearTime;
   sumLeft_=sumRear_=0; scanTravel_=0; settleTime_=-1;
-  status_="Referencing: hold still; rear -> Y=0 wall, left -> X=0 wall";
+  status_=std::string(ApproachName())+"referencing rear -> Y=0 wall, left -> X=0 wall";
 }
 void TapeAlignmentRoutine::SampleReference(const TapeRoutineInput& in) {
   if (in.motion.now-stateTime_>tt::REFERENCE_TIMEOUT_S) {
@@ -467,7 +495,7 @@ void TapeAlignmentRoutine::ConfirmPoseReset(double now) {
   Stop(); heading_.Reset(); state_=State::DriveToPoint; stateTime_=phaseTime_=now;
   waypointPhase_=WaypointPhase::Travel; motionEffortTime_=0; filteredForward_=filteredLeft_=0;
   progressPose_=referencePose_; settleTime_=-1;
-  status_="Driving to (250,500); holding the manually aligned starting heading";
+  status_=std::string(ApproachName())+"driving to approach waypoint; holding starting heading";
 }
 void TapeAlignmentRoutine::LimitTranslation(double oldForward,double oldLeft,double acceleration,double dt) {
   const double df=forward_-oldForward,dl=left_-oldLeft,delta=std::hypot(df,dl),step=acceleration*dt;
@@ -475,7 +503,8 @@ void TapeAlignmentRoutine::LimitTranslation(double oldForward,double oldLeft,dou
 }
 void TapeAlignmentRoutine::DriveWaypoint(const TapeRoutineInput& in,double oldForward,double oldLeft,double headingError) {
   const auto& m=in.motion;
-  const double dx=tt::TARGET.x-m.pose.x_MM,dy=tt::TARGET.y-m.pose.y_MM,distance=std::hypot(dx,dy);
+  const auto target=GetTarget();
+  const double dx=target.x-m.pose.x_MM,dy=target.y-m.pose.y_MM,distance=std::hypot(dx,dy);
   const double c=std::cos(m.pose.headingRad),s=std::sin(m.pose.headingRad);
   const double forwardError=c*dx+s*dy,leftError=-s*dx+c*dy;
   const double measuredToward=distance>0?std::max(0.0,
@@ -516,7 +545,8 @@ void TapeAlignmentRoutine::DriveWaypoint(const TapeRoutineInput& in,double oldFo
       if (m.now-settleTime_>=tt::WAYPOINT_SETTLE_S) {
         Stop(); heading_.Reset(); scanStart_=progressPose_=m.pose;
         scanTime_=m.now; motionEffortTime_=0; scanTravel_=0; lostTime_=-1; settleTime_=-1;
-        state_=State::SearchRight; status_="At (250,500): scanning slowly to robot-right for tape";
+        state_=State::SearchTape;
+        status_=std::string(ApproachName())+"at waypoint; searching inward for tape";
       }
       return;
     }
@@ -537,7 +567,7 @@ void TapeAlignmentRoutine::DriveWaypoint(const TapeRoutineInput& in,double oldFo
       std::min(distance*tt::POSITION_KP,brakingSpeed)));
   forward_=forwardError*speed/distance; left_=leftError*speed/distance;
   LimitTranslation(oldForward,oldLeft,tt::DRIVE_ACCEL_MMPS2,m.dt);
-  status_="Driving to (250,500) with heading hold and predictive braking";
+  status_=std::string(ApproachName())+"driving to waypoint with heading hold and predictive braking";
 }
 void TapeAlignmentRoutine::Update(const TapeRoutineInput& in) {
   const auto& m=in.motion;
@@ -562,7 +592,7 @@ void TapeAlignmentRoutine::Update(const TapeRoutineInput& in) {
   filteredForward_+=velocityGain*(in.bodyForwardMMps-filteredForward_);
   filteredLeft_+=velocityGain*(in.bodyLeftMMps-filteredLeft_);
   if (state_==State::DriveToPoint) {
-    if (m.now-stateTime_>tt::DRIVE_TIMEOUT_S) { Fail("Drive to (250,500) timed out - stopped"); return; }
+    if (m.now-stateTime_>tt::DRIVE_TIMEOUT_S) { Fail(std::string(ApproachName())+"drive to waypoint timed out - stopped"); return; }
     DriveWaypoint(in,oldForward,oldLeft,headingError);
   } else {
     scanTravel_=std::hypot(m.pose.x_MM-scanStart_.x_MM,m.pose.y_MM-scanStart_.y_MM);
@@ -575,7 +605,8 @@ void TapeAlignmentRoutine::Update(const TapeRoutineInput& in) {
       if (m.stationary && std::fabs(headingError)<=arena_test_config::HEADING_TOLERANCE_RAD) {
         if (settleTime_<0) settleTime_=m.now;
         if (m.now-settleTime_>=tt::TAPE_SETTLE_S) {
-          Stop(); state_=State::Complete; status_="Complete: wall reference -> (250,500) -> tape centred on CH1/CH2";
+          Stop(); state_=State::Complete;
+          status_=std::string(ApproachName())+"complete: reference -> waypoint -> tape centred on CH1/CH2";
         }
       } else settleTime_=-1;
       return;
@@ -588,11 +619,12 @@ void TapeAlignmentRoutine::Update(const TapeRoutineInput& in) {
       state_=State::CenterTape; lostTime_=-1;
     } else if (state_==State::CenterTape) {
       if (lostTime_<0) lostTime_=m.now;
-      if (m.now-lostTime_>=tt::TAPE_LOST_S) { state_=State::SearchRight; lostTime_=-1; }
+      if (m.now-lostTime_>=tt::TAPE_LOST_S) { state_=State::SearchTape; lostTime_=-1; }
     }
-    if (state_==State::SearchRight) {
-      left_=-tt::SCAN_SPEED_MMPS;
-      status_="Scanning to robot-right; equal white/background channels are ignored";
+    if (state_==State::SearchTape) {
+      // At +Y heading, robot-right increases arena X; robot-left decreases X.
+      left_=(approach_==TapeApproach::FromLeft?-1:1)*tt::SCAN_SPEED_MMPS;
+      status_=std::string(ApproachName())+"scanning inward; equal background channels are ignored";
     } else {
       const double error=in.blackLevel[1]-in.blackLevel[2];
       // CH0 is leftmost: more black on CH1 means tape is left of centre.

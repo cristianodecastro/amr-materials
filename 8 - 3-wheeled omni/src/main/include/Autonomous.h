@@ -33,14 +33,17 @@ struct ArenaTestInput {
 // Shared gyro turn profile and direction checks for routes and individual tasks.
 class HeadingMotionControl {
  public:
-  void Reset() { braking_=false; opposed_=0; direction_=0; }
+  void Reset() { braking_=false; opposed_=0; direction_=0; holdRecheck_=0; }
   double Request(double error,double oldYaw,double measuredYaw,double dt,bool hold);
   std::string CheckFeedback(double previousRequest,double measuredYaw,double dt);
  private:
   bool braking_=false;
   double opposed_=0;
+  double holdRecheck_=0;
   int direction_=0;
 };
+
+enum class TapeApproach { FromLeft, FromRight };
 
 struct TapeRoutineInput {
   ArenaTestInput motion;
@@ -49,11 +52,12 @@ struct TapeRoutineInput {
   LineReading line;
   double blackLevel[4]={-1,-1,-1,-1}; // CH0 leftmost -> CH3 rightmost
   double bodyForwardMMps=0,bodyLeftMMps=0;
+  TapeApproach approach=TapeApproach::FromLeft; // latched only on accepted Start
 };
 
 class TapeAlignmentRoutine {
  public:
-  enum class State { Waiting, Reference, ReferenceReady, DriveToPoint, SearchRight,
+  enum class State { Waiting, Reference, ReferenceReady, DriveToPoint, SearchTape,
     CenterTape, VerifyTape, Complete, Fault, Aborted };
   void Enter();
   void Update(const TapeRoutineInput& in);
@@ -64,6 +68,10 @@ class TapeAlignmentRoutine {
   bool NeedsPoseReset() const { return state_==State::ReferenceReady; }
   State GetState() const { return state_; }
   const RobotPose& GetReferencePose() const { return referencePose_; }
+  TapeApproach GetApproach() const { return approach_; }
+  ArenaPoint GetTarget() const {
+    return approach_==TapeApproach::FromLeft?tape_test_config::TARGET_FROM_LEFT:tape_test_config::TARGET_FROM_RIGHT;
+  }
   const std::string& GetStatus() const { return status_; }
   double GetForwardMMps() const { return forward_; }
   double GetLeftMMps() const { return left_; }
@@ -78,10 +86,12 @@ class TapeAlignmentRoutine {
   bool Centered(const TapeRoutineInput& in) const;
   void LimitTranslation(double oldForward,double oldLeft,double acceleration,double dt);
   void DriveWaypoint(const TapeRoutineInput& in,double oldForward,double oldLeft,double headingError);
+  const char* ApproachName() const { return approach_==TapeApproach::FromLeft?"From left: ":"From right: "; }
+  TapeApproach approach_=TapeApproach::FromLeft;
   enum class WaypointPhase { Travel, Brake, Settle, Correct };
   WaypointPhase waypointPhase_=WaypointPhase::Travel;
   State state_=State::Waiting;
-  std::string status_="Calibrate Cobra while Disabled; select Autonomous, enable, then Start tape test";
+  std::string status_="Supplied Cobra calibration ready; select Autonomous, enable, then choose a tape approach";
   RobotPose referencePose_{0,0,0},scanStart_{0,0,0},progressPose_{0,0,0};
   double forward_=0,left_=0,yaw_=0,stateTime_=0,scanTime_=0,settleTime_=-1,lostTime_=-1;
   double motionEffortTime_=0,scanTravel_=0;

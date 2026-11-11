@@ -109,6 +109,57 @@ void HeadingHoldCorrectsDriftDuringXY() {
   REQUIRE_ARENA(c.GetState()==State::TravelMW && c.GetYawRadps()>0);
   REQUIRE_ARENA(Near(c.GetHeadingTargetDeg(),at::SP.headingDeg));
 }
+void HeadingHoldRespondsEarlyAndDampsCoasting() {
+  HeadingMotionControl control;
+  // Correct a half-degree deviation before the one-degree completion boundary.
+  REQUIRE_ARENA(control.Request(robot_geometry::Radians(0.5),0,0,0.02,true)>0);
+  const double first=control.Request(robot_geometry::Radians(6),0,0,0.02,true);
+  REQUIRE_ARENA(Near(first,robot_geometry::Radians(3.6)));
+  // Gyro damping reduces the request at the SAME position error.
+  const double old=robot_geometry::Radians(6);
+  REQUIRE_ARENA(control.Request(robot_geometry::Radians(2),old,robot_geometry::Radians(3),0.02,true)<
+      control.Request(robot_geometry::Radians(2),old,0,0.02,true));
+  // A still-turning chassis approaching the reference must lose power early.
+  REQUIRE_ARENA(control.Request(robot_geometry::Radians(1.5),old,robot_geometry::Radians(10),0.02,true)==0);
+  // Error crossing cannot leave a positive old ramp driving farther past zero.
+  REQUIRE_ARENA(control.Request(robot_geometry::Radians(-2),old,robot_geometry::Radians(2),0.02,true)<0);
+  control.Reset();
+  REQUIRE_ARENA(control.Request(robot_geometry::Radians(-1),0,0,0.02,true)<0);
+  REQUIRE_ARENA(control.Request(robot_geometry::Radians(-0.5),robot_geometry::Radians(-3),
+      robot_geometry::Radians(-12),0.02,true)==0);
+  // A cached near-target angle must not restart a minimum-duty pulse on the
+  // intervening zero-rate samples. Recheck promptly after the refresh window.
+  for (int tick=0;tick<2;++tick)
+    REQUIRE_ARENA(control.Request(robot_geometry::Radians(-0.5),0,0,0.02,true)==0);
+  REQUIRE_ARENA(control.Request(robot_geometry::Radians(-0.5),0,0,0.02,true)<0);
+}
+void HeadingHoldWithFrictionLagAndDisturbance(double friction,double lag,double bias,int sign) {
+  HeadingMotionControl control;
+  double angle=robot_geometry::Radians(6*sign),rate=0,previousRequest=0,lateError=0;
+  for (int tick=0;tick<500;++tick) {
+    if (tick==150) angle-=robot_geometry::Radians(4*sign); // a second disturbance while holding
+    const auto fault=control.CheckFeedback(previousRequest,rate,0.02);
+    REQUIRE_ARENA(fault.empty());
+    const double request=control.Request(robot_geometry::Wrap(-angle),previousRequest,rate,0.02,true);
+    REQUIRE_ARENA(std::fabs(request)<=at::HOLD_HEADING_MAX_YAW_RADPS+1e-9);
+    const double wheel=-168*request;
+    const double mapped=motor_output::WheelOutput(wheel/localization_config::MAX_WHEEL_SPEED_MMPS,0.9);
+    const int percent=motor_output::TitanPercent(mapped,0.9);
+    const double setArgument=motor_output::TitanSetArgument(percent);
+    const double duty=static_cast<int>(std::fabs(setArgument*100))/100.0;
+    const double speed=std::max(0.0,duty-friction)/(0.9-friction)*0.9*
+        localization_config::MAX_WHEEL_SPEED_MMPS*(percent<0?-1:1);
+    const double desiredRate=-speed/168+robot_geometry::Radians(bias);
+    rate+=0.02/(lag+0.02)*(desiredRate-rate);
+    angle=robot_geometry::Wrap(angle+rate*0.02);
+    previousRequest=request;
+    if (tick>=400) lateError=std::max(lateError,std::fabs(angle));
+  }
+  if (lateError>robot_geometry::Radians(1))
+    throw std::runtime_error("Heading lag/floor regression: final-window max error="+
+        std::to_string(lateError*180/robot_geometry::PI)+", friction="+std::to_string(friction)+
+        ", lag="+std::to_string(lag)+", bias="+std::to_string(bias));
+}
 void ApproachRequestsRemainUsable() {
   ArenaTestController c;
   auto in=Input(); c.Enter(0); in.startRequested=true; c.Update(in); in.startRequested=false;
@@ -808,11 +859,12 @@ void AnchorTapeRoutine(TapeAlignmentRoutine& routine,TapeRoutineInput& in) {
 }
 void ReachTapeWaypoint(TapeAlignmentRoutine& routine,TapeRoutineInput& in) {
   AnchorTapeRoutine(routine,in);
-  in.motion.pose={250,500,robot_geometry::PI/2};
+  const auto target=routine.GetTarget();
+  in.motion.pose={target.x,target.y,robot_geometry::PI/2};
   for (int tick=0;tick<30 && routine.GetState()==TapeAlignmentRoutine::State::DriveToPoint;++tick) {
     FreshTapeTick(in); routine.Update(in);
   }
-  REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::SearchRight);
+  REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::SearchTape);
 }
 void TapeReferenceRejectsInvalidStaleAndRepeatedSamples() {
   RobotPose pose;
@@ -840,7 +892,7 @@ void TapeReferenceRejectsInvalidStaleAndRepeatedSamples() {
   routine.ConfirmPoseReset(in.motion.now);
   in.motion.pose=routine.GetReferencePose();
   FreshTapeTick(in); routine.Update(in);
-  REQUIRE_ARENA(routine.GetForwardMMps()>0 && routine.GetLeftMMps()>0); // north-west toward (250,500)
+  REQUIRE_ARENA(routine.GetForwardMMps()>0 && routine.GetLeftMMps()>0); // north-west toward (220,500)
   routine.Abort();
   REQUIRE_ARENA(!routine.IsRunning() && routine.GetForwardMMps()==0 && routine.GetYawRadps()==0);
   in=TapeInput(); routine.Enter(); in.cobraCalibrated=false; in.motion.startRequested=true; routine.Update(in);
@@ -890,8 +942,38 @@ void TapeLimitsAndCenterDirection() {
   in.motion.stopRequested=true; FreshTapeTick(in); routine.Update(in);
   REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::Aborted && routine.GetForwardMMps()==0);
 }
-void SimulateCornerToWaypointToTape() {
+void TapeApproachSelectionAndSearchDirections() {
+  for (auto approach:{TapeApproach::FromLeft,TapeApproach::FromRight}) {
+    TapeAlignmentRoutine routine; auto in=TapeInput(); in.approach=approach;
+    ReachTapeWaypoint(routine,in);
+    const auto selected=routine.GetTarget();
+    REQUIRE_ARENA(selected.x==(approach==TapeApproach::FromLeft?220:580) && selected.y==500);
+    FreshTapeTick(in); routine.Update(in);
+    REQUIRE_ARENA(routine.GetApproach()==approach);
+    REQUIRE_ARENA(routine.GetLeftMMps()*(approach==TapeApproach::FromLeft?-1:1)>0);
+    // A second start cannot alter an active route's target or scan direction.
+    in.approach=approach==TapeApproach::FromLeft?TapeApproach::FromRight:TapeApproach::FromLeft;
+    in.motion.startRequested=true; FreshTapeTick(in); routine.Update(in);
+    in.motion.startRequested=false;
+    REQUIRE_ARENA(routine.GetApproach()==approach && routine.GetTarget().x==selected.x);
+    // Centering is a physical array error, so its sign NEVER flips with side.
+    in.blackLevel[1]=0.9; in.blackLevel[2]=0.2;
+    in.line.volts[1]=4.1; in.line.volts[2]=1.3;
+    for (int tick=0;tick<8;++tick) { FreshTapeTick(in); routine.Update(in); }
+    REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::CenterTape && routine.GetLeftMMps()>0);
+    for (int i=0;i<4;++i) { in.blackLevel[i]=0; in.line.volts[i]=0.5; }
+    for (int tick=0;tick<50;++tick) { FreshTapeTick(in); routine.Update(in); }
+    REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::SearchTape);
+    REQUIRE_ARENA(routine.GetLeftMMps()*(approach==TapeApproach::FromLeft?-1:1)>0);
+    // Stop takes priority even when a new start arrives in the same cycle.
+    in.motion.startRequested=in.motion.stopRequested=true; FreshTapeTick(in); routine.Update(in);
+    REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::Aborted);
+    REQUIRE_ARENA(routine.GetForwardMMps()==0 && routine.GetLeftMMps()==0 && routine.GetYawRadps()==0);
+  }
+}
+void SimulateCornerToWaypointToTape(TapeApproach approach=TapeApproach::FromLeft) {
   TapeAlignmentRoutine routine; auto in=TapeInput();
+  in.approach=approach;
   routine.Enter(); in.motion.startRequested=true; routine.Update(in); in.motion.startRequested=false;
   bool drove=false,scanned=false,matched=false;
   const double tapeX=330;
@@ -917,7 +999,7 @@ void SimulateCornerToWaypointToTape() {
     if (routine.GetState()==TapeAlignmentRoutine::State::Fault)
       throw std::runtime_error("Tape routine simulation: "+routine.GetStatus());
     drove=drove || routine.GetState()==TapeAlignmentRoutine::State::DriveToPoint;
-    scanned=scanned || routine.GetState()==TapeAlignmentRoutine::State::SearchRight;
+    scanned=scanned || routine.GetState()==TapeAlignmentRoutine::State::SearchTape;
     matched=matched || routine.GetState()==TapeAlignmentRoutine::State::VerifyTape;
     const double forward=routine.GetForwardMMps(),left=routine.GetLeftMMps(),yaw=routine.GetYawRadps();
     const double theta=in.motion.pose.headingRad+yaw*0.01;
@@ -934,15 +1016,17 @@ void SimulateCornerToWaypointToTape() {
 }
 void TapeRoutineChecks() {
   TapeReferenceRejectsInvalidStaleAndRepeatedSamples(); TapeEqualityRequiresActualTapeAndStableStop();
+  TapeApproachSelectionAndSearchDirections();
   TapeLimitsAndCenterDirection(); SimulateCornerToWaypointToTape();
+  SimulateCornerToWaypointToTape(TapeApproach::FromRight);
 }
 void WaypointWithCoastingAndMotorDeadband(double lag,double deadband,bool screenshotStart) {
   TapeAlignmentRoutine routine; auto in=TapeInput(); AnchorTapeRoutine(routine,in);
   RobotPose physical=in.motion.pose;
-  if (screenshotStart) physical={256.037002,486.136416,robot_geometry::PI/2};
+  if (screenshotStart) physical={226.037002,486.136416,robot_geometry::PI/2};
   in.motion.pose=physical;
-  const double startDistance=std::hypot(250-physical.x_MM,500-physical.y_MM);
-  const double travelX=(250-physical.x_MM)/startDistance,travelY=(500-physical.y_MM)/startDistance;
+  const double startDistance=std::hypot(220-physical.x_MM,500-physical.y_MM);
+  const double travelX=(220-physical.x_MM)/startDistance,travelY=(500-physical.y_MM)/startDistance;
   double maximumOvershoot=0;
   double forward=0,left=0;
   int tick=0;
@@ -959,26 +1043,26 @@ void WaypointWithCoastingAndMotorDeadband(double lag,double deadband,bool screen
     const double gain=lag==0?1:0.02/(lag+0.02);
     forward+=gain*(targetForward-forward); left+=gain*(targetLeft-left);
     physical.x_MM-=left*0.02; physical.y_MM+=forward*0.02;
-    maximumOvershoot=std::max(maximumOvershoot,(physical.x_MM-250)*travelX+(physical.y_MM-500)*travelY);
+    maximumOvershoot=std::max(maximumOvershoot,(physical.x_MM-220)*travelX+(physical.y_MM-500)*travelY);
   }
-  REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::SearchRight);
-  REQUIRE_ARENA(std::hypot(physical.x_MM-250,physical.y_MM-500)<=15);
+  REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::SearchTape);
+  REQUIRE_ARENA(std::hypot(physical.x_MM-220,physical.y_MM-500)<=15);
   REQUIRE_ARENA(tick<1000); // finite completion, rather than repeated full-speed crossings
   REQUIRE_ARENA(maximumOvershoot<=15); // stop prediction also bounds intermediate overshoot in this model
 }
 void WaypointSettlingDoesNotExpireProgressWatchdog() {
   TapeAlignmentRoutine routine; auto in=TapeInput(); AnchorTapeRoutine(routine,in);
-  in.motion.pose={250,500,robot_geometry::PI/2};
+  in.motion.pose={220,500,robot_geometry::PI/2};
   in.motion.stationary=false; // the robot has entered tolerance but is still coasting
   for (int tick=0;tick<130;++tick) { FreshTapeTick(in); routine.Update(in); }
   REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::DriveToPoint);
-  in.motion.pose={256.037002,486.136416,robot_geometry::PI/2}; // drifts just outside 15 mm
+  in.motion.pose={226.037002,486.136416,robot_geometry::PI/2}; // drifts just outside 15 mm
   in.motion.stationary=true;
   for (int tick=0;tick<18;++tick) { FreshTapeTick(in); routine.Update(in); }
   REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::DriveToPoint);
   REQUIRE_ARENA(routine.GetForwardMMps()>0); // correction was not killed by time spent stopped
   in=TapeInput(); AnchorTapeRoutine(routine,in);
-  in.motion.pose={256.037002,486.136416,robot_geometry::PI/2};
+  in.motion.pose={226.037002,486.136416,robot_geometry::PI/2};
   for (int tick=0;tick<600 && routine.GetState()!=TapeAlignmentRoutine::State::Fault;++tick) {
     FreshTapeTick(in); routine.Update(in); // genuine stall: commands have no encoder response
   }
@@ -988,14 +1072,17 @@ void WaypointSettlingDoesNotExpireProgressWatchdog() {
 // Exercise the REAL wheel-output path, rather than assuming a requested body
 // velocity is achievable. Simulate loaded motors with friction and coasting;
 // include a deliberately imperfect floor calibration (10% vs our 15%).
-void WaypointThroughMotorOutputFloor(double friction,double lag,bool screenshotStart) {
-  TapeAlignmentRoutine routine; auto in=TapeInput(); AnchorTapeRoutine(routine,in);
+void WaypointThroughMotorOutputFloor(double friction,double lag,bool screenshotStart,bool disturbHeading=false,
+                                    TapeApproach approach=TapeApproach::FromLeft) {
+  TapeAlignmentRoutine routine; auto in=TapeInput(); in.approach=approach; AnchorTapeRoutine(routine,in);
+  const auto target=routine.GetTarget();
   RobotPose physical=in.motion.pose;
-  if (screenshotStart) physical={256.037002,486.136416,robot_geometry::PI/2};
+  if (screenshotStart) physical={target.x+6.037002,target.y-13.863584,robot_geometry::PI/2};
   WheelDriveController drive;
   double counts[3]={},wheelSpeed[3]={},forward=0,left=0,yaw=0;
   int tick=0;
   for (;tick<1600 && routine.GetState()==TapeAlignmentRoutine::State::DriveToPoint;++tick) {
+    if (disturbHeading && tick==40) physical.headingRad+=robot_geometry::Radians(5);
     FreshTapeTick(in);
     in.motion.stationary=std::hypot(forward,left)<=8 && std::fabs(yaw)<=robot_geometry::Radians(0.5);
     in.motion.yawRateRadps=yaw;
@@ -1003,7 +1090,7 @@ void WaypointThroughMotorOutputFloor(double friction,double lag,bool screenshotS
       in.motion.pose=physical; in.bodyForwardMMps=forward; in.bodyLeftMMps=left;
     }
     routine.Update(in);
-    if (routine.GetState()==TapeAlignmentRoutine::State::SearchRight) break;
+    if (routine.GetState()==TapeAlignmentRoutine::State::SearchTape) break;
     REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::DriveToPoint);
     const double vx=drive_kinematics::LayoutVx(routine.GetForwardMMps(),routine.GetLeftMMps());
     const double vy=drive_kinematics::LayoutVy(routine.GetForwardMMps(),routine.GetLeftMMps());
@@ -1032,8 +1119,16 @@ void WaypointThroughMotorOutputFloor(double friction,double lag,bool screenshotS
     physical.y_MM+=std::sin(midpoint)*stepForward+std::cos(midpoint)*stepLeft;
     physical.headingRad=robot_geometry::Wrap(physical.headingRad+yaw*0.02);
   }
-  REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::SearchRight);
-  REQUIRE_ARENA(std::hypot(physical.x_MM-250,physical.y_MM-500)<=15);
+  if (routine.GetState()!=TapeAlignmentRoutine::State::SearchTape)
+    throw std::runtime_error("Electrical waypoint: "+routine.GetStatus()+", friction="+std::to_string(friction)+
+        ", lag="+std::to_string(lag)+", screenshot="+std::to_string(screenshotStart)+
+        ", disturbed="+std::to_string(disturbHeading)+", XY error="+
+        std::to_string(std::hypot(physical.x_MM-target.x,physical.y_MM-target.y))+", heading error="+
+        std::to_string((physical.headingRad-robot_geometry::PI/2)*180/robot_geometry::PI)+
+        ", measured XY="+std::to_string(std::hypot(in.motion.pose.x_MM-target.x,in.motion.pose.y_MM-target.y))+
+        ", body speed="+std::to_string(std::hypot(forward,left))+
+        ", yaw="+std::to_string(yaw*180/robot_geometry::PI)+", request="+std::to_string(routine.GetYawRadps()*180/robot_geometry::PI));
+  REQUIRE_ARENA(std::hypot(physical.x_MM-target.x,physical.y_MM-target.y)<=15);
   REQUIRE_ARENA(std::fabs(robot_geometry::Wrap(physical.headingRad-robot_geometry::PI/2))<=robot_geometry::Radians(1));
 }
 } // namespace
@@ -1042,6 +1137,9 @@ void WaypointThroughMotorOutputFloor(double friction,double lag,bool screenshotS
 int main() {
   try {
     GeometryAndWallAssociation(); StartStopAndHealth(); TimingAndBounds(); HeadingHoldCorrectsDriftDuringXY();
+    HeadingHoldRespondsEarlyAndDampsCoasting();
+    for (double friction:{0.10,0.15}) for (double lag:{0.04,0.12,0.25})
+      for (double bias:{0.0,2.0}) for (int sign:{-1,1}) HeadingHoldWithFrictionLagAndDisturbance(friction,lag,bias,sign);
     ApproachRequestsRemainUsable(); TurnDriftIsReacquiredBeforeReference();
     TurnBrakesBeforeTargetAndStopsBeforeReversing();
     InstalledYawPolarityMatchesGyroFrame();
@@ -1057,11 +1155,13 @@ int main() {
     TapeRoutineChecks();
     WaypointSettlingDoesNotExpireProgressWatchdog();
     for (double friction:{0.10,0.15}) for (double lag:{0.0,0.12,0.25})
-      for (bool screenshot:{false,true}) WaypointThroughMotorOutputFloor(friction,lag,screenshot);
+      for (bool screenshot:{false,true}) for (bool disturbed:{false,true})
+        for (auto approach:{TapeApproach::FromLeft,TapeApproach::FromRight})
+          WaypointThroughMotorOutputFloor(friction,lag,screenshot,disturbed,approach);
     for (double lag:{0.0,0.12,0.25}) for (double deadband:{0.0,70.0,100.0})
       for (bool screenshot:{false,true}) WaypointWithCoastingAndMotorDeadband(lag,deadband,screenshot);
     AutonomousDistanceScaleDoesNotChangeTeleopOrHeading();
-    std::cout<<"PASS: shared motor floor; 12 electrical motor/waypoint simulations; persistent Cobra calibration; 18 waypoint coasting/deadband cases, screenshot boundary/stall regressions; tape alignment, odometry, motion and colour checks\n";
+    std::cout<<"PASS: both tape approaches; early/damped heading hold; 24 heading simulations; 48 electrical motor/waypoint simulations; fixed Cobra calibration; 18 waypoint coasting/deadband cases; odometry, motion and colour checks\n";
   } catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }
 }
 #else
@@ -1069,6 +1169,12 @@ TEST(ArenaRoutine, GeometryAndWallAssociation) { EXPECT_NO_THROW(GeometryAndWall
 TEST(ArenaRoutine, StartStopAndHealth) { EXPECT_NO_THROW(StartStopAndHealth()); }
 TEST(ArenaRoutine, TimingAndBounds) { EXPECT_NO_THROW(TimingAndBounds()); }
 TEST(ArenaRoutine, HeadingHoldCorrectsDriftDuringXY) { EXPECT_NO_THROW(HeadingHoldCorrectsDriftDuringXY()); }
+TEST(ArenaRoutine, HeadingHoldRespondsEarlyAndDampsCoasting) { EXPECT_NO_THROW(HeadingHoldRespondsEarlyAndDampsCoasting()); }
+TEST(ArenaRoutine, HeadingHoldWithFrictionLagAndDisturbance) {
+  for (double friction:{0.10,0.15}) for (double lag:{0.04,0.12,0.25})
+    for (double bias:{0.0,2.0}) for (int sign:{-1,1})
+      EXPECT_NO_THROW(HeadingHoldWithFrictionLagAndDisturbance(friction,lag,bias,sign));
+}
 TEST(ArenaRoutine, ApproachRequestsRemainUsable) { EXPECT_NO_THROW(ApproachRequestsRemainUsable()); }
 TEST(ArenaRoutine, TurnDriftIsReacquiredBeforeReference) { EXPECT_NO_THROW(TurnDriftIsReacquiredBeforeReference()); }
 TEST(ArenaRoutine, TurnBrakesBeforeTargetAndStopsBeforeReversing) { EXPECT_NO_THROW(TurnBrakesBeforeTargetAndStopsBeforeReversing()); }
@@ -1092,7 +1198,9 @@ TEST(Autonomous, CornerReferenceAndTapeAlignment) { EXPECT_NO_THROW(TapeRoutineC
 TEST(Autonomous, WaypointSettling) { EXPECT_NO_THROW(WaypointSettlingDoesNotExpireProgressWatchdog()); }
 TEST(Autonomous, WaypointWithElectricalMotorFloor) {
   for (double friction:{0.10,0.15}) for (double lag:{0.0,0.12,0.25})
-    for (bool screenshot:{false,true}) EXPECT_NO_THROW(WaypointThroughMotorOutputFloor(friction,lag,screenshot));
+    for (bool screenshot:{false,true}) for (bool disturbed:{false,true})
+      for (auto approach:{TapeApproach::FromLeft,TapeApproach::FromRight})
+        EXPECT_NO_THROW(WaypointThroughMotorOutputFloor(friction,lag,screenshot,disturbed,approach));
 }
 TEST(Autonomous, WaypointCoastAndDeadband) {
   for (double lag:{0.0,0.12,0.25}) for (double deadband:{0.0,70.0,100.0})

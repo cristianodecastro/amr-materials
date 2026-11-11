@@ -33,7 +33,7 @@ void RobotSubsystem::StopAll() {
   liftTeleop_.Update(false,false,false,false,false,false);
   servoTeleop_.Disarm();
   tapeRoutine_.Abort(); autonomousSession_=false;
-  startTape_.SetBoolean(false); stopTape_.SetBoolean(false);
+  startTapeLeft_.SetBoolean(false); startTapeRight_.SetBoolean(false); stopTape_.SetBoolean(false);
   localization_.SetAutonomousMode(false);
 }
 void RobotSubsystem::Periodic() {
@@ -52,21 +52,28 @@ void RobotSubsystem::Periodic() {
     cobraCheck_.Update(line_,now,false,false,false);
   }
   UpdateSonarPoll(now,enabled);
-  const bool start=startTape_.GetBoolean(false),stop=stopTape_.GetBoolean(false);
-  if (start) startTape_.SetBoolean(false);
+  const bool startLeft=startTapeLeft_.GetBoolean(false),startRight=startTapeRight_.GetBoolean(false);
+  const bool stop=stopTape_.GetBoolean(false);
+  if (startLeft) startTapeLeft_.SetBoolean(false);
+  if (startRight) startTapeRight_.SetBoolean(false);
   if (stop) stopTape_.SetBoolean(false);
   if (enabled && frc::RobotState::IsAutonomous() && !frc::RobotState::IsTest()) {
-    if (autonomousSession_) UpdateTapeRoutine(now,dt,start,stop);
+    if (autonomousSession_) UpdateTapeRoutine(now,dt,startLeft,startRight,stop);
     else { hardware_.StopDrive(); hardware_.StopManipulator(); }
   } else {
     if (autonomousSession_) StopAll();
-    if (start) routineNotice_="Start ignored: select Autonomous, enable, then press Start tape test again";
+    if (startLeft || startRight) routineNotice_="Start ignored: select Autonomous, enable, then choose a tape approach again";
     UpdateTeleopDrive(dt);
   }
 }
 
-void RobotSubsystem::UpdateTapeRoutine(double now,double dt,bool start,bool stop) {
-  if (start) routineNotice_.clear();
+void RobotSubsystem::UpdateTapeRoutine(double now,double dt,bool startLeft,bool startRight,bool stop) {
+  bool start=startLeft!=startRight;
+  if (stop) { start=false; routineNotice_.clear(); }
+  else if (startLeft && startRight) routineNotice_="Choose one approach: both start requests ignored";
+  else if (start && tapeRoutine_.IsRunning()) {
+    start=false; routineNotice_="Start ignored: tape task already running; Stop before changing approach";
+  } else if (start) routineNotice_.clear();
   const bool stationary=std::hypot(localization_.GetBodyVelocityX_MMps(),localization_.GetBodyVelocityY_MMps())
       <=arena_test_config::STATIONARY_SPEED_MMPS &&
       std::fabs(hardware_.GetYawRateDegreesPerSecond())<=arena_test_config::STATIONARY_YAW_DPS;
@@ -80,6 +87,7 @@ void RobotSubsystem::UpdateTapeRoutine(double now,double dt,bool start,bool stop
   in.line=line_; in.cobraTime=lastSensorTime_; in.cobraCalibrated=cobraCheck_.Ready();
   in.bodyForwardMMps=localization_.GetBodyVelocityX_MMps();
   in.bodyLeftMMps=localization_.GetBodyVelocityY_MMps();
+  in.approach=startRight?TapeApproach::FromRight:TapeApproach::FromLeft;
   for (int i=0;i<4;++i) in.blackLevel[i]=cobraCheck_.BlackLevel(i);
   if (hardware_.HasDriveFault() && tapeRoutine_.IsRunning()) tapeRoutine_.Fail(hardware_.GetDriveStatus());
   tapeRoutine_.Update(in);
@@ -178,7 +186,7 @@ void RobotSubsystem::InitializeMotionDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Motion");
   tab.AddString("Motion status (15% floor)",[this] {
     // Visible revision distinguishes this executable from stale robot/UI data.
-    const std::string revision="P8-r3 | ";
+    const std::string revision="P8-r5 | ";
     if (!routineNotice_.empty()) return revision+routineNotice_;
     if (frc::RobotState::IsAutonomous()) return revision+tapeRoutine_.GetStatus();
     return revision+(hardware_.HasDriveFault() || hardware_.IsDriveStarting()?
@@ -186,7 +194,8 @@ void RobotSubsystem::InitializeMotionDashboard() {
   }).WithPosition(0,0).WithSize(4,1);
   tab.AddBoolean("Enabled",[] { return frc::RobotState::IsEnabled(); }).WithPosition(4,0).WithSize(1,1);
   tab.AddBoolean("Controller",[this] { return driverConnected_; }).WithPosition(5,0).WithSize(1,1);
-  tab.AddBoolean("Armed",[this] { return teleopDrive_.IsArmed(); }).WithPosition(6,0).WithSize(1,1);
+  stopTape_=tab.Add("Stop tape",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
+      .WithPosition(6,0).WithSize(1,1).GetEntry();
   tab.AddBoolean("IMU ready",[this] { return hardware_.IsImuConnected() && !hardware_.IsImuCalibrating(); })
       .WithPosition(7,0).WithSize(1,1);
   tab.AddNumber("X (mm)",[this] { return localization_.GetPose().x_MM; }).WithPosition(0,1).WithSize(2,1);
@@ -206,11 +215,11 @@ void RobotSubsystem::InitializeMotionDashboard() {
     tab.AddNumber(port+" PWM %",[this,i] { return std::round(hardware_.GetWheelCommand(i)*100); })
         .WithPosition(x+3,y).WithSize(1,1);
   }
-  startTape_=tab.Add("Start tape test",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
+  startTapeLeft_=tab.Add("Tape from left",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
       .WithPosition(4,3).WithSize(2,1).GetEntry();
-  stopTape_=tab.Add("Stop tape test",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
+  startTapeRight_=tab.Add("Tape from right",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
       .WithPosition(6,3).WithSize(2,1).GetEntry();
-  startTape_.SetBoolean(false); stopTape_.SetBoolean(false);
+  startTapeLeft_.SetBoolean(false); startTapeRight_.SetBoolean(false); stopTape_.SetBoolean(false);
 }
 void RobotSubsystem::InitializeSensingDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Sensing");
