@@ -74,14 +74,13 @@ void RobotSubsystem::UpdateTapeRoutine(double now,double dt,bool startLeft,bool 
   else if (start && tapeRoutine_.IsRunning()) {
     start=false; routineNotice_="Start ignored: tape task already running; Stop before changing approach";
   } else if (start) routineNotice_.clear();
-  const bool stationary=std::hypot(localization_.GetBodyVelocityX_MMps(),localization_.GetBodyVelocityY_MMps())
-      <=arena_test_config::STATIONARY_SPEED_MMPS &&
-      std::fabs(hardware_.GetYawRateDegreesPerSecond())<=arena_test_config::STATIONARY_YAW_DPS;
   TapeRoutineInput in;
+  // The shared legacy stationary flag is unused by the tape routine; actual
+  // body velocity and sustained heading/position tolerances govern completion.
   in.motion={localization_.GetPose(),now,dt,
       hardware_.IsImuConnected() && !hardware_.IsImuCalibrating() && localization_.IsHealthy() &&
           frc::DriverStation::GetInstance().IsDSAttached(),
-      stationary,start,stop,robot_geometry::Radians(hardware_.GetYawRateDegreesPerSecond())};
+      false,start,stop,robot_geometry::Radians(hardware_.GetYawRateDegreesPerSecond())};
   in.leftRangeMM=irReading_[0].distanceMM; in.leftValid=irReading_[0].valid; in.leftTime=lastSensorTime_;
   in.rearRangeMM=sonarRanges_MM_[1]; in.rearValid=sonarRangeValid_[1]; in.rearTime=sonarReadTime_[1];
   in.line=line_; in.cobraTime=lastSensorTime_; in.cobraCalibrated=cobraCheck_.Ready();
@@ -184,7 +183,7 @@ void RobotSubsystem::InitializeMotionDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Motion");
   tab.AddString("Motion status (15% floor)",[this] {
     // Visible revision distinguishes this executable from stale robot/UI data.
-    const std::string revision="P8-r8 | ";
+    const std::string revision="P8-r9 | ";
     if (!routineNotice_.empty()) return revision+routineNotice_;
     if (frc::RobotState::IsAutonomous()) return revision+tapeRoutine_.GetStatus();
     return revision+(hardware_.HasDriveFault() || hardware_.IsDriveStarting()?

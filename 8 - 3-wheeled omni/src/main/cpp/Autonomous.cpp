@@ -449,66 +449,32 @@ bool TapeAlignmentRoutine::Centered(const TapeRoutineInput& in) const {
       std::fabs(in.line.volts[1]-in.line.volts[2])<=tt::CENTER_VOLTAGE_TOLERANCE_V;
 }
 void TapeAlignmentRoutine::Begin(const TapeRoutineInput& in) {
-  if (!in.motion.stationary) { status_="Start ignored: wait until the robot is stationary"; return; }
-  if (!CobraHealthy(in)) { status_="Start ignored: check Cobra I2C and fresh valid readings; supplied calibration is already configured"; return; }
   if (in.approach!=TapeApproach::FromLeft && in.approach!=TapeApproach::FromRight) {
-    status_="Start ignored: invalid tape approach selection"; return;
+    status_="Choose a tape approach"; return;
   }
   approach_=in.approach;
   Stop(); heading_.Reset(); state_=State::Reference; stateTime_=in.motion.now;
-  // All reference samples must have been acquired AFTER the Start click.
-  referenceSamples_=0; lastLeftTime_=in.leftTime; lastRearTime_=in.rearTime;
-  sumLeft_=sumRear_=0; scanTravel_=0; settleTime_=-1;
-  status_=std::string(ApproachName())+"referencing rear -> Y=0 wall, left -> X=0 wall";
+  scanTravel_=0; settleTime_=-1;
+  status_=std::string(ApproachName())+"reading left IR and rear sonar";
 }
 void TapeAlignmentRoutine::SampleReference(const TapeRoutineInput& in) {
-  if (in.motion.now-stateTime_>tt::REFERENCE_TIMEOUT_S) {
-    Fail("Reference timeout: "+status_); return;
+  // Independent sensors update at different rates. Use their latest fresh,
+  // valid readings once; no gyro stillness gate, pairing window, sample-count
+  // requirement or reference timeout. Motors remain stopped while waiting.
+  if (!in.leftValid || !FreshSample(in.motion.now,in.leftTime,localization_config::SENSOR_STALE_S) ||
+      !std::isfinite(in.leftRangeMM) || in.leftRangeMM<localization_config::IR_MIN_RANGE_MM ||
+      in.leftRangeMM>localization_config::IR_MAX_RANGE_MM) {
+    status_="Waiting for left IR"; return;
   }
-  // Report the actual blocking condition. Fresh, valid sensors must not be
-  // blamed for a stillness or timestamp-pairing wait.
-  const char* problem=nullptr;
-  if (!in.leftValid || !std::isfinite(in.leftRangeMM) ||
-      in.leftRangeMM<localization_config::IR_MIN_RANGE_MM || in.leftRangeMM>localization_config::IR_MAX_RANGE_MM)
-    problem="Left IR invalid: final x2 gap must be 100-800 mm";
-  else if (!in.rearValid || !std::isfinite(in.rearRangeMM) ||
-      in.rearRangeMM<localization_config::SONAR_MIN_RANGE_MM || in.rearRangeMM>localization_config::SONAR_MAX_RANGE_MM)
-    problem="Rear sonar invalid: need a valid 20-4000 mm echo";
-  else if (!FreshSample(in.motion.now,in.leftTime,localization_config::SENSOR_STALE_S))
-    problem="Waiting for a fresh left IR reading";
-  else if (!FreshSample(in.motion.now,in.rearTime,localization_config::SONAR_READING_STALE_S))
-    problem="Waiting for a fresh rear sonar reading";
-  else if (!in.motion.stationary)
-    problem="Sensors valid: waiting for wheels/gyro to report stationary";
-  if (problem) {
-    referenceSamples_=0; sumLeft_=sumRear_=0; status_=problem; return;
+  if (!in.rearValid || !FreshSample(in.motion.now,in.rearTime,localization_config::SONAR_READING_STALE_S) ||
+      !std::isfinite(in.rearRangeMM) || in.rearRangeMM<localization_config::SONAR_MIN_RANGE_MM ||
+      in.rearRangeMM>localization_config::SONAR_MAX_RANGE_MM) {
+    status_="Waiting for rear sonar"; return;
   }
-  RobotPose candidate;
-  if (!PoseFromWalls(in.leftRangeMM,in.rearRangeMM,candidate)) {
-    referenceSamples_=0; sumLeft_=sumRear_=0;
-    status_="Sensors valid: calculated corner pose is outside the arena or wall geometry is inconsistent"; return;
+  if (!PoseFromWalls(in.leftRangeMM,in.rearRangeMM,referencePose_)) {
+    status_="Reference position is outside the arena"; return;
   }
-  // In particular, never count one cached sonar return multiple times.
-  if (in.leftTime<=lastLeftTime_ || in.rearTime<=lastRearTime_) {
-    status_="Sensors valid: waiting for new paired readings ("+std::to_string(referenceSamples_)+"/"+
-        std::to_string(tt::REFERENCE_SAMPLES)+")"; return;
-  }
-  if (std::fabs(in.leftTime-in.rearTime)>tt::REFERENCE_MAX_PAIR_AGE_S) {
-    status_="Sensors valid: waiting for left/rear timestamps to align"; return;
-  }
-  lastLeftTime_=in.leftTime; lastRearTime_=in.rearTime;
-  if (referenceSamples_==0) { minLeft_=maxLeft_=in.leftRangeMM; minRear_=maxRear_=in.rearRangeMM; }
-  minLeft_=std::min(minLeft_,in.leftRangeMM); maxLeft_=std::max(maxLeft_,in.leftRangeMM);
-  minRear_=std::min(minRear_,in.rearRangeMM); maxRear_=std::max(maxRear_,in.rearRangeMM);
-  if (maxLeft_-minLeft_>tt::REFERENCE_MAX_SPREAD_MM || maxRear_-minRear_>tt::REFERENCE_MAX_SPREAD_MM) {
-    referenceSamples_=0; sumLeft_=sumRear_=0; status_="Reference readings unstable; hold still"; return;
-  }
-  sumLeft_+=in.leftRangeMM; sumRear_+=in.rearRangeMM; ++referenceSamples_;
-  if (referenceSamples_<tt::REFERENCE_SAMPLES) return;
-  if (!PoseFromWalls(sumLeft_/referenceSamples_,sumRear_/referenceSamples_,referencePose_)) {
-    Fail("Cannot calculate corner reference from these walls/heading"); return;
-  }
-  state_=State::ReferenceReady; status_="Wall reference ready; anchoring encoder/gyro pose";
+  state_=State::ReferenceReady; status_="Starting pose ready";
 }
 void TapeAlignmentRoutine::ConfirmPoseReset(double now) {
   if (!NeedsPoseReset()) return;
@@ -557,7 +523,8 @@ void TapeAlignmentRoutine::DriveWaypoint(const TapeRoutineInput& in,double oldFo
   }
   if (waypointPhase_==WaypointPhase::Settle) {
     status_="Stopped at waypoint: verifying XY and heading";
-    if (!m.stationary || std::fabs(headingError)>arena_test_config::HEADING_TOLERANCE_RAD) {
+    if (std::hypot(in.bodyForwardMMps,in.bodyLeftMMps)>arena_test_config::STATIONARY_SPEED_MMPS ||
+        std::fabs(headingError)>arena_test_config::HEADING_TOLERANCE_RAD) {
       settleTime_=-1; return;
     }
     if (settleTime_<0) settleTime_=m.now;
@@ -601,7 +568,6 @@ void TapeAlignmentRoutine::Update(const TapeRoutineInput& in) {
     Fail("Unhealthy IMU/odometry, disconnected Control Station or stale timing - stopped"); return;
   }
   if (!IsRunning()) { Begin(in); return; }
-  if (!CobraHealthy(in)) { Fail("Cobra disconnected, invalid, uncalibrated or stale - stopped"); return; }
   if (state_==State::Reference) { SampleReference(in); return; }
   if (state_==State::ReferenceReady) return; // wait for the explicit pose-reset handshake
   const auto yawFault=heading_.CheckFeedback(oldYaw,m.yawRateRadps,m.dt);
@@ -615,6 +581,10 @@ void TapeAlignmentRoutine::Update(const TapeRoutineInput& in) {
     if (m.now-stateTime_>tt::DRIVE_TIMEOUT_S) { Fail(std::string(ApproachName())+"drive to waypoint timed out - stopped"); return; }
     DriveWaypoint(in,oldForward,oldLeft,headingError);
   } else {
+    if (!CobraHealthy(in)) {
+      Stop(); heading_.Reset(); scanTime_+=m.dt; settleTime_=lostTime_=-1;
+      status_="Waiting for Cobra reading"; return;
+    }
     scanTravel_=std::hypot(m.pose.x_MM-scanStart_.x_MM,m.pose.y_MM-scanStart_.y_MM);
     if (scanTravel_>tt::SCAN_MAX_TRAVEL_MM || m.now-scanTime_>tt::SCAN_TIMEOUT_S) {
       Fail("Tape scan limit reached without a stable CH1/CH2 match - stopped"); return;
@@ -622,7 +592,8 @@ void TapeAlignmentRoutine::Update(const TapeRoutineInput& in) {
     if (Centered(in)) {
       if (state_!=State::VerifyTape) { state_=State::VerifyTape; settleTime_=-1; }
       status_="CH1/CH2 match on tape: stopped, verifying alignment";
-      if (m.stationary && std::fabs(headingError)<=arena_test_config::HEADING_TOLERANCE_RAD) {
+      if (std::hypot(in.bodyForwardMMps,in.bodyLeftMMps)<=arena_test_config::STATIONARY_SPEED_MMPS &&
+          std::fabs(headingError)<=arena_test_config::HEADING_TOLERANCE_RAD) {
         if (settleTime_<0) settleTime_=m.now;
         if (m.now-settleTime_>=tt::TAPE_SETTLE_S) {
           Stop(); state_=State::Complete;

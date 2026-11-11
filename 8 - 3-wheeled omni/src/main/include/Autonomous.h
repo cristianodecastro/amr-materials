@@ -96,9 +96,6 @@ class TapeAlignmentRoutine {
   double forward_=0,left_=0,yaw_=0,stateTime_=0,scanTime_=0,settleTime_=-1,lostTime_=-1;
   double motionEffortTime_=0,scanTravel_=0;
   double phaseTime_=0,filteredForward_=0,filteredLeft_=0,correctionX_=0,correctionY_=0;
-  double lastLeftTime_=-1,lastRearTime_=-1;
-  double sumLeft_=0,sumRear_=0,minLeft_=0,maxLeft_=0,minRear_=0,maxRear_=0;
-  int referenceSamples_=0;
   HeadingMotionControl heading_;
 };
 

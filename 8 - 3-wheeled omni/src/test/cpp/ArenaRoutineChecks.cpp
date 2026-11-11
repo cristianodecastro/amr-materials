@@ -912,40 +912,46 @@ void ReachTapeWaypoint(TapeAlignmentRoutine& routine,TapeRoutineInput& in) {
   }
   REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::SearchTape);
 }
-void TapeReferenceRejectsInvalidStaleAndRepeatedSamples() {
+void TapeReferenceNeedsOnlyFreshValidRanges() {
   RobotPose pose;
   REQUIRE_ARENA(TapeAlignmentRoutine::PoseFromWalls(150,100,pose));
   REQUIRE_ARENA(Near(pose.x_MM,200) && Near(pose.y_MM,275) && Near(pose.headingRad,robot_geometry::PI/2));
   REQUIRE_ARENA(!TapeAlignmentRoutine::PoseFromWalls(90,100,pose));
   REQUIRE_ARENA(!TapeAlignmentRoutine::PoseFromWalls(150,-1,pose));
   REQUIRE_ARENA(!TapeAlignmentRoutine::PoseFromWalls(std::numeric_limits<double>::quiet_NaN(),100,pose));
-  TapeAlignmentRoutine routine;
-  auto in=TapeInput(); routine.Enter();
+  TapeAlignmentRoutine routine; auto in=TapeInput(); routine.Enter();
+  in.motion.stationary=false; in.motion.yawRateRadps=robot_geometry::Radians(1.5);
   in.motion.startRequested=true; routine.Update(in); in.motion.startRequested=false;
-  in.leftValid=false;
-  for (int i=0;i<4;++i) { FreshTapeTick(in); routine.Update(in); }
-  REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::Reference && !routine.NeedsPoseReset());
-  REQUIRE_ARENA(routine.GetForwardMMps()==0 && routine.GetLeftMMps()==0);
-  in.leftValid=true; FreshTapeTick(in); routine.Update(in); // first valid pair
-  const double cachedRearTime=in.rearTime;
-  for (int i=0;i<7;++i) {
-    FreshTapeTick(in); in.rearTime=cachedRearTime; routine.Update(in);
-  }
-  REQUIRE_ARENA(!routine.NeedsPoseReset()); // never average repeated rear samples
-  for (int i=0;i<2;++i) { FreshTapeTick(in); routine.Update(in); }
-  REQUIRE_ARENA(routine.NeedsPoseReset()); // cached-frame waits did not clear the valid first pair
+  REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::Reference);
+  // A cached but fresh pair suffices; no stillness or post-Start count condition.
+  in.motion.now+=in.motion.dt; routine.Update(in);
+  REQUIRE_ARENA(routine.NeedsPoseReset());
   REQUIRE_ARENA(Near(routine.GetReferencePose().x_MM,300));
-  routine.ConfirmPoseReset(in.motion.now);
-  in.motion.pose=routine.GetReferencePose();
+  REQUIRE_ARENA(Near(routine.GetReferencePose().y_MM,275));
+  in.motion.pose=routine.GetReferencePose(); routine.ConfirmPoseReset(in.motion.now);
   FreshTapeTick(in); routine.Update(in);
-  REQUIRE_ARENA(routine.GetForwardMMps()>0 && routine.GetLeftMMps()>0); // north-west toward (220,500)
+  REQUIRE_ARENA(routine.GetForwardMMps()>0 && routine.GetLeftMMps()>0);
   routine.Abort();
   REQUIRE_ARENA(!routine.IsRunning() && routine.GetForwardMMps()==0 && routine.GetYawRadps()==0);
-  in=TapeInput(); routine.Enter(); in.cobraCalibrated=false; in.motion.startRequested=true; routine.Update(in);
-  REQUIRE_ARENA(!routine.IsRunning());
-  in=TapeInput(); AnchorTapeRoutine(routine,in);
-  FreshTapeTick(in); in.cobraTime=in.motion.now-1; routine.Update(in);
-  REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::Fault && routine.GetLeftMMps()==0);
+  in=TapeInput(); routine.Enter(); in.motion.stationary=false;
+  in.motion.startRequested=true; routine.Update(in); in.motion.startRequested=false;
+  in.leftValid=false;
+  for (int tick=0;tick<700;++tick) { FreshTapeTick(in); routine.Update(in); }
+  REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::Reference);
+  REQUIRE_ARENA(routine.GetStatus()=="Waiting for left IR");
+  REQUIRE_ARENA(routine.GetForwardMMps()==0 && routine.GetLeftMMps()==0 && routine.GetYawRadps()==0);
+  in.leftValid=true; in.rearValid=false;
+  for (int tick=0;tick<700;++tick) { FreshTapeTick(in); routine.Update(in); }
+  REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::Reference);
+  REQUIRE_ARENA(routine.GetStatus()=="Waiting for rear sonar");
+  in.rearValid=true; FreshTapeTick(in); in.rearTime=in.motion.now-1; routine.Update(in);
+  REQUIRE_ARENA(!routine.NeedsPoseReset());
+  FreshTapeTick(in); in.leftTime=in.motion.now-1; routine.Update(in);
+  REQUIRE_ARENA(!routine.NeedsPoseReset());
+  FreshTapeTick(in);
+  in.rearTime=in.motion.now-0.25; // independently fresh; no pairing restriction
+  routine.Update(in);
+  REQUIRE_ARENA(routine.NeedsPoseReset());
 }
 void TapeEqualityRequiresActualTapeAndStableStop() {
   TapeAlignmentRoutine routine; auto in=TapeInput(); ReachTapeWaypoint(routine,in);
@@ -969,30 +975,33 @@ void TapeEqualityRequiresActualTapeAndStableStop() {
   for (int tick=0;tick<22;++tick) { FreshTapeTick(in); routine.Update(in); }
   REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::Complete && routine.GetLeftMMps()==0);
 }
-void TapeReferenceReportsTheActualBlockingInput() {
-  TapeAlignmentRoutine routine; auto in=TapeInput(); routine.Enter();
-  in.motion.startRequested=true; routine.Update(in); in.motion.startRequested=false;
-  in.motion.stationary=false; FreshTapeTick(in); routine.Update(in);
-  REQUIRE_ARENA(routine.GetStatus().find("Sensors valid: waiting for wheels/gyro")!=std::string::npos);
-  REQUIRE_ARENA(routine.GetForwardMMps()==0 && routine.GetLeftMMps()==0);
-  in.motion.stationary=true; in.leftValid=false; FreshTapeTick(in); routine.Update(in);
-  REQUIRE_ARENA(routine.GetStatus().find("Left IR invalid: final x2 gap")!=std::string::npos);
-  in.leftValid=true; in.rearValid=false; FreshTapeTick(in); routine.Update(in);
-  REQUIRE_ARENA(routine.GetStatus().find("Rear sonar invalid")!=std::string::npos);
-  in.rearValid=true; FreshTapeTick(in); in.rearTime=in.motion.now-0.5; routine.Update(in);
-  REQUIRE_ARENA(routine.GetStatus().find("fresh rear sonar")!=std::string::npos);
-  FreshTapeTick(in); in.leftTime=in.motion.now-0.3; routine.Update(in);
-  REQUIRE_ARENA(routine.GetStatus().find("fresh left IR")!=std::string::npos);
-  for (int tick=0;tick<3;++tick) { FreshTapeTick(in); routine.Update(in); }
-  REQUIRE_ARENA(routine.NeedsPoseReset()); // valid readings still reference normally after recovery
-  REQUIRE_ARENA(Near(routine.GetReferencePose().x_MM,300)); // 250 mm gap + 50 mm mount
-  REQUIRE_ARENA(Near(routine.GetReferencePose().y_MM,275));
-  in=TapeInput(); routine.Enter(); in.motion.startRequested=true; routine.Update(in);
-  in.motion.startRequested=false; in.rearValid=false;
+void TapeSensorWaitsRecoverAndGyroNoiseDoesNotBlockCompletion() {
+  TapeAlignmentRoutine routine; auto in=TapeInput();
+  in.cobraCalibrated=false; in.line.communicationValid=false;
+  in.motion.stationary=false;
+  ReachTapeWaypoint(routine,in); // Cobra is not required for reference/XY travel
+  for (int tick=0;tick<1100;++tick) { FreshTapeTick(in); routine.Update(in); }
+  REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::SearchTape);
+  REQUIRE_ARENA(routine.GetStatus()=="Waiting for Cobra reading");
+  REQUIRE_ARENA(routine.GetForwardMMps()==0 && routine.GetLeftMMps()==0 && routine.GetYawRadps()==0);
+  in.cobraCalibrated=true; in.line.communicationValid=true;
   FreshTapeTick(in); routine.Update(in);
-  in.motion.now+=tape_test_config::REFERENCE_TIMEOUT_S+0.1; FreshTapeTick(in); routine.Update(in);
-  REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::Fault);
-  REQUIRE_ARENA(routine.GetStatus().find("Reference timeout: Rear sonar invalid")!=std::string::npos);
+  REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::SearchTape && routine.GetLeftMMps()<0);
+  in.blackLevel[0]=in.blackLevel[3]=0; in.blackLevel[1]=in.blackLevel[2]=1;
+  in.line.volts[0]=in.line.volts[3]=0.5; in.line.volts[1]=in.line.volts[2]=4.5;
+  in.motion.yawRateRadps=robot_geometry::Radians(1.5); // noisy stationary indication
+  in.bodyForwardMMps=30; // real translation still prevents completion
+  for (int tick=0;tick<25;++tick) { FreshTapeTick(in); routine.Update(in); }
+  REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::VerifyTape);
+  in.bodyForwardMMps=0;
+  for (int tick=0;tick<25;++tick) { FreshTapeTick(in); routine.Update(in); }
+  REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::Complete);
+  in=TapeInput(); routine.Enter(); in.rearValid=false;
+  in.motion.startRequested=true; routine.Update(in); in.motion.startRequested=false;
+  FreshTapeTick(in); routine.Update(in);
+  in.motion.stopRequested=true; FreshTapeTick(in); routine.Update(in);
+  REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::Aborted);
+  REQUIRE_ARENA(routine.GetForwardMMps()==0 && routine.GetLeftMMps()==0);
 }
 void TapeLimitsAndCenterDirection() {
   TapeAlignmentRoutine routine; auto in=TapeInput(); ReachTapeWaypoint(routine,in);
@@ -1086,8 +1095,8 @@ void SimulateCornerToWaypointToTape(TapeApproach approach=TapeApproach::FromLeft
   REQUIRE_ARENA(routine.GetForwardMMps()==0 && routine.GetLeftMMps()==0 && routine.GetYawRadps()==0);
 }
 void TapeRoutineChecks() {
-  TapeReferenceRejectsInvalidStaleAndRepeatedSamples(); TapeEqualityRequiresActualTapeAndStableStop();
-  TapeReferenceReportsTheActualBlockingInput();
+  TapeReferenceNeedsOnlyFreshValidRanges(); TapeEqualityRequiresActualTapeAndStableStop();
+  TapeSensorWaitsRecoverAndGyroNoiseDoesNotBlockCompletion();
   TapeApproachSelectionAndSearchDirections();
   TapeLimitsAndCenterDirection(); SimulateCornerToWaypointToTape();
   SimulateCornerToWaypointToTape(TapeApproach::FromRight);
@@ -1125,11 +1134,11 @@ void WaypointWithCoastingAndMotorDeadband(double lag,double deadband,bool screen
 void WaypointSettlingDoesNotExpireProgressWatchdog() {
   TapeAlignmentRoutine routine; auto in=TapeInput(); AnchorTapeRoutine(routine,in);
   in.motion.pose={220,500,robot_geometry::PI/2};
-  in.motion.stationary=false; // the robot has entered tolerance but is still coasting
+  in.motion.stationary=false; in.bodyForwardMMps=30; // inside tolerance but still coasting
   for (int tick=0;tick<130;++tick) { FreshTapeTick(in); routine.Update(in); }
   REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::DriveToPoint);
   in.motion.pose={226.037002,486.136416,robot_geometry::PI/2}; // drifts just outside 15 mm
-  in.motion.stationary=true;
+  in.motion.stationary=true; in.bodyForwardMMps=0;
   for (int tick=0;tick<18;++tick) { FreshTapeTick(in); routine.Update(in); }
   REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::DriveToPoint);
   REQUIRE_ARENA(routine.GetForwardMMps()>0); // correction was not killed by time spent stopped
