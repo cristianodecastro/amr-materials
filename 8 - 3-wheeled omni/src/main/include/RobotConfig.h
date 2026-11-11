@@ -103,8 +103,8 @@ static constexpr double START_HEADING_DEG = 0.0; // editable SP heading
 // are treated as sensing-face offsets on the four cardinal centerlines.
 static constexpr double FRONT_SENSOR_OFFSET_MM = 160.0;
 static constexpr double REAR_SENSOR_OFFSET_MM = 175.0;
-static constexpr double LEFT_SENSOR_OFFSET_MM = 150.0;
-static constexpr double RIGHT_SENSOR_OFFSET_MM = 150.0;
+static constexpr double LEFT_SENSOR_OFFSET_MM = 50.0;
+static constexpr double RIGHT_SENSOR_OFFSET_MM = 50.0;
 
 // Geometry used by the retained route library, independent of sensor type.
 struct RangeSensorMount {

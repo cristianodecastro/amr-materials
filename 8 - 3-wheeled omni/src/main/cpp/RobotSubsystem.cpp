@@ -51,7 +51,7 @@ void RobotSubsystem::Periodic() {
     // No calibration requests, regardless of Control Station mode.
     cobraCheck_.Update(line_,now,false,false,false);
   }
-  UpdateSonarPoll(now,enabled);
+  UpdateSonarPoll(now);
   const bool startLeft=startTapeLeft_.GetBoolean(false),startRight=startTapeRight_.GetBoolean(false);
   const bool stop=stopTape_.GetBoolean(false);
   if (startLeft) startTapeLeft_.SetBoolean(false);
@@ -156,16 +156,14 @@ void RobotSubsystem::UpdateTeleopDrive(double dt) {
     hardware_.SetServoAngle(i,servoTeleop_.TargetDegrees(i),servoTeleop_.OutputEnabled(i));
 }
 
-void RobotSubsystem::UpdateSonarPoll(double now,bool enabled) {
+void RobotSubsystem::UpdateSonarPoll(double now) {
   for (int i=0;i<localization_config::SONAR_COUNT;++i) {
-    if (!enabled || now-sonarReadTime_[i]>localization_config::SONAR_READING_STALE_S) {
+    if (now-sonarReadTime_[i]>localization_config::SONAR_READING_STALE_S) {
       sonarRanges_MM_[i]=-1; sonarRangeValid_[i]=false;
     }
   }
-  if (!enabled) {
-    sonarAwaitingEcho_=false; nextSonarIndex_=0; lastSonarPingTime_=now;
-    return;
-  }
+  // Sensor diagnostics remain live while Disabled; drive/manipulator enable
+  // gates are independent. Keep staggering pings to avoid acoustic crosstalk.
   if (sonarAwaitingEcho_) {
     if (now-sonarPingTime_<localization_config::SONAR_ECHO_SETTLE_S) return;
     const int i=nextSonarIndex_;
@@ -186,7 +184,7 @@ void RobotSubsystem::InitializeMotionDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Motion");
   tab.AddString("Motion status (15% floor)",[this] {
     // Visible revision distinguishes this executable from stale robot/UI data.
-    const std::string revision="P8-r7 | ";
+    const std::string revision="P8-r8 | ";
     if (!routineNotice_.empty()) return revision+routineNotice_;
     if (frc::RobotState::IsAutonomous()) return revision+tapeRoutine_.GetStatus();
     return revision+(hardware_.HasDriveFault() || hardware_.IsDriveStarting()?
@@ -263,8 +261,7 @@ void RobotSubsystem::InitializeSensingDashboard() {
   tab.AddNumber("Scan travel (mm)",[this] { return tapeRoutine_.GetScanTravelMM(); })
       .WithPosition(2,4).WithSize(2,1);
   tab.AddString("Sensing status",[this] {
-    return std::string("Fixed supplied Cobra calibration | ")+
-        (frc::RobotState::IsEnabled()?"":"Sonars paused while disabled | ")+cobraCheck_.Status();
+    return std::string("All sensors live; fixed Cobra calibration | ")+cobraCheck_.Status();
   }).WithPosition(4,4).WithSize(4,1);
 }
 void RobotSubsystem::InitializeManipulatorDashboard() {

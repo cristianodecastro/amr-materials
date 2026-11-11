@@ -14,6 +14,8 @@ inline IrReading SharpIrFromVoltage(double voltage) {
   if (voltage<=0 || voltage>localization_config::IR_MAX_INPUT_V) return reading;
   // Convert Studica's cm formula to mm and apply the requested x2 correction.
   const double distance=277.26*std::pow(voltage,-1.2045)*2.0;
+  // Range validity is based ONLY on this final doubled face-to-object gap.
+  // The sensor's mounting offset is added later during pose referencing.
   if (!std::isfinite(distance) || distance<localization_config::IR_MIN_RANGE_MM ||
       distance>localization_config::IR_MAX_RANGE_MM) return reading;
   reading.distanceMM=distance;

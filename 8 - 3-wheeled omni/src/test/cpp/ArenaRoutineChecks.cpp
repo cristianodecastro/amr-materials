@@ -573,7 +573,13 @@ void SharpAnalogConversionAndValidity() {
   const double rawFor200MM=std::pow(200/277.26,-1/1.2045);
   RobotPose pose;
   REQUIRE_ARENA(TapeAlignmentRoutine::PoseFromWalls(SharpIrFromVoltage(rawFor200MM).distanceMM,100,pose));
-  REQUIRE_ARENA(Near(pose.x_MM,550) && Near(pose.y_MM,275));
+  REQUIRE_ARENA(Near(pose.x_MM,450) && Near(pose.y_MM,275));
+  // Nominal 60 mm is invalid before doubling but 120 mm is a valid final gap.
+  const auto doubledIntoRange=SharpIrFromVoltage(std::pow(60/277.26,-1/1.2045));
+  REQUIRE_ARENA(doubledIntoRange.valid && Near(doubledIntoRange.distanceMM,120));
+  // Nominal 450 mm must instead reject after doubling to 900 mm.
+  const auto doubledOutOfRange=SharpIrFromVoltage(std::pow(450/277.26,-1/1.2045));
+  REQUIRE_ARENA(!doubledOutOfRange.valid && doubledOutOfRange.distanceMM==-1);
 }
 void YawRateUsesSensorSampleTime() {
   for (int sampleMS:{5,20,40}) for (int sign:{-1,1}) {
@@ -878,7 +884,7 @@ void AutonomousDistanceScaleDoesNotChangeTeleopOrHeading() {
 TapeRoutineInput TapeInput() {
   TapeRoutineInput in;
   in.motion={{950,900,0},0,0.02,true,true,false,false,0}; // pre-reference pose is deliberately unrelated
-  in.leftRangeMM=150; in.rearRangeMM=100;
+  in.leftRangeMM=250; in.rearRangeMM=100;
   in.leftTime=in.rearTime=in.cobraTime=0;
   in.leftValid=in.rearValid=in.cobraCalibrated=true;
   in.line.communicationValid=true;
@@ -909,7 +915,7 @@ void ReachTapeWaypoint(TapeAlignmentRoutine& routine,TapeRoutineInput& in) {
 void TapeReferenceRejectsInvalidStaleAndRepeatedSamples() {
   RobotPose pose;
   REQUIRE_ARENA(TapeAlignmentRoutine::PoseFromWalls(150,100,pose));
-  REQUIRE_ARENA(Near(pose.x_MM,300) && Near(pose.y_MM,275) && Near(pose.headingRad,robot_geometry::PI/2));
+  REQUIRE_ARENA(Near(pose.x_MM,200) && Near(pose.y_MM,275) && Near(pose.headingRad,robot_geometry::PI/2));
   REQUIRE_ARENA(!TapeAlignmentRoutine::PoseFromWalls(90,100,pose));
   REQUIRE_ARENA(!TapeAlignmentRoutine::PoseFromWalls(150,-1,pose));
   REQUIRE_ARENA(!TapeAlignmentRoutine::PoseFromWalls(std::numeric_limits<double>::quiet_NaN(),100,pose));
@@ -962,6 +968,31 @@ void TapeEqualityRequiresActualTapeAndStableStop() {
   in.blackLevel[1]=1; in.line.volts[1]=4.5;
   for (int tick=0;tick<22;++tick) { FreshTapeTick(in); routine.Update(in); }
   REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::Complete && routine.GetLeftMMps()==0);
+}
+void TapeReferenceReportsTheActualBlockingInput() {
+  TapeAlignmentRoutine routine; auto in=TapeInput(); routine.Enter();
+  in.motion.startRequested=true; routine.Update(in); in.motion.startRequested=false;
+  in.motion.stationary=false; FreshTapeTick(in); routine.Update(in);
+  REQUIRE_ARENA(routine.GetStatus().find("Sensors valid: waiting for wheels/gyro")!=std::string::npos);
+  REQUIRE_ARENA(routine.GetForwardMMps()==0 && routine.GetLeftMMps()==0);
+  in.motion.stationary=true; in.leftValid=false; FreshTapeTick(in); routine.Update(in);
+  REQUIRE_ARENA(routine.GetStatus().find("Left IR invalid: final x2 gap")!=std::string::npos);
+  in.leftValid=true; in.rearValid=false; FreshTapeTick(in); routine.Update(in);
+  REQUIRE_ARENA(routine.GetStatus().find("Rear sonar invalid")!=std::string::npos);
+  in.rearValid=true; FreshTapeTick(in); in.rearTime=in.motion.now-0.5; routine.Update(in);
+  REQUIRE_ARENA(routine.GetStatus().find("fresh rear sonar")!=std::string::npos);
+  FreshTapeTick(in); in.leftTime=in.motion.now-0.3; routine.Update(in);
+  REQUIRE_ARENA(routine.GetStatus().find("fresh left IR")!=std::string::npos);
+  for (int tick=0;tick<3;++tick) { FreshTapeTick(in); routine.Update(in); }
+  REQUIRE_ARENA(routine.NeedsPoseReset()); // valid readings still reference normally after recovery
+  REQUIRE_ARENA(Near(routine.GetReferencePose().x_MM,300)); // 250 mm gap + 50 mm mount
+  REQUIRE_ARENA(Near(routine.GetReferencePose().y_MM,275));
+  in=TapeInput(); routine.Enter(); in.motion.startRequested=true; routine.Update(in);
+  in.motion.startRequested=false; in.rearValid=false;
+  FreshTapeTick(in); routine.Update(in);
+  in.motion.now+=tape_test_config::REFERENCE_TIMEOUT_S+0.1; FreshTapeTick(in); routine.Update(in);
+  REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::Fault);
+  REQUIRE_ARENA(routine.GetStatus().find("Reference timeout: Rear sonar invalid")!=std::string::npos);
 }
 void TapeLimitsAndCenterDirection() {
   TapeAlignmentRoutine routine; auto in=TapeInput(); ReachTapeWaypoint(routine,in);
@@ -1056,6 +1087,7 @@ void SimulateCornerToWaypointToTape(TapeApproach approach=TapeApproach::FromLeft
 }
 void TapeRoutineChecks() {
   TapeReferenceRejectsInvalidStaleAndRepeatedSamples(); TapeEqualityRequiresActualTapeAndStableStop();
+  TapeReferenceReportsTheActualBlockingInput();
   TapeApproachSelectionAndSearchDirections();
   TapeLimitsAndCenterDirection(); SimulateCornerToWaypointToTape();
   SimulateCornerToWaypointToTape(TapeApproach::FromRight);

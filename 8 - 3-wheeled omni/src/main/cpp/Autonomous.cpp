@@ -463,19 +463,39 @@ void TapeAlignmentRoutine::Begin(const TapeRoutineInput& in) {
 }
 void TapeAlignmentRoutine::SampleReference(const TapeRoutineInput& in) {
   if (in.motion.now-stateTime_>tt::REFERENCE_TIMEOUT_S) {
-    Fail("Reference timeout: need stable valid left IR (100-800 mm gap) and rear sonar"); return;
+    Fail("Reference timeout: "+status_); return;
   }
-  const bool valid=in.motion.stationary && in.leftValid && in.rearValid &&
-      FreshSample(in.motion.now,in.leftTime,localization_config::SENSOR_STALE_S) &&
-      FreshSample(in.motion.now,in.rearTime,localization_config::SONAR_READING_STALE_S);
+  // Report the actual blocking condition. Fresh, valid sensors must not be
+  // blamed for a stillness or timestamp-pairing wait.
+  const char* problem=nullptr;
+  if (!in.leftValid || !std::isfinite(in.leftRangeMM) ||
+      in.leftRangeMM<localization_config::IR_MIN_RANGE_MM || in.leftRangeMM>localization_config::IR_MAX_RANGE_MM)
+    problem="Left IR invalid: final x2 gap must be 100-800 mm";
+  else if (!in.rearValid || !std::isfinite(in.rearRangeMM) ||
+      in.rearRangeMM<localization_config::SONAR_MIN_RANGE_MM || in.rearRangeMM>localization_config::SONAR_MAX_RANGE_MM)
+    problem="Rear sonar invalid: need a valid 20-4000 mm echo";
+  else if (!FreshSample(in.motion.now,in.leftTime,localization_config::SENSOR_STALE_S))
+    problem="Waiting for a fresh left IR reading";
+  else if (!FreshSample(in.motion.now,in.rearTime,localization_config::SONAR_READING_STALE_S))
+    problem="Waiting for a fresh rear sonar reading";
+  else if (!in.motion.stationary)
+    problem="Sensors valid: waiting for wheels/gyro to report stationary";
+  if (problem) {
+    referenceSamples_=0; sumLeft_=sumRear_=0; status_=problem; return;
+  }
   RobotPose candidate;
-  if (!valid || !PoseFromWalls(in.leftRangeMM,in.rearRangeMM,candidate)) {
+  if (!PoseFromWalls(in.leftRangeMM,in.rearRangeMM,candidate)) {
     referenceSamples_=0; sumLeft_=sumRear_=0;
-    status_="Waiting for valid reference gaps; keep left IR at least 100 mm from wall"; return;
+    status_="Sensors valid: calculated corner pose is outside the arena or wall geometry is inconsistent"; return;
   }
   // In particular, never count one cached sonar return multiple times.
-  if (in.leftTime<=lastLeftTime_ || in.rearTime<=lastRearTime_) return;
-  if (std::fabs(in.leftTime-in.rearTime)>tt::REFERENCE_MAX_PAIR_AGE_S) return;
+  if (in.leftTime<=lastLeftTime_ || in.rearTime<=lastRearTime_) {
+    status_="Sensors valid: waiting for new paired readings ("+std::to_string(referenceSamples_)+"/"+
+        std::to_string(tt::REFERENCE_SAMPLES)+")"; return;
+  }
+  if (std::fabs(in.leftTime-in.rearTime)>tt::REFERENCE_MAX_PAIR_AGE_S) {
+    status_="Sensors valid: waiting for left/rear timestamps to align"; return;
+  }
   lastLeftTime_=in.leftTime; lastRearTime_=in.rearTime;
   if (referenceSamples_==0) { minLeft_=maxLeft_=in.leftRangeMM; minRear_=maxRear_=in.rearRangeMM; }
   minLeft_=std::min(minLeft_,in.leftRangeMM); maxLeft_=std::max(maxLeft_,in.leftRangeMM);

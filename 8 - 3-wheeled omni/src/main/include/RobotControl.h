@@ -157,7 +157,7 @@ class RobotSubsystem : public frc2::SubsystemBase {
   void InitializeSensingDashboard();
   void InitializeManipulatorDashboard();
   void UpdateTeleopDrive(double dt);
-  void UpdateSonarPoll(double now, bool enabled);
+  void UpdateSonarPoll(double now);
   void UpdateTapeRoutine(double now,double dt,bool startLeft,bool startRight,bool stop);
 
   Hardware hardware_;
