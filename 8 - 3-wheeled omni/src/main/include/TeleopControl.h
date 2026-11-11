@@ -26,6 +26,28 @@ inline constexpr double WheelOutput(double demand,double cap) {
   const double magnitude=floor+(cap-floor)*std::min(cap,std::fabs(demand))/cap;
   return EnforceFloor(demand<0?-magnitude:magnitude,cap);
 }
+
+// Studica 1.1.28 sends int(abs(Set argument)*100) in the CAN packet.
+// Round UP useful commands, DOWN the cap, and UP the floor in that same
+// whole-percent domain. Telemetry must use this value, not the pre-wire ramp.
+inline constexpr int TitanPercent(double output,double cap) {
+  const double limited=EnforceFloor(output,cap);
+  if (limited==0) return 0;
+  const int minimum=static_cast<int>(std::ceil(motor_output_config::MIN_RUNNING_OUTPUT*100-1e-9));
+  const int maximum=static_cast<int>(std::floor(cap*100+1e-9));
+  if (maximum<minimum) return 0;
+  const int wanted=static_cast<int>(std::ceil(std::fabs(limited)*100-1e-9));
+  const int percent=std::min(maximum,std::max(minimum,wanted));
+  return output<0?-percent:percent;
+}
+
+inline double TitanSetArgument(int percent) {
+  if (percent==0) return 0;
+  // Guard e.g. 29/100*100 becoming 28.999999... before vendor truncation.
+  // The encoded duty remains exactly abs(percent), including at the cap.
+  const double magnitude=std::nextafter(std::fabs(percent)/100.0,1.0);
+  return percent<0?-magnitude:magnitude;
+}
 }
 
 // Wheel geometry and shared output normalization.

@@ -603,6 +603,42 @@ void CobraCalibrationRetainedAcrossRestarts() {
   REQUIRE_ARENA(Near(stillSaved.White(0),white[0]+0.05));
   std::remove(path.c_str()); std::remove(bad.c_str());
 }
+void FixedCobraReferencesNeedNoCalibration() {
+  const double white[4]={2.172852,1.005859,1.257324,2.868652};
+  for (int boot=0;boot<3;++boot) {
+    CobraCheck check; // exactly the active RobotSubsystem construction path
+    LineReading reading; reading.communicationValid=true;
+    for (int step=0;step<100;++step) {
+      const double level=step%3==0?0:(step%3==1?0.6:1);
+      for (int i=0;i<4;++i) reading.volts[i]=white[i]+level*(4.997559-white[i]);
+      check.Update(reading,step*0.05,false,false,false); // no capture/file overrides
+      REQUIRE_ARENA(check.Ready() && check.CalibrationRevision()==0);
+      for (int i=0;i<4;++i) {
+        REQUIRE_ARENA(check.White(i)==white[i] && check.Black(i)==4.997559);
+        REQUIRE_ARENA(Near(check.BlackLevel(i),level));
+        REQUIRE_ARENA(check.IsBlack(i)==(level>=0.5));
+      }
+    }
+  }
+}
+void TitanWirePercentFloor() {
+  for (double cap:{0.15,0.159,0.25,0.9,1.0}) for (int n=-2000;n<=2000;++n) {
+    const double demand=n/2000.0;
+    const int percent=motor_output::TitanPercent(demand,cap);
+    const double argument=motor_output::TitanSetArgument(percent);
+    // Reproduce the INSTALLED Studica 1.1.28 driver CAN-byte conversion.
+    const int encoded=static_cast<int>(std::fabs(argument*100));
+    REQUIRE_ARENA(encoded==std::abs(percent));
+    if (n==0) REQUIRE_ARENA(encoded==0);
+    else {
+      REQUIRE_ARENA(encoded>=15 && encoded<=static_cast<int>(std::floor(cap*100+1e-9)));
+      REQUIRE_ARENA(argument*demand>0);
+    }
+  }
+  for (double invalid:{0.0,0.1,std::numeric_limits<double>::quiet_NaN()})
+    REQUIRE_ARENA(motor_output::TitanPercent(0.3,invalid)==0);
+  REQUIRE_ARENA(motor_output::TitanPercent(std::numeric_limits<double>::infinity(),0.9)==0);
+}
 void SimpleTasksAndColourChecks() {
   for (auto task:{SimpleTask::Forward1000,SimpleTask::Backward1000,SimpleTask::Ccw90,
       SimpleTask::Cw90,SimpleTask::Ccw180,SimpleTask::Cw180})
@@ -976,7 +1012,10 @@ void WaypointThroughMotorOutputFloor(double friction,double lag,bool screenshotS
     drive.Update(desired,counts,0.02,localization_config::TELEOP_MAX_MOTOR_OUTPUT);
     REQUIRE_ARENA(!drive.HasFault());
     for (int i=0;i<3;++i) {
-      const double duty=drive.Output(i),magnitude=std::fabs(duty);
+      const int percent=motor_output::TitanPercent(drive.Output(i),0.9);
+      const double setArgument=motor_output::TitanSetArgument(percent);
+      const double duty=static_cast<int>(std::fabs(setArgument*100))/100.0*(setArgument<0?-1:1);
+      const double magnitude=std::fabs(duty);
       REQUIRE_ARENA(duty==0 || magnitude>=motor_output_config::MIN_RUNNING_OUTPUT);
       const double speed=std::max(0.0,magnitude-friction)/(0.9-friction)*0.9*
           localization_config::MAX_WHEEL_SPEED_MMPS*(duty<0?-1:1);
@@ -1013,6 +1052,7 @@ int main() {
     EncoderGyroOdometryChecks();
     CobraValidityAndFreshSurfaceCalibration();
     CobraCalibrationRetainedAcrossRestarts();
+    FixedCobraReferencesNeedNoCalibration(); TitanWirePercentFloor();
     SharpAnalogConversionAndValidity();
     TapeRoutineChecks();
     WaypointSettlingDoesNotExpireProgressWatchdog();
@@ -1045,6 +1085,8 @@ TEST(Odometry, EncoderGyroAndTiming) { EXPECT_NO_THROW(EncoderGyroOdometryChecks
 TEST(Odometry, AutonomousOnlyDistanceScale) { EXPECT_NO_THROW(AutonomousDistanceScaleDoesNotChangeTeleopOrHeading()); }
 TEST(Sensing, CobraValidityAndFreshSurfaceCalibration) { EXPECT_NO_THROW(CobraValidityAndFreshSurfaceCalibration()); }
 TEST(Sensing, CobraCalibrationPersistence) { EXPECT_NO_THROW(CobraCalibrationRetainedAcrossRestarts()); }
+TEST(Sensing, FixedCobraReferences) { EXPECT_NO_THROW(FixedCobraReferencesNeedNoCalibration()); }
+TEST(Motion, TitanWirePercentFloor) { EXPECT_NO_THROW(TitanWirePercentFloor()); }
 TEST(Sensing, SharpAnalogConversionAndValidity) { EXPECT_NO_THROW(SharpAnalogConversionAndValidity()); }
 TEST(Autonomous, CornerReferenceAndTapeAlignment) { EXPECT_NO_THROW(TapeRoutineChecks()); }
 TEST(Autonomous, WaypointSettling) { EXPECT_NO_THROW(WaypointSettlingDoesNotExpireProgressWatchdog()); }

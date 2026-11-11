@@ -8,19 +8,17 @@
 #include <algorithm>
 #include <cmath>
 #include <string>
-#include <sys/stat.h>
 
 RobotSubsystem::RobotSubsystem() {
-  std::string error;
-  if (cobraCheck_.LoadCalibration(autonomous_config::COBRA_CALIBRATION_FILE,error))
-    cobraCalibrationNotice_="Restored saved calibration";
-  else cobraCalibrationNotice_=error;
+  // CobraCheck starts with the exact user-supplied RobotConfig references.
+  // Deliberately do not read a saved calibration file or accept recaptures.
   lastLoopTime_=lastSonarPingTime_=frc::Timer::GetFPGATimestamp();
   hardware_.StopDrive();
 }
 void RobotSubsystem::InitializeDashboard() {
   InitializeMotionDashboard();
   InitializeSensingDashboard();
+  InitializeManipulatorDashboard();
 }
 void RobotSubsystem::EnterAutonomous() {
   StopAll();
@@ -45,25 +43,13 @@ void RobotSubsystem::Periodic() {
   const bool enabled=frc::RobotState::IsEnabled();
   if (hardware_.IsImuConnected() && !hardware_.IsImuCalibrating())
     localization_.UpdateOdometry(dt);
-  const bool white=captureCobraWhite_.GetBoolean(false),black=captureCobraBlack_.GetBoolean(false);
-  if (white) captureCobraWhite_.SetBoolean(false);
-  if (black) captureCobraBlack_.SetBoolean(false);
-  // Disabled-mode I2C diagnostics at 20 Hz. Calibration counts fresh samples,
-  // rather than repeatedly averaging the same cached sensor value.
-  if (lastSensorTime_<0 || now-lastSensorTime_>=localization_config::SENSOR_UPDATE_PERIOD_S || white || black) {
+  // Live sensing at 20 Hz; classification always uses supplied calibration.
+  if (lastSensorTime_<0 || now-lastSensorTime_>=localization_config::SENSOR_UPDATE_PERIOD_S) {
     line_=hardware_.ReadLine();
     for (int i=0;i<localization_config::IR_COUNT;++i) irReading_[i]=hardware_.ReadIr(i);
     lastSensorTime_=now;
-    cobraCheck_.Update(line_,now,!enabled,white,black);
-  } else if (enabled && cobraCheck_.Capturing()) {
+    // No calibration requests, regardless of Control Station mode.
     cobraCheck_.Update(line_,now,false,false,false);
-  }
-  if (!enabled && cobraCheck_.Ready() && cobraCheck_.CalibrationRevision()!=savedCobraRevision_) {
-    ::mkdir(autonomous_config::COBRA_CALIBRATION_DIRECTORY,0755);
-    std::string error;
-    cobraCalibrationNotice_=cobraCheck_.SaveCalibration(autonomous_config::COBRA_CALIBRATION_FILE,error)?
-        "Calibration saved on robot":error;
-    savedCobraRevision_=cobraCheck_.CalibrationRevision();
   }
   UpdateSonarPoll(now,enabled);
   const bool start=startTape_.GetBoolean(false),stop=stopTape_.GetBoolean(false);
@@ -186,103 +172,104 @@ void RobotSubsystem::UpdateSonarPoll(double now,bool enabled) {
     hardware_.PingSonar(nextSonarIndex_); sonarPingTime_=now; sonarAwaitingEcho_=true;
   }
 }
+// Compact grids: Motion 8x4, Sensing 8x5, Manipulator 8x2.
+// Short labels and small numeric/boolean tiles fit the laptop without scrolling.
 void RobotSubsystem::InitializeMotionDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Motion");
-  tab.AddString("Drive status",[this] {
-    if (frc::RobotState::IsAutonomous()) return hardware_.GetDriveStatus();
-    return hardware_.HasDriveFault() || hardware_.IsDriveStarting()?
-        hardware_.GetDriveStatus():std::string(teleopDrive_.GetStatus());
-  }).WithPosition(0,0).WithSize(6,1);
-  tab.AddBoolean("Enabled",[] { return frc::RobotState::IsEnabled(); }).WithPosition(6,0).WithSize(2,1);
-  tab.AddBoolean("Controller",[this] { return driverConnected_; }).WithPosition(8,0).WithSize(2,1);
-  tab.AddBoolean("Drive armed",[this] { return teleopDrive_.IsArmed(); }).WithPosition(10,0).WithSize(2,1);
-  tab.AddNumber("Heading (deg)",[this] { return localization_.GetPose().headingRad*180/robot_geometry::PI; })
-      .WithPosition(0,1).WithSize(4,1);
+  tab.AddString("Motion status (15% floor)",[this] {
+    // Visible revision distinguishes this executable from stale robot/UI data.
+    const std::string revision="P8-r3 | ";
+    if (!routineNotice_.empty()) return revision+routineNotice_;
+    if (frc::RobotState::IsAutonomous()) return revision+tapeRoutine_.GetStatus();
+    return revision+(hardware_.HasDriveFault() || hardware_.IsDriveStarting()?
+        hardware_.GetDriveStatus():std::string(teleopDrive_.GetStatus()));
+  }).WithPosition(0,0).WithSize(4,1);
+  tab.AddBoolean("Enabled",[] { return frc::RobotState::IsEnabled(); }).WithPosition(4,0).WithSize(1,1);
+  tab.AddBoolean("Controller",[this] { return driverConnected_; }).WithPosition(5,0).WithSize(1,1);
+  tab.AddBoolean("Armed",[this] { return teleopDrive_.IsArmed(); }).WithPosition(6,0).WithSize(1,1);
   tab.AddBoolean("IMU ready",[this] { return hardware_.IsImuConnected() && !hardware_.IsImuCalibrating(); })
-      .WithPosition(4,1).WithSize(4,1);
-  tab.AddNumber("Control period (ms)",[this] { return controlDt_*1000; }).WithPosition(8,1).WithSize(4,1);
+      .WithPosition(7,0).WithSize(1,1);
+  tab.AddNumber("X (mm)",[this] { return localization_.GetPose().x_MM; }).WithPosition(0,1).WithSize(2,1);
+  tab.AddNumber("Y (mm)",[this] { return localization_.GetPose().y_MM; }).WithPosition(2,1).WithSize(2,1);
+  tab.AddNumber("Heading (deg)",[this] { return localization_.GetPose().headingRad*180/robot_geometry::PI; })
+      .WithPosition(4,1).WithSize(2,1);
+  tab.AddNumber("Loop (ms)",[this] { return controlDt_*1000; }).WithPosition(6,1).WithSize(2,1);
   for (int i=0;i<localization_config::WHEEL_COUNT;++i) {
-    const std::string wheel=std::string(localization_config::WHEEL_NAME[i])+" M"+
-        std::to_string(localization_config::WHEEL_TITAN_PORT[i]);
-    tab.AddNumber(wheel+" encoder (counts)",[this,i] { return hardware_.GetWheelEncoderRaw(i); })
-        .WithPosition(i*4,2).WithSize(4,1);
-    tab.AddNumber(wheel+" speed (mm/s)",[this,i] { return hardware_.GetWheelMeasuredMMps(i); })
-        .WithPosition(i*4,3).WithSize(4,1);
-    tab.AddNumber(wheel+" output (%)",[this,i] { return hardware_.GetWheelCommand(i)*100; })
-        .WithPosition(i*4,4).WithSize(4,1);
+    const int x=i==1?4:0,y=i==2?3:2;
+    const std::string port="M"+std::to_string(localization_config::WHEEL_TITAN_PORT[i]);
+    const std::string wheel=std::string(localization_config::WHEEL_NAME[i])+" "+port;
+    tab.AddNumber(wheel+" counts",[this,i] { return hardware_.GetWheelEncoderRaw(i); })
+        .WithPosition(x,y).WithSize(2,1);
+    tab.AddNumber(port+" mm/s",[this,i] { return hardware_.GetWheelMeasuredMMps(i); })
+        .WithPosition(x+2,y).WithSize(1,1);
+    // Signed WHOLE percentage actually encoded for Titan, not a speed setpoint.
+    tab.AddNumber(port+" PWM %",[this,i] { return std::round(hardware_.GetWheelCommand(i)*100); })
+        .WithPosition(x+3,y).WithSize(1,1);
   }
-  tab.AddNumber("Lift M1 encoder (counts)",[this] { return hardware_.GetLiftEncoderRaw(); })
-      .WithPosition(0,5).WithSize(4,1);
-  tab.AddNumber("Lift M1 output (%)",[this] { return hardware_.GetLiftCommand()*100; })
-      .WithPosition(4,5).WithSize(4,1);
-  tab.AddString("Lift status",[this] { return std::string(liftTeleop_.Status()); }).WithPosition(8,5).WithSize(4,1);
-  tab.AddNumber("Servo 8 target (deg)",[this] { return servoTeleop_.TargetDegrees(0); })
-      .WithPosition(0,6).WithSize(6,1);
-  tab.AddNumber("Servo 9 target (deg)",[this] { return servoTeleop_.TargetDegrees(1); })
-      .WithPosition(6,6).WithSize(6,1);
-  tab.AddNumber("X (mm)",[this] { return localization_.GetPose().x_MM; }).WithPosition(0,7).WithSize(3,1);
-  tab.AddNumber("Y (mm)",[this] { return localization_.GetPose().y_MM; }).WithPosition(3,7).WithSize(3,1);
   startTape_=tab.Add("Start tape test",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
-      .WithPosition(6,7).WithSize(3,1).GetEntry();
+      .WithPosition(4,3).WithSize(2,1).GetEntry();
   stopTape_=tab.Add("Stop tape test",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
-      .WithPosition(9,7).WithSize(3,1).GetEntry();
+      .WithPosition(6,3).WithSize(2,1).GetEntry();
   startTape_.SetBoolean(false); stopTape_.SetBoolean(false);
-  tab.AddString("Tape routine",[this] { return routineNotice_.empty()?tapeRoutine_.GetStatus():routineNotice_; })
-      .WithPosition(0,8).WithSize(12,1);
 }
 void RobotSubsystem::InitializeSensingDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Sensing");
   for (int i=0;i<localization_config::SONAR_COUNT;++i) {
-    const std::string name=std::string(localization_config::SONARS[i].name)+" sonar";
-    tab.AddNumber(name+" (mm)",[this,i] { return sonarRanges_MM_[i]; }).WithPosition(i*3,0).WithSize(3,1);
-    tab.AddBoolean(name+" valid",[this,i] { return sonarRangeValid_[i]; }).WithPosition(i*3,1).WithSize(3,1);
+    const std::string name=std::string(localization_config::SONARS[i].name);
+    tab.AddNumber(name+" sonar mm",[this,i] { return sonarRanges_MM_[i]; })
+        .WithPosition(i*3,0).WithSize(2,1);
+    tab.AddBoolean(name+" valid",[this,i] { return sonarRangeValid_[i]; })
+        .WithPosition(i*3+2,0).WithSize(1,1);
   }
+  tab.AddBoolean("Cobra I2C",[this] { return line_.communicationValid; }).WithPosition(6,0).WithSize(1,1);
+  tab.AddBoolean("Cal. fixed",[this] { return cobraCheck_.Ready(); }).WithPosition(7,0).WithSize(1,1);
   for (int i=0;i<localization_config::IR_COUNT;++i) {
     const std::string name=i==0?"Left IR":"Right IR";
-    tab.AddNumber(name+" (mm)",[this,i] {
+    tab.AddNumber(name+" mm",[this,i] {
       const bool fresh=lastSensorTime_>=0 &&
           frc::Timer::GetFPGATimestamp()-lastSensorTime_<=localization_config::SENSOR_STALE_S;
       return fresh && irReading_[i].valid?irReading_[i].distanceMM:-1;
-    }).WithPosition(6+i*3,0).WithSize(3,1);
+    }).WithPosition(i*4,1).WithSize(2,1);
     tab.AddBoolean(name+" valid",[this,i] {
       return irReading_[i].valid && lastSensorTime_>=0 &&
           frc::Timer::GetFPGATimestamp()-lastSensorTime_<=localization_config::SENSOR_STALE_S;
-    }).WithPosition(6+i*3,1).WithSize(3,1);
-    tab.AddNumber(name+" voltage (V)",[this,i] {
+    }).WithPosition(i*4+2,1).WithSize(1,1);
+    tab.AddNumber(name+" V",[this,i] {
       return lastSensorTime_>=0 &&
           frc::Timer::GetFPGATimestamp()-lastSensorTime_<=localization_config::SENSOR_STALE_S?
           irReading_[i].voltage:-1;
-    }).WithPosition(6+i*3,2).WithSize(3,1);
+    }).WithPosition(i*4+3,1).WithSize(1,1);
   }
-  tab.AddString("Sonar status",[] {
-    return frc::RobotState::IsEnabled()?"Front/rear polling; -1 = no valid echo":
-        "Paused while Disabled; Cobra and IR inputs remain live";
-  }).WithPosition(0,2).WithSize(6,1);
-  tab.AddString("IR status",[] {
-    return "Sharp analog: left AI0 / right AI1. Range 100-800 mm; -1 = invalid. Readings remain live while Disabled.";
-  }).WithPosition(0,8).WithSize(6,1);
-  tab.AddString("Cobra status",[this] { return cobraCheck_.Status()+" | "+cobraCalibrationNotice_; }).WithPosition(0,3).WithSize(8,1);
-  tab.AddBoolean("Cobra I2C link",[this] { return line_.communicationValid; }).WithPosition(8,3).WithSize(2,1);
-  tab.AddBoolean("Cobra calibrated",[this] { return cobraCheck_.Ready(); }).WithPosition(10,3).WithSize(2,1);
   for (int i=0;i<4;++i) {
-    const std::string channel="Cobra CH"+std::to_string(i);
-    tab.AddNumber(channel+" (V)",[this,i] { return line_.volts[i]; }).WithPosition(i*3,4).WithSize(3,1);
+    const std::string channel="CH"+std::to_string(i);
+    tab.AddNumber("Cobra "+channel+" V",[this,i] { return line_.volts[i]; })
+        .WithPosition(i*2,2).WithSize(2,1);
     tab.AddBoolean(channel+" valid",[this,i] { return cobraCheck_.ChannelReadingValid(i); })
-        .WithPosition(i*3,5).WithSize(3,1);
+        .WithPosition(i*2,3).WithSize(1,1);
     tab.AddBoolean(channel+" black",[this,i] { return cobraCheck_.IsBlack(i); })
-        .WithPosition(i*3,6).WithSize(3,1);
+        .WithPosition(i*2+1,3).WithSize(1,1);
   }
-  captureCobraWhite_=tab.Add("Capture white",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
-      .WithPosition(0,7).WithSize(3,1).GetEntry();
-  captureCobraBlack_=tab.Add("Capture black",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
-      .WithPosition(3,7).WithSize(3,1).GetEntry();
-  captureCobraWhite_.SetBoolean(false); captureCobraBlack_.SetBoolean(false);
-  tab.AddString("Cobra check",[] {
-    return "While Disabled: place ALL channels over white floor and Capture white; repeat over black tape with Capture black. "
-        "Hold still until saved, then sweep the tape across CH0-3. Successful captures are retained after restarting.";
-  }).WithPosition(6,7).WithSize(6,2);
   tab.AddNumber("CH1 - CH2 (V)",[this] { return cobraCheck_.VoltagesValid()?line_.volts[1]-line_.volts[2]:-1; })
-      .WithPosition(0,9).WithSize(6,1);
-  tab.AddNumber("Tape scan travel (mm)",[this] { return tapeRoutine_.GetScanTravelMM(); })
-      .WithPosition(6,9).WithSize(6,1);
+      .WithPosition(0,4).WithSize(2,1);
+  tab.AddNumber("Scan travel (mm)",[this] { return tapeRoutine_.GetScanTravelMM(); })
+      .WithPosition(2,4).WithSize(2,1);
+  tab.AddString("Sensing status",[this] {
+    return std::string("Fixed supplied Cobra calibration | ")+
+        (frc::RobotState::IsEnabled()?"":"Sonars paused while disabled | ")+cobraCheck_.Status();
+  }).WithPosition(4,4).WithSize(4,1);
+}
+void RobotSubsystem::InitializeManipulatorDashboard() {
+  auto& tab=frc::Shuffleboard::GetTab("Manipulator");
+  tab.AddString("Lift status",[this] { return std::string(liftTeleop_.Status()); })
+      .WithPosition(0,0).WithSize(4,1);
+  tab.AddNumber("Lift M1 counts",[this] { return hardware_.GetLiftEncoderRaw(); })
+      .WithPosition(4,0).WithSize(2,1);
+  tab.AddNumber("Lift M1 PWM %",[this] { return std::round(hardware_.GetLiftCommand()*100); })
+      .WithPosition(6,0).WithSize(2,1);
+  tab.AddNumber("Servo 8 (deg)",[this] { return servoTeleop_.TargetDegrees(0); })
+      .WithPosition(0,1).WithSize(2,1);
+  tab.AddNumber("Servo 9 (deg)",[this] { return servoTeleop_.TargetDegrees(1); })
+      .WithPosition(2,1).WithSize(2,1);
+  tab.AddString("Controls",[] { return "Lift: D-pad | Servo 8: L1/R1 | Servo 9: Triangle"; })
+      .WithPosition(4,1).WithSize(4,1);
 }

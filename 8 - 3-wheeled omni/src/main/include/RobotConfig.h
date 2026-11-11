@@ -327,8 +327,8 @@ static constexpr Job JOBS[4] = {{0,0},{1,1},{2,2},{3,3}}; // PLACEHOLDER assignm
 static constexpr int JOB_COUNT = 4;
 
 // Installed Cobra analog module J1 uses VMX I2C through Studica 1.1.28.
-// Raw CH0..3 readings and the session calibration screen work immediately;
-// autonomous line tracking still requires measured calibration below.
+// Runtime always uses the supplied measured calibration below. No file or
+// dashboard capture overrides it; fresh valid I2C readings are still required.
 static constexpr bool COBRA_INSTALLED = true; // user connected analog module J1 to VMX I2C
 static constexpr bool COBRA_CALIBRATED = true;
 static constexpr double COBRA_REFERENCE_V = 5.0;
@@ -336,7 +336,7 @@ static constexpr int COBRA_I2C_ADDRESS = 0x48; // analog module default address
 static constexpr double COBRA_FORWARD_MM = 180.0; // PLACEHOLDER from robot center
 static constexpr double COBRA_LEFT_MM = 0.0; // PLACEHOLDER array center
 static constexpr double COBRA_CHANNEL_LEFT_MM[4] = {22.5,7.5,-7.5,-22.5}; // PLACEHOLDER order/spacing
-// User measurements, CH0 leftmost -> CH3 rightmost. Used if no valid saved file exists.
+// Authoritative user measurements, CH0 leftmost -> CH3 rightmost.
 static constexpr double COBRA_FLOOR_V[4] = {2.172852,1.005859,1.257324,2.868652};
 static constexpr double COBRA_TAPE_V[4] = {4.997559,4.997559,4.997559,4.997559};
 static constexpr const char* COBRA_CALIBRATION_DIRECTORY="/home/pi/SkillsChallenge";

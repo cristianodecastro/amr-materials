@@ -72,13 +72,14 @@ double Hardware::GetWheelEncoderRaw(int wheel) {
   }
 }
 
-void Hardware::SetWheelPwm(int wheel, double output) {
+void Hardware::SetWheelPwm(int wheel, double output,double maxOutput) {
   if (wheel < 0 || wheel >= localization_config::WHEEL_COUNT) return;
   if (!std::isfinite(output)) output = 0.0;
   if (!DriveMotorMotionAllowed()) output=0;
-  const double limited = motor_output::EnforceFloor(output,1.0) *
-                         localization_config::WHEEL_MOTOR_SIGN[wheel];
-  wheelCommands_[wheel] = limited;
+  const int percent=motor_output::TitanPercent(output*localization_config::WHEEL_MOTOR_SIGN[wheel],
+      std::min(maxOutput,localization_config::TELEOP_MAX_MOTOR_OUTPUT));
+  const double limited=motor_output::TitanSetArgument(percent);
+  wheelCommands_[wheel] = percent/100.0;
   switch (wheel) {
     case 0: leftRearMotor_.Set(limited); break;
     case 1: rightRearMotor_.Set(limited); break;
@@ -116,8 +117,9 @@ void Hardware::SetLiftPwm(double output) {
     const double direction=output*manipulator_config::LIFT_UP_SIGN;
     if ((direction>0 && GetLiftUpperLimit()) || (direction<0 && GetLiftLowerLimit())) output=0;
   }
-  liftCommand_=output;
-  liftMotor_.Set(output);
+  const int percent=motor_output::TitanPercent(output,cap);
+  liftCommand_=percent/100.0;
+  liftMotor_.Set(motor_output::TitanSetArgument(percent));
 }
 
 void Hardware::DriveTeleopRobotRelative(double forward,double left,double yawRadps,
@@ -150,7 +152,7 @@ void Hardware::DriveWithContext(double forward,double left,double yawRadps,
   }
   auto& controller=teleopWheelActive_?teleopWheelDrive_:wheelDrive_;
   controller.Update(desired,counts,dt,maxOutput,context);
-  for (int i=0;i<3;++i) SetWheelPwm(i,controller.Output(i));
+  for (int i=0;i<3;++i) SetWheelPwm(i,controller.Output(i),maxOutput);
 }
 
 std::string Hardware::GetDriveStatus() const {

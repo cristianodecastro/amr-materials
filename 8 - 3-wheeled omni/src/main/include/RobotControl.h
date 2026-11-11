@@ -26,7 +26,8 @@ class Hardware {
 
   void ResetDriveEncoders();
   double GetWheelEncoderRaw(int wheel);
-  void SetWheelPwm(int wheel, double output);
+  void SetWheelPwm(int wheel, double output,
+                   double maxOutput=localization_config::TELEOP_MAX_MOTOR_OUTPUT);
   double GetWheelCommand(int wheel) const;
   // Explicit callers keep autonomous output treatment out of manual driving.
   void DriveTeleopRobotRelative(double forward, double left, double yawRadps,
@@ -153,6 +154,7 @@ class RobotSubsystem : public frc2::SubsystemBase {
  private:
   void InitializeMotionDashboard();
   void InitializeSensingDashboard();
+  void InitializeManipulatorDashboard();
   void UpdateTeleopDrive(double dt);
   void UpdateSonarPoll(double now, bool enabled);
   void UpdateTapeRoutine(double now,double dt,bool start,bool stop);
@@ -176,9 +178,6 @@ class RobotSubsystem : public frc2::SubsystemBase {
   bool driverL1_=false,driverR1_=false;
   LineReading line_;
   CobraCheck cobraCheck_;
-  unsigned savedCobraRevision_=0;
-  std::string cobraCalibrationNotice_;
-  nt::NetworkTableEntry captureCobraWhite_,captureCobraBlack_;
   double lastLoopTime_=0;
   double controlDt_=localization_config::CONTROL_PERIOD_S;
   double lastSensorTime_=-1;

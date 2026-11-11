@@ -13,7 +13,7 @@ void ClearOldTelemetry(nt::NetworkTable& table) {
 }
 void Robot::RobotInit() {
   frc::LiveWindow::GetInstance()->DisableAllTelemetry();
-  // Clear old published entries and tab metadata before building the two tabs.
+  // Clear old published entries and tab metadata before building the three tabs.
   auto network=nt::NetworkTableInstance::GetDefault();
   ClearOldTelemetry(*network.GetTable("Shuffleboard"));
   ClearOldTelemetry(*network.GetTable("SmartDashboard"));
