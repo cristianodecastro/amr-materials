@@ -1094,10 +1094,53 @@ void SimulateCornerToWaypointToTape(TapeApproach approach=TapeApproach::FromLeft
   REQUIRE_ARENA(Near(in.motion.pose.headingRad,robot_geometry::PI/2));
   REQUIRE_ARENA(routine.GetForwardMMps()==0 && routine.GetLeftMMps()==0 && routine.GetYawRadps()==0);
 }
+void TapeTranslationAndHeadingCorrectTogether() {
+  for (auto approach:{TapeApproach::FromLeft,TapeApproach::FromRight}) for (int sign:{-1,1}) {
+    TapeAlignmentRoutine routine; auto in=TapeInput(); in.approach=approach;
+    AnchorTapeRoutine(routine,in);
+    in.motion.pose.headingRad+=robot_geometry::Radians(sign*5);
+    FreshTapeTick(in); routine.Update(in);
+    REQUIRE_ARENA(std::hypot(routine.GetForwardMMps(),routine.GetLeftMMps())>0);
+    REQUIRE_ARENA(sign*routine.GetYawRadps()<0);
+
+    // After braking, a remaining XY error must not wait for heading to settle.
+    const auto target=routine.GetTarget();
+    in.motion.pose={target.x+20,target.y,robot_geometry::Radians(90+sign*5)};
+    bool correctedTogether=false;
+    for (int tick=0;tick<20;++tick) {
+      FreshTapeTick(in); routine.Update(in);
+      if (std::hypot(routine.GetForwardMMps(),routine.GetLeftMMps())>0 &&
+          sign*routine.GetYawRadps()<0) correctedTogether=true;
+    }
+    REQUIRE_ARENA(correctedTogether);
+
+    // Reaching XY alone does not complete the waypoint with an incorrect yaw.
+    in.motion.pose.x_MM=target.x; in.motion.pose.y_MM=target.y;
+    for (int tick=0;tick<30;++tick) { FreshTapeTick(in); routine.Update(in); }
+    REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::DriveToPoint);
+    REQUIRE_ARENA(routine.GetForwardMMps()==0 && routine.GetLeftMMps()==0 && sign*routine.GetYawRadps()<0);
+    in.motion.pose.headingRad=robot_geometry::PI/2;
+    for (int tick=0;tick<30 && routine.GetState()==TapeAlignmentRoutine::State::DriveToPoint;++tick) {
+      FreshTapeTick(in); routine.Update(in);
+    }
+    REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::SearchTape);
+
+    in.motion.pose.headingRad+=robot_geometry::Radians(sign*5);
+    FreshTapeTick(in); routine.Update(in);
+    REQUIRE_ARENA(routine.GetLeftMMps()*(approach==TapeApproach::FromLeft?-1:1)>0);
+    REQUIRE_ARENA(sign*routine.GetYawRadps()<0);
+    in.blackLevel[1]=0.9; in.blackLevel[2]=0.2;
+    in.line.volts[1]=4.1; in.line.volts[2]=1.3;
+    for (int tick=0;tick<10;++tick) { FreshTapeTick(in); routine.Update(in); }
+    REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::CenterTape);
+    REQUIRE_ARENA(routine.GetLeftMMps()>0 && sign*routine.GetYawRadps()<0);
+  }
+}
 void TapeRoutineChecks() {
   TapeReferenceNeedsOnlyFreshValidRanges(); TapeEqualityRequiresActualTapeAndStableStop();
   TapeSensorWaitsRecoverAndGyroNoiseDoesNotBlockCompletion();
   TapeApproachSelectionAndSearchDirections();
+  TapeTranslationAndHeadingCorrectTogether();
   TapeLimitsAndCenterDirection(); SimulateCornerToWaypointToTape();
   SimulateCornerToWaypointToTape(TapeApproach::FromRight);
 }

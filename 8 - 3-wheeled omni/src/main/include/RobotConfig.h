@@ -418,7 +418,7 @@ static constexpr double HEADING_TOLERANCE_RAD = autonomous_config::HEADING_TOLER
 // Autonomous hold reacts before the 1 degree completion limit is exceeded.
 // It must not inherit the driver's deliberately slow rotation ramp.
 static constexpr double HOLD_HEADING_DEADBAND_RAD = 0.25*robot_geometry::PI/180.0;
-static constexpr double HOLD_HEADING_KP = 3.0;
+static constexpr double HOLD_HEADING_KP = 2.4;
 static constexpr double HOLD_YAW_RATE_DAMPING = 0.65;
 static constexpr double HOLD_YAW_ACCEL_RADPS2 = 180.0*robot_geometry::PI/180.0;
 static constexpr double HOLD_BRAKE_RESPONSE_S = 0.18;

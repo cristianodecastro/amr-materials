@@ -523,12 +523,17 @@ void TapeAlignmentRoutine::DriveWaypoint(const TapeRoutineInput& in,double oldFo
   }
   if (waypointPhase_==WaypointPhase::Settle) {
     status_="Stopped at waypoint: verifying XY and heading";
-    if (std::hypot(in.bodyForwardMMps,in.bodyLeftMMps)>arena_test_config::STATIONARY_SPEED_MMPS ||
-        std::fabs(headingError)>arena_test_config::HEADING_TOLERANCE_RAD) {
+    // Stop translation before remeasuring/reversing, but do not wait for yaw:
+    // XY correction and heading hold may command the wheel mixer together.
+    if (std::hypot(in.bodyForwardMMps,in.bodyLeftMMps)>arena_test_config::STATIONARY_SPEED_MMPS) {
       settleTime_=-1; return;
     }
     if (settleTime_<0) settleTime_=m.now;
     if (distance<=tt::POSITION_TOLERANCE_MM) {
+      // Heading gates completion only, never an outstanding XY correction.
+      if (std::fabs(headingError)>arena_test_config::HEADING_TOLERANCE_RAD) {
+        settleTime_=-1; return;
+      }
       if (m.now-settleTime_>=tt::WAYPOINT_SETTLE_S) {
         Stop(); heading_.Reset(); scanStart_=progressPose_=m.pose;
         scanTime_=m.now; motionEffortTime_=0; scanTravel_=0; lostTime_=-1; settleTime_=-1;
