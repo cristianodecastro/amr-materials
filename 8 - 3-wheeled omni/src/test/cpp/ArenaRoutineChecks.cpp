@@ -133,14 +133,20 @@ void HeadingHoldRespondsEarlyAndDampsCoasting() {
     REQUIRE_ARENA(control.Request(robot_geometry::Radians(-0.5),0,0,0.02,true)==0);
   REQUIRE_ARENA(control.Request(robot_geometry::Radians(-0.5),0,0,0.02,true)<0);
 }
-void HeadingHoldWithFrictionLagAndDisturbance(double friction,double lag,double bias,int sign) {
+void HeadingHoldWithFrictionLagAndDisturbance(double friction,double lag,double bias,int sign,int sampleMS=20) {
   HeadingMotionControl control;
   double angle=robot_geometry::Radians(6*sign),rate=0,previousRequest=0,lateError=0;
+  YawRateEstimator gyro;
+  double sampledAngle=angle;
+  std::uint32_t sensorTime=1000;
+  gyro.Update(sampledAngle*180/robot_geometry::PI,sensorTime);
   for (int tick=0;tick<500;++tick) {
     if (tick==150) angle-=robot_geometry::Radians(4*sign); // a second disturbance while holding
-    const auto fault=control.CheckFeedback(previousRequest,rate,0.02);
+    if ((tick*20)%sampleMS==0) { sampledAngle=angle; sensorTime=1000+tick*20; }
+    const double measuredRate=robot_geometry::Radians(gyro.Update(sampledAngle*180/robot_geometry::PI,sensorTime));
+    const auto fault=control.CheckFeedback(previousRequest,measuredRate,0.02);
     REQUIRE_ARENA(fault.empty());
-    const double request=control.Request(robot_geometry::Wrap(-angle),previousRequest,rate,0.02,true);
+    const double request=control.Request(robot_geometry::Wrap(-sampledAngle),previousRequest,measuredRate,0.02,true);
     REQUIRE_ARENA(std::fabs(request)<=at::HOLD_HEADING_MAX_YAW_RADPS+1e-9);
     const double wheel=-168*request;
     const double mapped=motor_output::WheelOutput(wheel/localization_config::MAX_WHEEL_SPEED_MMPS,0.9);
@@ -546,26 +552,60 @@ void FiveColourCardsKeepNamesAndReplaceOnlyTheirReference() {
   std::remove(path.c_str());
 }
 void SharpAnalogConversionAndValidity() {
-  const auto oneVolt=SharpIrFromVoltage(1);
-  REQUIRE_ARENA(oneVolt.valid && Near(oneVolt.distanceMM,277.26)); // official cm -> mm conversion
-  const auto halfVolt=SharpIrFromVoltage(0.5),twoVolts=SharpIrFromVoltage(2);
-  REQUIRE_ARENA(halfVolt.valid && twoVolts.valid);
-  REQUIRE_ARENA(halfVolt.distanceMM>630 && halfVolt.distanceMM<645);
-  REQUIRE_ARENA(twoVolts.distanceMM>120 && twoVolts.distanceMM<121);
-  REQUIRE_ARENA(halfVolt.distanceMM>oneVolt.distanceMM && oneVolt.distanceMM>twoVolts.distanceMM);
+  const auto oneVolt=SharpIrFromVoltage(1),twoVolts=SharpIrFromVoltage(2);
+  REQUIRE_ARENA(oneVolt.valid && Near(oneVolt.distanceMM,554.52));
+  REQUIRE_ARENA(twoVolts.valid && twoVolts.distanceMM>240 && twoVolts.distanceMM<242);
+  REQUIRE_ARENA(oneVolt.distanceMM>twoVolts.distanceMM);
   for (double target:{101.0,200.0,400.0,600.0,799.0}) {
-    const double voltage=std::pow(target/277.26,-1/1.2045);
+    const double voltage=std::pow(target/554.52,-1/1.2045);
     const auto reading=SharpIrFromVoltage(voltage);
     REQUIRE_ARENA(reading.valid && Near(reading.distanceMM,target));
     REQUIRE_ARENA(Near(reading.voltage,voltage));
   }
-  for (double voltage:{-1.0,0.0,0.01,0.4,2.5,5.0,5.1,1e-300,
+  for (double voltage:{-1.0,0.0,0.01,0.4,0.5,5.0,5.1,1e-300,
       std::numeric_limits<double>::infinity(),std::numeric_limits<double>::quiet_NaN()}) {
     const auto reading=SharpIrFromVoltage(voltage);
     REQUIRE_ARENA(!reading.valid && reading.distanceMM==-1);
-    REQUIRE_ARENA(std::isfinite(reading.voltage)); // dashboard must never receive NaN/Inf
+    REQUIRE_ARENA(std::isfinite(reading.voltage));
   }
-  REQUIRE_ARENA(Near(SharpIrFromVoltage(0.4).voltage,0.4)); // invalid range retains diagnostic voltage
+  REQUIRE_ARENA(Near(SharpIrFromVoltage(0.4).voltage,0.4));
+  // Sensor mounting offsets must not be doubled along with the measured gap.
+  const double rawFor200MM=std::pow(200/277.26,-1/1.2045);
+  RobotPose pose;
+  REQUIRE_ARENA(TapeAlignmentRoutine::PoseFromWalls(SharpIrFromVoltage(rawFor200MM).distanceMM,100,pose));
+  REQUIRE_ARENA(Near(pose.x_MM,550) && Near(pose.y_MM,275));
+}
+void YawRateUsesSensorSampleTime() {
+  for (int sampleMS:{5,20,40}) for (int sign:{-1,1}) {
+    YawRateEstimator rate;
+    REQUIRE_ARENA(rate.Update(0,1000)==0);
+    for (int sample=1;sample<=20;++sample) {
+      const double yaw=sign*60.0*sample*sampleMS/1000;
+      REQUIRE_ARENA(Near(rate.Update(yaw,1000+sample*sampleMS),sign*60));
+      // Repeated robot-loop reads must retain the last measured rate.
+      REQUIRE_ARENA(Near(rate.Update(yaw,1000+sample*sampleMS),sign*60));
+    }
+  }
+  YawRateEstimator rate;
+  rate.Update(179.4,1000);
+  REQUIRE_ARENA(Near(rate.Update(-179.4,1020),60));
+  REQUIRE_ARENA(Near(rate.Update(179.4,1040),-60));
+  rate=YawRateEstimator{};
+  rate.Update(0,std::numeric_limits<std::uint32_t>::max()-9);
+  REQUIRE_ARENA(Near(rate.Update(1.2,10),60)); // timestamp rollover
+  REQUIRE_ARENA(rate.Update(0,0)==0); // sensor restart, no spurious huge turn
+  REQUIRE_ARENA(Near(rate.Update(-1.2,20),-60));
+  REQUIRE_ARENA(rate.Update(-1.2,500)==0); // interrupted stream re-baselines
+  REQUIRE_ARENA(Near(rate.Update(0,520),60));
+  REQUIRE_ARENA(rate.Update(std::numeric_limits<double>::quiet_NaN(),540)==0);
+  REQUIRE_ARENA(rate.Update(0,560)==0);
+  // A 1.2 degree increment over 20 ms is 60 deg/s, NOT the legacy 1.2.
+  rate=YawRateEstimator{}; rate.Update(0,1000);
+  const double actualDps=rate.Update(1.2,1020);
+  HeadingMotionControl corrected,legacyUnits;
+  const double error=robot_geometry::Radians(5),old=robot_geometry::Radians(10);
+  REQUIRE_ARENA(corrected.Request(error,old,robot_geometry::Radians(actualDps),0.02,true)==0);
+  REQUIRE_ARENA(legacyUnits.Request(error,old,robot_geometry::Radians(1.2),0.02,true)>0);
 }
 void CobraValidityAndFreshSurfaceCalibration() {
   CobraCheck check(false); // explicitly exercise an uncalibrated sensor
@@ -1139,7 +1179,8 @@ int main() {
     GeometryAndWallAssociation(); StartStopAndHealth(); TimingAndBounds(); HeadingHoldCorrectsDriftDuringXY();
     HeadingHoldRespondsEarlyAndDampsCoasting();
     for (double friction:{0.10,0.15}) for (double lag:{0.04,0.12,0.25})
-      for (double bias:{0.0,2.0}) for (int sign:{-1,1}) HeadingHoldWithFrictionLagAndDisturbance(friction,lag,bias,sign);
+      for (double bias:{0.0,2.0}) for (int sign:{-1,1}) for (int sampleMS:{20,60})
+        HeadingHoldWithFrictionLagAndDisturbance(friction,lag,bias,sign,sampleMS);
     ApproachRequestsRemainUsable(); TurnDriftIsReacquiredBeforeReference();
     TurnBrakesBeforeTargetAndStopsBeforeReversing();
     InstalledYawPolarityMatchesGyroFrame();
@@ -1152,6 +1193,7 @@ int main() {
     CobraCalibrationRetainedAcrossRestarts();
     FixedCobraReferencesNeedNoCalibration(); TitanWirePercentFloor();
     SharpAnalogConversionAndValidity();
+    YawRateUsesSensorSampleTime();
     TapeRoutineChecks();
     WaypointSettlingDoesNotExpireProgressWatchdog();
     for (double friction:{0.10,0.15}) for (double lag:{0.0,0.12,0.25})
@@ -1161,7 +1203,7 @@ int main() {
     for (double lag:{0.0,0.12,0.25}) for (double deadband:{0.0,70.0,100.0})
       for (bool screenshot:{false,true}) WaypointWithCoastingAndMotorDeadband(lag,deadband,screenshot);
     AutonomousDistanceScaleDoesNotChangeTeleopOrHeading();
-    std::cout<<"PASS: both tape approaches; early/damped heading hold; 24 heading simulations; 48 electrical motor/waypoint simulations; fixed Cobra calibration; 18 waypoint coasting/deadband cases; odometry, motion and colour checks\n";
+    std::cout<<"PASS: direct x2 IR conversion; timestamp-based yaw-rate regressions; 48 sampled-gyro heading simulations; 48 electrical motor/waypoint simulations; both tape approaches, Cobra, odometry and colour checks\n";
   } catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }
 }
 #else
@@ -1172,8 +1214,8 @@ TEST(ArenaRoutine, HeadingHoldCorrectsDriftDuringXY) { EXPECT_NO_THROW(HeadingHo
 TEST(ArenaRoutine, HeadingHoldRespondsEarlyAndDampsCoasting) { EXPECT_NO_THROW(HeadingHoldRespondsEarlyAndDampsCoasting()); }
 TEST(ArenaRoutine, HeadingHoldWithFrictionLagAndDisturbance) {
   for (double friction:{0.10,0.15}) for (double lag:{0.04,0.12,0.25})
-    for (double bias:{0.0,2.0}) for (int sign:{-1,1})
-      EXPECT_NO_THROW(HeadingHoldWithFrictionLagAndDisturbance(friction,lag,bias,sign));
+    for (double bias:{0.0,2.0}) for (int sign:{-1,1}) for (int sampleMS:{20,60})
+      EXPECT_NO_THROW(HeadingHoldWithFrictionLagAndDisturbance(friction,lag,bias,sign,sampleMS));
 }
 TEST(ArenaRoutine, ApproachRequestsRemainUsable) { EXPECT_NO_THROW(ApproachRequestsRemainUsable()); }
 TEST(ArenaRoutine, TurnDriftIsReacquiredBeforeReference) { EXPECT_NO_THROW(TurnDriftIsReacquiredBeforeReference()); }
@@ -1194,6 +1236,7 @@ TEST(Sensing, CobraCalibrationPersistence) { EXPECT_NO_THROW(CobraCalibrationRet
 TEST(Sensing, FixedCobraReferences) { EXPECT_NO_THROW(FixedCobraReferencesNeedNoCalibration()); }
 TEST(Motion, TitanWirePercentFloor) { EXPECT_NO_THROW(TitanWirePercentFloor()); }
 TEST(Sensing, SharpAnalogConversionAndValidity) { EXPECT_NO_THROW(SharpAnalogConversionAndValidity()); }
+TEST(Sensing, YawRateUsesSensorSampleTime) { EXPECT_NO_THROW(YawRateUsesSensorSampleTime()); }
 TEST(Autonomous, CornerReferenceAndTapeAlignment) { EXPECT_NO_THROW(TapeRoutineChecks()); }
 TEST(Autonomous, WaypointSettling) { EXPECT_NO_THROW(WaypointSettlingDoesNotExpireProgressWatchdog()); }
 TEST(Autonomous, WaypointWithElectricalMotorFloor) {

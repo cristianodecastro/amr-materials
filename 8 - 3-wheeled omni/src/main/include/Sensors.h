@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <string>
 #include "RobotConfig.h"
 
@@ -11,9 +12,8 @@ inline IrReading SharpIrFromVoltage(double voltage) {
   if (!std::isfinite(voltage)) return reading;
   reading.voltage=voltage;
   if (voltage<=0 || voltage>localization_config::IR_MAX_INPUT_V) return reading;
-  // Studica's GP2Y0A21 approximation is 27.726*V^-1.2045 in CENTIMETRES.
-  // Convert exactly once to mm. Do not clamp an invalid range to a valid edge.
-  const double distance=277.26*std::pow(voltage,-1.2045);
+  // Convert Studica's cm formula to mm and apply the requested x2 correction.
+  const double distance=277.26*std::pow(voltage,-1.2045)*2.0;
   if (!std::isfinite(distance) || distance<localization_config::IR_MIN_RANGE_MM ||
       distance>localization_config::IR_MAX_RANGE_MM) return reading;
   reading.distanceMM=distance;
@@ -22,6 +22,32 @@ inline IrReading SharpIrFromVoltage(double voltage) {
   // reliably detect every too-close target or a floating/disconnected input.
   return reading;
 }
+
+// navX 3.1.413 GetRate() returns an angle increment per sensor sample. Use
+// sensor timestamps (milliseconds) to obtain actual CCW degrees/second. Do
+// not divide by the robot loop period or treat repeated samples as zero speed.
+class YawRateEstimator {
+ public:
+  double Update(double yawDeg,std::uint32_t timestampMS) {
+    if (!std::isfinite(yawDeg)) { haveSample_=false; rate_=0; return rate_; }
+    if (!haveSample_) {
+      haveSample_=true; previousYaw_=yawDeg; previousTime_=timestampMS; rate_=0; return rate_;
+    }
+    const std::uint32_t elapsedMS=timestampMS-previousTime_;
+    if (elapsedMS==0) return rate_;
+    // Unsigned subtraction handles the normal 32-bit timestamp rollover.
+    // A board restart or interrupted stream establishes a fresh baseline.
+    rate_=elapsedMS<=100?robot_geometry::Wrap(robot_geometry::Radians(yawDeg-previousYaw_))*
+        (180.0/robot_geometry::PI)*1000.0/elapsedMS:0;
+    previousYaw_=yawDeg; previousTime_=timestampMS;
+    return rate_;
+  }
+  double Rate() const { return rate_; }
+ private:
+  bool haveSample_=false;
+  double previousYaw_=0,rate_=0;
+  std::uint32_t previousTime_=0;
+};
 
 // Cobra line readings and calibration checks.
 // Positive error: tape lies LEFT of array center. Calibration supports either

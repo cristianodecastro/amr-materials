@@ -120,6 +120,7 @@ class Hardware {
   frc::AnalogInput rightIr_{localization_config::IR_ANALOG_CHANNEL[1]};
 
   AHRS imu_{frc::SPI::Port::kMXP}; // preserve the original device sampling configuration
+  YawRateEstimator yawRate_;
 };
 
 // Mode-isolated pose observers. Only Autonomous uses the simplified odometry.

@@ -184,7 +184,14 @@ void Hardware::StopServos() {
 // The navX reports clockwise-positive yaw and a board frame with +Y forward,
 // +X right. Localization uses CCW-positive yaw and +X forward, +Y left.
 double Hardware::GetYawDegrees() { return -imu_.GetYaw(); }
-double Hardware::GetYawRateDegreesPerSecond() { return -imu_.GetRate(); }
+double Hardware::GetYawRateDegreesPerSecond() {
+  const auto timestamp=static_cast<std::uint32_t>(imu_.GetLastSensorTimestamp());
+  const double yaw=GetYawDegrees(); // same CCW sign and frame as localization
+  // An AHRS update may arrive between the timestamp and angle reads. Keep the
+  // last consistent rate rather than combine two different sensor samples.
+  if (timestamp!=static_cast<std::uint32_t>(imu_.GetLastSensorTimestamp())) return yawRate_.Rate();
+  return yawRate_.Update(yaw,timestamp);
+}
 double Hardware::GetWorldAccelX_G() { return imu_.GetWorldLinearAccelY(); }
 double Hardware::GetWorldAccelY_G() { return -imu_.GetWorldLinearAccelX(); }
 double Hardware::GetRawAccelX_G() { return imu_.GetRawAccelX(); }

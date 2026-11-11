@@ -186,7 +186,7 @@ void RobotSubsystem::InitializeMotionDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Motion");
   tab.AddString("Motion status (15% floor)",[this] {
     // Visible revision distinguishes this executable from stale robot/UI data.
-    const std::string revision="P8-r5 | ";
+    const std::string revision="P8-r7 | ";
     if (!routineNotice_.empty()) return revision+routineNotice_;
     if (frc::RobotState::IsAutonomous()) return revision+tapeRoutine_.GetStatus();
     return revision+(hardware_.HasDriveFault() || hardware_.IsDriveStarting()?
