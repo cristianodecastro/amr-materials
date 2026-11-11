@@ -464,13 +464,80 @@ void TapeAlignmentRoutine::SampleReference(const TapeRoutineInput& in) {
 }
 void TapeAlignmentRoutine::ConfirmPoseReset(double now) {
   if (!NeedsPoseReset()) return;
-  Stop(); heading_.Reset(); state_=State::DriveToPoint; stateTime_=progressTime_=now;
+  Stop(); heading_.Reset(); state_=State::DriveToPoint; stateTime_=phaseTime_=now;
+  waypointPhase_=WaypointPhase::Travel; motionEffortTime_=0; filteredForward_=filteredLeft_=0;
   progressPose_=referencePose_; settleTime_=-1;
   status_="Driving to (250,500); holding the manually aligned starting heading";
 }
 void TapeAlignmentRoutine::LimitTranslation(double oldForward,double oldLeft,double acceleration,double dt) {
   const double df=forward_-oldForward,dl=left_-oldLeft,delta=std::hypot(df,dl),step=acceleration*dt;
   if (delta>step) { forward_=oldForward+df*step/delta; left_=oldLeft+dl*step/delta; }
+}
+void TapeAlignmentRoutine::DriveWaypoint(const TapeRoutineInput& in,double oldForward,double oldLeft,double headingError) {
+  const auto& m=in.motion;
+  const double dx=tt::TARGET.x-m.pose.x_MM,dy=tt::TARGET.y-m.pose.y_MM,distance=std::hypot(dx,dy);
+  const double c=std::cos(m.pose.headingRad),s=std::sin(m.pose.headingRad);
+  const double forwardError=c*dx+s*dy,leftError=-s*dx+c*dy;
+  const double measuredToward=distance>0?std::max(0.0,
+      (filteredForward_*forwardError+filteredLeft_*leftError)/distance):0;
+  const double toward=distance>0?std::max(0.0,std::max(
+      (filteredForward_*forwardError+filteredLeft_*leftError)/distance,
+      (oldForward*forwardError+oldLeft*leftError)/distance)):0;
+  const double stoppingDistance=toward*toward/(2*tt::BRAKE_ACCEL_MMPS2)+toward*(tt::BRAKE_RESPONSE_S+m.dt);
+  if (waypointPhase_==WaypointPhase::Travel &&
+      (distance<=tt::NEAR_TARGET_MM || stoppingDistance>=distance-tt::CAPTURE_RADIUS_MM)) {
+    waypointPhase_=WaypointPhase::Brake; settleTime_=-1;
+  }
+  if (waypointPhase_==WaypointPhase::Correct) {
+    const double along=dx*correctionX_+dy*correctionY_;
+    if (along<=tt::CAPTURE_RADIUS_MM || distance<=tt::CAPTURE_RADIUS_MM ||
+        (measuredToward>arena_test_config::STATIONARY_SPEED_MMPS && stoppingDistance>=along-tt::CAPTURE_RADIUS_MM) ||
+        m.now-phaseTime_>=tt::CORRECTION_MAX_S) {
+      waypointPhase_=WaypointPhase::Brake; settleTime_=-1;
+    }
+  }
+  if (waypointPhase_==WaypointPhase::Brake) {
+    // Deceleration is allowed all the way to zero: no minimum-speed floor can
+    // override braking, and no direction reversal is blended through a target.
+    LimitTranslation(oldForward,oldLeft,tt::BRAKE_ACCEL_MMPS2,m.dt);
+    status_="Braking before waypoint; waiting for the chassis to settle";
+    if (std::hypot(forward_,left_)<0.01) {
+      forward_=left_=0; waypointPhase_=WaypointPhase::Settle; settleTime_=-1;
+    }
+    return;
+  }
+  if (waypointPhase_==WaypointPhase::Settle) {
+    status_="Stopped at waypoint: verifying XY and heading";
+    if (!m.stationary || std::fabs(headingError)>arena_test_config::HEADING_TOLERANCE_RAD) {
+      settleTime_=-1; return;
+    }
+    if (settleTime_<0) settleTime_=m.now;
+    if (distance<=tt::POSITION_TOLERANCE_MM) {
+      if (m.now-settleTime_>=tt::WAYPOINT_SETTLE_S) {
+        Stop(); heading_.Reset(); scanStart_=progressPose_=m.pose;
+        scanTime_=m.now; motionEffortTime_=0; scanTravel_=0; lostTime_=-1; settleTime_=-1;
+        state_=State::SearchRight; status_="At (250,500): scanning slowly to robot-right for tape";
+      }
+      return;
+    }
+    if (m.now-settleTime_<tt::CORRECTION_REST_S) return;
+    waypointPhase_=WaypointPhase::Correct; phaseTime_=m.now; settleTime_=-1;
+    correctionX_=dx/distance; correctionY_=dy/distance;
+  }
+  if (waypointPhase_==WaypointPhase::Correct) {
+    forward_=(c*correctionX_+s*correctionY_)*tt::MIN_APPROACH_MMPS;
+    left_=(-s*correctionX_+c*correctionY_)*tt::MIN_APPROACH_MMPS;
+    LimitTranslation(oldForward,oldLeft,tt::DRIVE_ACCEL_MMPS2,m.dt);
+    status_="Bounded waypoint correction; stop and remeasure before reversing";
+    return;
+  }
+  const double brakingSpeed=std::sqrt(2*tt::BRAKE_ACCEL_MMPS2*
+      std::max(0.0,distance-tt::CAPTURE_RADIUS_MM));
+  const double speed=std::min(tt::DRIVE_SPEED_MMPS,std::max(tt::MIN_APPROACH_MMPS,
+      std::min(distance*tt::POSITION_KP,brakingSpeed)));
+  forward_=forwardError*speed/distance; left_=leftError*speed/distance;
+  LimitTranslation(oldForward,oldLeft,tt::DRIVE_ACCEL_MMPS2,m.dt);
+  status_="Driving to (250,500) with heading hold and predictive braking";
 }
 void TapeAlignmentRoutine::Update(const TapeRoutineInput& in) {
   const auto& m=in.motion;
@@ -479,7 +546,8 @@ void TapeAlignmentRoutine::Update(const TapeRoutineInput& in) {
   if (m.stopRequested) { Abort(); return; }
   if (!IsRunning() && !m.startRequested) return;
   if (!robot_geometry::Finite(m.pose) || !std::isfinite(m.now) || !std::isfinite(m.dt) ||
-      !std::isfinite(m.yawRateRadps) || m.dt<=0 || m.dt>autonomous_config::MAX_CONTROL_GAP_S || !m.healthy) {
+      !std::isfinite(m.yawRateRadps) || !std::isfinite(in.bodyForwardMMps) || !std::isfinite(in.bodyLeftMMps) ||
+      m.dt<=0 || m.dt>autonomous_config::MAX_CONTROL_GAP_S || !m.healthy) {
     Fail("Unhealthy IMU/odometry, disconnected Control Station or stale timing - stopped"); return;
   }
   if (!IsRunning()) { Begin(in); return; }
@@ -490,27 +558,12 @@ void TapeAlignmentRoutine::Update(const TapeRoutineInput& in) {
   if (!yawFault.empty()) { Fail(yawFault); return; }
   const double headingError=robot_geometry::Wrap(referencePose_.headingRad-m.pose.headingRad);
   yaw_=heading_.Request(headingError,oldYaw,m.yawRateRadps,m.dt,true);
+  const double velocityGain=m.dt/(tt::VELOCITY_FILTER_S+m.dt);
+  filteredForward_+=velocityGain*(in.bodyForwardMMps-filteredForward_);
+  filteredLeft_+=velocityGain*(in.bodyLeftMMps-filteredLeft_);
   if (state_==State::DriveToPoint) {
     if (m.now-stateTime_>tt::DRIVE_TIMEOUT_S) { Fail("Drive to (250,500) timed out - stopped"); return; }
-    const double dx=tt::TARGET.x-m.pose.x_MM,dy=tt::TARGET.y-m.pose.y_MM,distance=std::hypot(dx,dy);
-    if (distance<=tt::POSITION_TOLERANCE_MM) {
-      if (m.stationary && std::fabs(headingError)<=arena_test_config::HEADING_TOLERANCE_RAD) {
-        if (settleTime_<0) settleTime_=m.now;
-        if (m.now-settleTime_>=tt::WAYPOINT_SETTLE_S) {
-          Stop(); heading_.Reset(); scanStart_=progressPose_=m.pose;
-          scanTime_=progressTime_=m.now; scanTravel_=0; lostTime_=-1; settleTime_=-1;
-          state_=State::SearchRight; status_="At (250,500): scanning slowly to robot-right for tape";
-        }
-      } else settleTime_=-1;
-      return;
-    }
-    settleTime_=-1;
-    const double braking=std::sqrt(2*tt::DRIVE_ACCEL_MMPS2*(distance-tt::POSITION_TOLERANCE_MM));
-    const double speed=std::min(tt::DRIVE_SPEED_MMPS,std::max(tt::MIN_APPROACH_MMPS,
-        std::min(distance*tt::POSITION_KP,braking)));
-    const double c=std::cos(m.pose.headingRad),s=std::sin(m.pose.headingRad);
-    forward_=(c*dx+s*dy)*speed/distance; left_=(-s*dx+c*dy)*speed/distance;
-    LimitTranslation(oldForward,oldLeft,tt::DRIVE_ACCEL_MMPS2,m.dt);
+    DriveWaypoint(in,oldForward,oldLeft,headingError);
   } else {
     scanTravel_=std::hypot(m.pose.x_MM-scanStart_.x_MM,m.pose.y_MM-scanStart_.y_MM);
     if (scanTravel_>tt::SCAN_MAX_TRAVEL_MM || m.now-scanTime_>tt::SCAN_TIMEOUT_S) {
@@ -528,7 +581,7 @@ void TapeAlignmentRoutine::Update(const TapeRoutineInput& in) {
       return;
     }
     if (state_==State::VerifyTape) {
-      state_=State::CenterTape; settleTime_=-1; progressTime_=m.now; progressPose_=m.pose;
+      state_=State::CenterTape; settleTime_=-1;
     }
     const double peak=std::max(in.blackLevel[1],in.blackLevel[2]);
     if (peak>=tt::TAPE_ACQUIRE_LEVEL) {
@@ -551,9 +604,14 @@ void TapeAlignmentRoutine::Update(const TapeRoutineInput& in) {
     LimitTranslation(oldForward,oldLeft,tt::SCAN_ACCEL_MMPS2,m.dt);
   }
   if (std::hypot(m.pose.x_MM-progressPose_.x_MM,m.pose.y_MM-progressPose_.y_MM)>=tt::PROGRESS_MM) {
-    progressPose_=m.pose; progressTime_=m.now;
-  } else if (m.now-progressTime_>tt::NO_PROGRESS_TIMEOUT_S && std::hypot(forward_,left_)>20) {
-    Fail("No motion progress: check wheels/encoders or increase the configured scan speed");
+    progressPose_=m.pose; motionEffortTime_=0;
+  } else if (std::hypot(forward_,left_)>20) {
+    // Count only time actually requesting movement. Settling/braking pauses
+    // must not make the next small correction fail immediately.
+    motionEffortTime_+=m.dt;
+    if (motionEffortTime_>tt::NO_PROGRESS_TIMEOUT_S)
+      Fail(state_==State::DriveToPoint?"Waypoint correction stalled: check wheel/encoder response":
+          "Tape scan stalled: check wheel/encoder response or configured scan speed");
   }
 }
 

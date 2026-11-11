@@ -8,8 +8,13 @@
 #include <algorithm>
 #include <cmath>
 #include <string>
+#include <sys/stat.h>
 
 RobotSubsystem::RobotSubsystem() {
+  std::string error;
+  if (cobraCheck_.LoadCalibration(autonomous_config::COBRA_CALIBRATION_FILE,error))
+    cobraCalibrationNotice_="Restored saved calibration";
+  else cobraCalibrationNotice_=error;
   lastLoopTime_=lastSonarPingTime_=frc::Timer::GetFPGATimestamp();
   hardware_.StopDrive();
 }
@@ -53,6 +58,13 @@ void RobotSubsystem::Periodic() {
   } else if (enabled && cobraCheck_.Capturing()) {
     cobraCheck_.Update(line_,now,false,false,false);
   }
+  if (!enabled && cobraCheck_.Ready() && cobraCheck_.CalibrationRevision()!=savedCobraRevision_) {
+    ::mkdir(autonomous_config::COBRA_CALIBRATION_DIRECTORY,0755);
+    std::string error;
+    cobraCalibrationNotice_=cobraCheck_.SaveCalibration(autonomous_config::COBRA_CALIBRATION_FILE,error)?
+        "Calibration saved on robot":error;
+    savedCobraRevision_=cobraCheck_.CalibrationRevision();
+  }
   UpdateSonarPoll(now,enabled);
   const bool start=startTape_.GetBoolean(false),stop=stopTape_.GetBoolean(false);
   if (start) startTape_.SetBoolean(false);
@@ -80,6 +92,8 @@ void RobotSubsystem::UpdateTapeRoutine(double now,double dt,bool start,bool stop
   in.leftRangeMM=irReading_[0].distanceMM; in.leftValid=irReading_[0].valid; in.leftTime=lastSensorTime_;
   in.rearRangeMM=sonarRanges_MM_[1]; in.rearValid=sonarRangeValid_[1]; in.rearTime=sonarReadTime_[1];
   in.line=line_; in.cobraTime=lastSensorTime_; in.cobraCalibrated=cobraCheck_.Ready();
+  in.bodyForwardMMps=localization_.GetBodyVelocityX_MMps();
+  in.bodyLeftMMps=localization_.GetBodyVelocityY_MMps();
   for (int i=0;i<4;++i) in.blackLevel[i]=cobraCheck_.BlackLevel(i);
   if (hardware_.HasDriveFault() && tapeRoutine_.IsRunning()) tapeRoutine_.Fail(hardware_.GetDriveStatus());
   tapeRoutine_.Update(in);
@@ -247,7 +261,7 @@ void RobotSubsystem::InitializeSensingDashboard() {
   tab.AddString("IR status",[] {
     return "Sharp analog: left AI0 / right AI1. Range 100-800 mm; -1 = invalid. Readings remain live while Disabled.";
   }).WithPosition(0,8).WithSize(6,1);
-  tab.AddString("Cobra status",[this] { return cobraCheck_.Status(); }).WithPosition(0,3).WithSize(8,1);
+  tab.AddString("Cobra status",[this] { return cobraCheck_.Status()+" | "+cobraCalibrationNotice_; }).WithPosition(0,3).WithSize(8,1);
   tab.AddBoolean("Cobra I2C link",[this] { return line_.communicationValid; }).WithPosition(8,3).WithSize(2,1);
   tab.AddBoolean("Cobra calibrated",[this] { return cobraCheck_.Ready(); }).WithPosition(10,3).WithSize(2,1);
   for (int i=0;i<4;++i) {
@@ -265,7 +279,7 @@ void RobotSubsystem::InitializeSensingDashboard() {
   captureCobraWhite_.SetBoolean(false); captureCobraBlack_.SetBoolean(false);
   tab.AddString("Cobra check",[] {
     return "While Disabled: place ALL channels over white floor and Capture white; repeat over black tape with Capture black. "
-        "Hold still until saved, then sweep the tape across CH0-3. Calibrate again after restarting.";
+        "Hold still until saved, then sweep the tape across CH0-3. Successful captures are retained after restarting.";
   }).WithPosition(6,7).WithSize(6,2);
   tab.AddNumber("CH1 - CH2 (V)",[this] { return cobraCheck_.VoltagesValid()?line_.volts[1]-line_.volts[2]:-1; })
       .WithPosition(0,9).WithSize(6,1);

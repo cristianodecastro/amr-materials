@@ -176,6 +176,8 @@ class RobotSubsystem : public frc2::SubsystemBase {
   bool driverL1_=false,driverR1_=false;
   LineReading line_;
   CobraCheck cobraCheck_;
+  unsigned savedCobraRevision_=0;
+  std::string cobraCalibrationNotice_;
   nt::NetworkTableEntry captureCobraWhite_,captureCobraBlack_;
   double lastLoopTime_=0;
   double controlDt_=localization_config::CONTROL_PERIOD_S;

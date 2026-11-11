@@ -48,6 +48,7 @@ struct TapeRoutineInput {
   bool leftValid=false,rearValid=false,cobraCalibrated=false;
   LineReading line;
   double blackLevel[4]={-1,-1,-1,-1}; // CH0 leftmost -> CH3 rightmost
+  double bodyForwardMMps=0,bodyLeftMMps=0;
 };
 
 class TapeAlignmentRoutine {
@@ -76,11 +77,15 @@ class TapeAlignmentRoutine {
   bool CobraHealthy(const TapeRoutineInput& in) const;
   bool Centered(const TapeRoutineInput& in) const;
   void LimitTranslation(double oldForward,double oldLeft,double acceleration,double dt);
+  void DriveWaypoint(const TapeRoutineInput& in,double oldForward,double oldLeft,double headingError);
+  enum class WaypointPhase { Travel, Brake, Settle, Correct };
+  WaypointPhase waypointPhase_=WaypointPhase::Travel;
   State state_=State::Waiting;
   std::string status_="Calibrate Cobra while Disabled; select Autonomous, enable, then Start tape test";
   RobotPose referencePose_{0,0,0},scanStart_{0,0,0},progressPose_{0,0,0};
   double forward_=0,left_=0,yaw_=0,stateTime_=0,scanTime_=0,settleTime_=-1,lostTime_=-1;
-  double progressTime_=0,scanTravel_=0;
+  double motionEffortTime_=0,scanTravel_=0;
+  double phaseTime_=0,filteredForward_=0,filteredLeft_=0,correctionX_=0,correctionY_=0;
   double lastLeftTime_=-1,lastRearTime_=-1;
   double sumLeft_=0,sumRear_=0,minLeft_=0,maxLeft_=0,minRear_=0,maxRear_=0;
   int referenceSamples_=0;

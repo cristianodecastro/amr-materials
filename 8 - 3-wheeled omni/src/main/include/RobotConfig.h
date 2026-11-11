@@ -319,14 +319,17 @@ static constexpr int JOB_COUNT = 4;
 // Raw CH0..3 readings and the session calibration screen work immediately;
 // autonomous line tracking still requires measured calibration below.
 static constexpr bool COBRA_INSTALLED = true; // user connected analog module J1 to VMX I2C
-static constexpr bool COBRA_CALIBRATED = false;
+static constexpr bool COBRA_CALIBRATED = true;
 static constexpr double COBRA_REFERENCE_V = 5.0;
 static constexpr int COBRA_I2C_ADDRESS = 0x48; // analog module default address
 static constexpr double COBRA_FORWARD_MM = 180.0; // PLACEHOLDER from robot center
 static constexpr double COBRA_LEFT_MM = 0.0; // PLACEHOLDER array center
 static constexpr double COBRA_CHANNEL_LEFT_MM[4] = {22.5,7.5,-7.5,-22.5}; // PLACEHOLDER order/spacing
-static constexpr double COBRA_FLOOR_V[4] = {4.0,4.0,4.0,4.0}; // PLACEHOLDER measured on floor
-static constexpr double COBRA_TAPE_V[4] = {1.0,1.0,1.0,1.0}; // PLACEHOLDER measured on tape
+// User measurements, CH0 leftmost -> CH3 rightmost. Used if no valid saved file exists.
+static constexpr double COBRA_FLOOR_V[4] = {2.172852,1.005859,1.257324,2.868652};
+static constexpr double COBRA_TAPE_V[4] = {4.997559,4.997559,4.997559,4.997559};
+static constexpr const char* COBRA_CALIBRATION_DIRECTORY="/home/pi/SkillsChallenge";
+static constexpr const char* COBRA_CALIBRATION_FILE="/home/pi/SkillsChallenge/cobra-calibration.txt";
 static constexpr double LINE_MIN_STRENGTH = 0.55;
 static constexpr double LINE_MIN_PEAK = 0.40;
 static constexpr double LINE_MAX_WIDTH_MM = 32.0;
@@ -424,8 +427,15 @@ static constexpr double REFERENCE_MAX_PAIR_AGE_S=0.10;
 static constexpr double DRIVE_SPEED_MMPS=localization_config::TELEOP_SPEED_MMPS;
 static constexpr double DRIVE_ACCEL_MMPS2=localization_config::TELEOP_ACCELERATION_MMPS2;
 static constexpr double POSITION_TOLERANCE_MM=15.0;
-static constexpr double POSITION_KP=1.0;
+static constexpr double POSITION_KP=1.5;
 static constexpr double MIN_APPROACH_MMPS=120.0;
+static constexpr double CAPTURE_RADIUS_MM=7.0; // aim inside the 15 mm acceptance radius
+static constexpr double NEAR_TARGET_MM=60.0;
+static constexpr double BRAKE_ACCEL_MMPS2=600.0;
+static constexpr double BRAKE_RESPONSE_S=0.12;
+static constexpr double VELOCITY_FILTER_S=0.08;
+static constexpr double CORRECTION_MAX_S=0.50;
+static constexpr double CORRECTION_REST_S=0.18;
 static constexpr double WAYPOINT_SETTLE_S=0.30;
 static constexpr double DRIVE_TIMEOUT_S=35.0;
 static constexpr double SCAN_SPEED_MMPS=60.0;

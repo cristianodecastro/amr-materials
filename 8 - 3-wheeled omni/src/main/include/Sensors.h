@@ -55,10 +55,19 @@ inline LineReading TrackLine(const double (&volts)[4]) {
   return result;
 }
 
-// Diagnostic calibration only. Never controls motors or changes autonomous
-// calibration/confirmation flags. White/black references last until restart.
+// Live calibration uses user-measured defaults, then restores saved references.
 class CobraCheck {
  public:
+  explicit CobraCheck(bool useDefaults=true) {
+    if (useDefaults && autonomous_config::COBRA_CALIBRATED) {
+      for (int i=0;i<4;++i) { white_[i]=autonomous_config::COBRA_FLOOR_V[i]; black_[i]=autonomous_config::COBRA_TAPE_V[i]; }
+      haveWhite_=haveBlack_=true;
+      status_="Using supplied white/black calibration; live readings required";
+    }
+  }
+  bool LoadCalibration(const std::string& path,std::string& error);
+  bool SaveCalibration(const std::string& path,std::string& error) const;
+  unsigned CalibrationRevision() const { return revision_; }
   void Update(const LineReading& reading, double now, bool disabled,
               bool captureWhite, bool captureBlack) {
     reading_=reading;
@@ -71,7 +80,6 @@ class CobraCheck {
     }
     if (captureWhite || captureBlack) {
       capture_=captureWhite?1:2;
-      if (captureWhite) haveWhite_=false; else haveBlack_=false;
       start_=lastSample_=now; samples_=0;
       for (int i=0;i<4;++i) { sum_[i]=0; minimum_[i]=1e9; maximum_[i]=-1e9; }
     }
@@ -103,6 +111,16 @@ class CobraCheck {
     for (int i=0;i<4;++i) if (maximum_[i]-minimum_[i]>0.20) {
       capture_=0; status_="Unstable CH"+std::to_string(i)+": hold height and surface still; retry"; return;
     }
+    // Commit a surface only after checking the complete candidate. Failed or
+    // cancelled recaptures preserve the previous working calibration.
+    for (int i=0;i<4;++i) {
+      const double average=sum_[i]/samples_;
+      const bool haveOther=capture_==1?haveBlack_:haveWhite_;
+      const double other=capture_==1?black_[i]:white_[i];
+      if (haveOther && std::fabs(average-other)<0.30) {
+        capture_=0; status_="Low white/black contrast on CH"+std::to_string(i)+"; previous calibration retained"; return;
+      }
+    }
     for (int i=0;i<4;++i) {
       if (capture_==1) white_[i]=sum_[i]/samples_; else black_[i]=sum_[i]/samples_;
     }
@@ -113,6 +131,7 @@ class CobraCheck {
     for (int i=0;i<4;++i) if (!ChannelCalibrated(i)) {
       status_="Low white/black contrast on CH"+std::to_string(i)+"; check height and repeat captures"; return;
     }
+    ++revision_;
     status_="Ready: sweep tape across CH0..3; green means black";
   }
   bool VoltagesValid() const {
@@ -149,6 +168,7 @@ class CobraCheck {
   LineReading reading_;
   bool haveWhite_=false,haveBlack_=false;
   bool readingWasValid_=false;
+  unsigned revision_=0;
   int capture_=0,samples_=0;
   double start_=0,lastSample_=0;
   double white_[4]={},black_[4]={},sum_[4]={},minimum_[4]={},maximum_[4]={};

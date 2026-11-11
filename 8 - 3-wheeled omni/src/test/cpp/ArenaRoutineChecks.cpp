@@ -517,7 +517,7 @@ void SharpAnalogConversionAndValidity() {
   REQUIRE_ARENA(Near(SharpIrFromVoltage(0.4).voltage,0.4)); // invalid range retains diagnostic voltage
 }
 void CobraValidityAndFreshSurfaceCalibration() {
-  CobraCheck check;
+  CobraCheck check(false); // explicitly exercise an uncalibrated sensor
   LineReading reading;
   check.Update(reading,0,true,false,false);
   REQUIRE_ARENA(!check.VoltagesValid() && !check.Ready());
@@ -553,15 +553,55 @@ void CobraValidityAndFreshSurfaceCalibration() {
   reading.volts[0]=white[0];
   check.Update(reading,2.05,true,true,false);
   check.Update(reading,2.1,false,false,false); // enabling cancels sampling
-  REQUIRE_ARENA(!check.Capturing() && !check.Ready());
+  REQUIRE_ARENA(!check.Capturing() && check.Ready()); // cancelled recapture preserves the working references
   check.Update(reading,2.15,true,true,true);
   REQUIRE_ARENA(!check.Capturing());
-  CobraCheck lowContrast;
+  CobraCheck lowContrast(false);
   for (auto& voltage:reading.volts) voltage=2;
   for (int tick=0;tick<=16;++tick) lowContrast.Update(reading,3+tick*0.05,true,tick==0,false);
   for (auto& voltage:reading.volts) voltage=2.1;
   for (int tick=0;tick<=16;++tick) lowContrast.Update(reading,4+tick*0.05,true,false,tick==0);
   REQUIRE_ARENA(!lowContrast.Ready() && !lowContrast.IsBlack(0));
+}
+void CobraCalibrationRetainedAcrossRestarts() {
+  CobraCheck supplied;
+  REQUIRE_ARENA(supplied.Ready() && !supplied.VoltagesValid());
+  const double white[4]={2.172852,1.005859,1.257324,2.868652};
+  for (int i=0;i<4;++i) {
+    REQUIRE_ARENA(Near(supplied.White(i),white[i]) && Near(supplied.Black(i),4.997559));
+  }
+  const char* temporary=std::getenv("TEMP");
+  const std::string path=std::string(temporary?temporary:"/tmp")+"/Cobra-calibration-test-"+
+      std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())+".txt";
+  std::string error;
+  REQUIRE_ARENA(supplied.SaveCalibration(path,error));
+  CobraCheck restarted(false);
+  REQUIRE_ARENA(restarted.LoadCalibration(path,error) && restarted.Ready());
+  LineReading reading; reading.communicationValid=true;
+  for (int i=0;i<4;++i) reading.volts[i]=white[i];
+  restarted.Update(reading,0,true,false,false);
+  for (int i=0;i<4;++i) REQUIRE_ARENA(Near(restarted.BlackLevel(i),0));
+  for (int i=0;i<4;++i) reading.volts[i]=white[i]+0.05;
+  for (int tick=0;tick<=16;++tick) restarted.Update(reading,0.1+tick*0.05,true,tick==0,false);
+  REQUIRE_ARENA(restarted.CalibrationRevision()==1 && restarted.Ready());
+  REQUIRE_ARENA(restarted.SaveCalibration(path,error));
+  CobraCheck secondRestart(false);
+  REQUIRE_ARENA(secondRestart.LoadCalibration(path,error));
+  for (int i=0;i<4;++i) REQUIRE_ARENA(Near(secondRestart.White(i),white[i]+0.05));
+  // Wrong-surface/low-contrast recapture cannot destroy the saved/active pair.
+  for (auto& v:reading.volts) v=4.997559;
+  for (int tick=0;tick<=16;++tick) secondRestart.Update(reading,2+tick*0.05,true,tick==0,false);
+  REQUIRE_ARENA(secondRestart.Ready() && secondRestart.CalibrationRevision()==0);
+  for (int i=0;i<4;++i) REQUIRE_ARENA(Near(secondRestart.White(i),white[i]+0.05));
+  const std::string bad=path+".bad";
+  { std::ofstream file(bad); file<<"CobraCalibration 1\n1 2 3 4\n1 2 3 4\n"; }
+  REQUIRE_ARENA(!secondRestart.LoadCalibration(bad,error));
+  for (int i=0;i<4;++i) REQUIRE_ARENA(Near(secondRestart.White(i),white[i]+0.05));
+  REQUIRE_ARENA(!restarted.SaveCalibration(path+"/missing-folder/file.txt",error));
+  CobraCheck stillSaved(false);
+  REQUIRE_ARENA(stillSaved.LoadCalibration(path,error));
+  REQUIRE_ARENA(Near(stillSaved.White(0),white[0]+0.05));
+  std::remove(path.c_str()); std::remove(bad.c_str());
 }
 void SimpleTasksAndColourChecks() {
   for (auto task:{SimpleTask::Forward1000,SimpleTask::Backward1000,SimpleTask::Ccw90,
@@ -860,6 +900,55 @@ void TapeRoutineChecks() {
   TapeReferenceRejectsInvalidStaleAndRepeatedSamples(); TapeEqualityRequiresActualTapeAndStableStop();
   TapeLimitsAndCenterDirection(); SimulateCornerToWaypointToTape();
 }
+void WaypointWithCoastingAndMotorDeadband(double lag,double deadband,bool screenshotStart) {
+  TapeAlignmentRoutine routine; auto in=TapeInput(); AnchorTapeRoutine(routine,in);
+  RobotPose physical=in.motion.pose;
+  if (screenshotStart) physical={256.037002,486.136416,robot_geometry::PI/2};
+  in.motion.pose=physical;
+  const double startDistance=std::hypot(250-physical.x_MM,500-physical.y_MM);
+  const double travelX=(250-physical.x_MM)/startDistance,travelY=(500-physical.y_MM)/startDistance;
+  double maximumOvershoot=0;
+  double forward=0,left=0;
+  int tick=0;
+  for (;tick<1500 && routine.GetState()==TapeAlignmentRoutine::State::DriveToPoint;++tick) {
+    FreshTapeTick(in);
+    if (tick%3==0) { in.motion.pose=physical; in.bodyForwardMMps=forward; in.bodyLeftMMps=left; }
+    in.motion.stationary=std::hypot(forward,left)<8;
+    routine.Update(in);
+    if (routine.GetState()==TapeAlignmentRoutine::State::Fault)
+      throw std::runtime_error("Coast/deadband waypoint failure: "+routine.GetStatus()+" x="+
+          std::to_string(physical.x_MM)+" y="+std::to_string(physical.y_MM));
+    double targetForward=routine.GetForwardMMps(),targetLeft=routine.GetLeftMMps();
+    if (std::hypot(targetForward,targetLeft)<deadband) targetForward=targetLeft=0;
+    const double gain=lag==0?1:0.02/(lag+0.02);
+    forward+=gain*(targetForward-forward); left+=gain*(targetLeft-left);
+    physical.x_MM-=left*0.02; physical.y_MM+=forward*0.02;
+    maximumOvershoot=std::max(maximumOvershoot,(physical.x_MM-250)*travelX+(physical.y_MM-500)*travelY);
+  }
+  REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::SearchRight);
+  REQUIRE_ARENA(std::hypot(physical.x_MM-250,physical.y_MM-500)<=15);
+  REQUIRE_ARENA(tick<1000); // finite completion, rather than repeated full-speed crossings
+  REQUIRE_ARENA(maximumOvershoot<=15); // stop prediction also bounds intermediate overshoot in this model
+}
+void WaypointSettlingDoesNotExpireProgressWatchdog() {
+  TapeAlignmentRoutine routine; auto in=TapeInput(); AnchorTapeRoutine(routine,in);
+  in.motion.pose={250,500,robot_geometry::PI/2};
+  in.motion.stationary=false; // the robot has entered tolerance but is still coasting
+  for (int tick=0;tick<130;++tick) { FreshTapeTick(in); routine.Update(in); }
+  REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::DriveToPoint);
+  in.motion.pose={256.037002,486.136416,robot_geometry::PI/2}; // drifts just outside 15 mm
+  in.motion.stationary=true;
+  for (int tick=0;tick<18;++tick) { FreshTapeTick(in); routine.Update(in); }
+  REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::DriveToPoint);
+  REQUIRE_ARENA(routine.GetForwardMMps()>0); // correction was not killed by time spent stopped
+  in=TapeInput(); AnchorTapeRoutine(routine,in);
+  in.motion.pose={256.037002,486.136416,robot_geometry::PI/2};
+  for (int tick=0;tick<600 && routine.GetState()!=TapeAlignmentRoutine::State::Fault;++tick) {
+    FreshTapeTick(in); routine.Update(in); // genuine stall: commands have no encoder response
+  }
+  REQUIRE_ARENA(routine.GetState()==TapeAlignmentRoutine::State::Fault && routine.GetForwardMMps()==0);
+  REQUIRE_ARENA(routine.GetStatus().find("Waypoint correction stalled")!=std::string::npos);
+}
 } // namespace
 
 #ifdef ARENA_TEST_STANDALONE
@@ -875,10 +964,14 @@ int main() {
     SimpleTasksAndColourChecks();
     EncoderGyroOdometryChecks();
     CobraValidityAndFreshSurfaceCalibration();
+    CobraCalibrationRetainedAcrossRestarts();
     SharpAnalogConversionAndValidity();
     TapeRoutineChecks();
+    WaypointSettlingDoesNotExpireProgressWatchdog();
+    for (double lag:{0.0,0.12,0.25}) for (double deadband:{0.0,70.0,100.0})
+      for (bool screenshot:{false,true}) WaypointWithCoastingAndMotorDeadband(lag,deadband,screenshot);
     AutonomousDistanceScaleDoesNotChangeTeleopOrHeading();
-    std::cout<<"PASS: corner reference -> (250,500) -> Cobra tape alignment; sensor validity/calibration, odometry, motion and colour regressions\n";
+    std::cout<<"PASS: persistent Cobra calibration; 18 waypoint coasting/deadband cases, screenshot boundary/stall regressions; tape alignment, odometry, motion and colour checks\n";
   } catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }
 }
 #else
@@ -901,6 +994,12 @@ TEST(SimpleTasks, MotionAndColour) { EXPECT_NO_THROW(SimpleTasksAndColourChecks(
 TEST(Odometry, EncoderGyroAndTiming) { EXPECT_NO_THROW(EncoderGyroOdometryChecks()); }
 TEST(Odometry, AutonomousOnlyDistanceScale) { EXPECT_NO_THROW(AutonomousDistanceScaleDoesNotChangeTeleopOrHeading()); }
 TEST(Sensing, CobraValidityAndFreshSurfaceCalibration) { EXPECT_NO_THROW(CobraValidityAndFreshSurfaceCalibration()); }
+TEST(Sensing, CobraCalibrationPersistence) { EXPECT_NO_THROW(CobraCalibrationRetainedAcrossRestarts()); }
 TEST(Sensing, SharpAnalogConversionAndValidity) { EXPECT_NO_THROW(SharpAnalogConversionAndValidity()); }
 TEST(Autonomous, CornerReferenceAndTapeAlignment) { EXPECT_NO_THROW(TapeRoutineChecks()); }
+TEST(Autonomous, WaypointSettling) { EXPECT_NO_THROW(WaypointSettlingDoesNotExpireProgressWatchdog()); }
+TEST(Autonomous, WaypointCoastAndDeadband) {
+  for (double lag:{0.0,0.12,0.25}) for (double deadband:{0.0,70.0,100.0})
+    for (bool screenshot:{false,true}) EXPECT_NO_THROW(WaypointWithCoastingAndMotorDeadband(lag,deadband,screenshot));
+}
 #endif
