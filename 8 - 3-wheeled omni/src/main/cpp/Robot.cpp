@@ -13,16 +13,18 @@ void ClearOldTelemetry(nt::NetworkTable& table) {
 }
 void Robot::RobotInit() {
   frc::LiveWindow::GetInstance()->DisableAllTelemetry();
-  // Clear old published entries and tab metadata before building the three tabs.
+  // Clear old published entries and tab metadata before building active tabs.
   auto network=nt::NetworkTableInstance::GetDefault();
   ClearOldTelemetry(*network.GetTable("Shuffleboard"));
   ClearOldTelemetry(*network.GetTable("SmartDashboard"));
   subsystem_.InitializeDashboard();
+  camera_.Start();
   frc::Shuffleboard::Update();
   frc::Shuffleboard::SelectTab("Motion");
 }
 void Robot::RobotPeriodic() {
   frc2::CommandScheduler::GetInstance().Run();
+  camera_.Periodic();
 }
 void Robot::DisabledInit() { subsystem_.StopAll(); }
 void Robot::AutonomousInit() {

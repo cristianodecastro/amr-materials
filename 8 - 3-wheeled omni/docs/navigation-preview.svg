@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1000" viewBox="-140 -160 2280 2510"><rect x="-140" y="-160" width="2280" height="2510" fill="white"/><style>text{font-family:Arial,sans-serif;fill:#17202b} .label{font-size:43px} .small{font-size:33px}</style>
+<text x="0" y="-70" font-size="54" font-weight="bold">Project 8 — example clearance route</text><rect x="0" y="0" width="2000" height="2000" fill="#fafcff" stroke="#17202b" stroke-width="10"/>
+<rect x='780' y='0' width='440' height='780' fill='#f9c8c7' stroke='#b9252e' stroke-width='6'/>
+<rect x='0' y='1780' width='2000' height='220' fill='#f9c8c7' stroke='#b9252e' stroke-width='6'/>
+<rect x='985' y='1400' width='30' height='600' fill='#f9c8c7' stroke='#b9252e' stroke-width='6'/>
+<rect x="700" y="800" width="600" height="600" fill="none" stroke="#959ba4" stroke-width="5" stroke-dasharray="20 14"/><text x="780" y="1180" class="small">Floor tape: traversable</text><text x="835" y="140" class="small">Keep-out</text>
+<polyline points='250,1500 825,1150 1250,1150 1400,1175 1525,1100 1600,900 1600,400' fill='none' stroke='#075dd1' stroke-width='12' stroke-linejoin='round'/>
+<circle cx='250' cy='1500' r='13' fill='#075dd1'/>
+<circle cx='825' cy='1150' r='13' fill='#075dd1'/>
+<circle cx='1250' cy='1150' r='13' fill='#075dd1'/>
+<circle cx='1400' cy='1175' r='13' fill='#075dd1'/>
+<circle cx='1525' cy='1100' r='13' fill='#075dd1'/>
+<circle cx='1600' cy='900' r='13' fill='#075dd1'/>
+<circle cx='1600' cy='400' r='13' fill='#075dd1'/>
+<rect x='78.26' y='1208.26' width='343.48' height='464.74' fill='#178042' fill-opacity='0.1' stroke='#178042' stroke-width='6'/>
+<rect x='38.26' y='1168.26' width='423.48' height='544.74' fill='none' stroke='#178042' stroke-width='3' stroke-dasharray='13 10'/>
+<rect x='1428.26' y='108.26' width='343.48' height='464.74' fill='#075dd1' fill-opacity='0.1' stroke='#075dd1' stroke-width='6'/>
+<rect x='1388.26' y='68.26' width='423.48' height='544.74' fill='none' stroke='#075dd1' stroke-width='3' stroke-dasharray='13 10'/>
+<text x="45" y="1790" class="label" fill="#178042">Start example (250,500,0°)</text><text x="1270" y="670" class="small">Goal (1600,1600,0°)</text><text x="0" y="2080" class="label">Origin (0,0) lower-left • +X east • +Y north</text><text x="0" y="2150" class="small">0° north • +90° west • −90° east • dimensions in mm</text><text x="0" y="2220" class="small">Solid outline: robot with manipulator. Dashed: 40 mm clearance.</text><text x="0" y="2290" class="small">Illustrative start only. Actual X/Y come from the corner wall reference.</text></svg>

@@ -9,18 +9,16 @@
 
 namespace {
 constexpr bool PortsValid() {
-  const int lift=manipulator_config::TITAN_MOTOR_PORT;
-  if (lift<0 || lift>3) return false;
   for (int i=0;i<3;++i) {
     if ((localization_config::WHEEL_MOTOR_SIGN[i]!=1 && localization_config::WHEEL_MOTOR_SIGN[i]!=-1) ||
         (localization_config::WHEEL_ENCODER_SIGN[i]!=1 && localization_config::WHEEL_ENCODER_SIGN[i]!=-1)) return false;
     const int port=localization_config::WHEEL_TITAN_PORT[i];
-    if (port<0 || port>3 || port==lift) return false;
+    if (port<0 || port>3) return false;
     for (int j=0;j<i;++j) if (port==localization_config::WHEEL_TITAN_PORT[j]) return false;
   }
   return true;
 }
-static_assert(PortsValid(),"Drive/lift ports must be distinct; motor and encoder signs must be +1 or -1");
+static_assert(PortsValid(),"Drive ports must be distinct; motor and encoder signs must be +1 or -1");
 }
 
 bool Hardware::TeleopMotorMotionAllowed() {
@@ -40,34 +38,26 @@ bool Hardware::DriveMotorMotionAllowed() const {
 }
 
 Hardware::Hardware() {
-  StopServos();
   // Manual, staggered pings keep the two sonars from interfering. Ping()
   // resets the echo counter and sends WPILib's 10 us active-high pulse.
   // Do not also enable the global ultrasonic automatic-mode thread.
   frc::Ultrasonic::SetAutomaticMode(false);
-  if (autonomous_config::COBRA_INSTALLED) {
-    cobra_.reset(new studica::Cobra(static_cast<float>(autonomous_config::COBRA_REFERENCE_V)));
-  }
-  if (manipulator_config::LIMIT_DIO[0]>=0)
-    liftUpperLimit_.reset(new frc::DigitalInput(manipulator_config::LIMIT_DIO[0]));
-  if (manipulator_config::LIMIT_DIO[1]>=0)
-    liftLowerLimit_.reset(new frc::DigitalInput(manipulator_config::LIMIT_DIO[1]));
+  cobra_.reset(new studica::Cobra(static_cast<float>(cobra_config::COBRA_REFERENCE_V)));
   ResetDriveEncoders();
   StopDrive();
-  SetLiftPwm(0);
 }
 
 void Hardware::ResetDriveEncoders() {
-  leftRearEncoder_.Reset();
-  rightRearEncoder_.Reset();
-  frontEncoder_.Reset();
+  frontLeftEncoder_.Reset();
+  rearEncoder_.Reset();
+  frontRightEncoder_.Reset();
 }
 
 double Hardware::GetWheelEncoderRaw(int wheel) {
   switch (wheel) {
-    case 0: return leftRearEncoder_.GetRaw();
-    case 1: return rightRearEncoder_.GetRaw();
-    case 2: return frontEncoder_.GetRaw();
+    case 0: return frontLeftEncoder_.GetRaw();
+    case 1: return rearEncoder_.GetRaw();
+    case 2: return frontRightEncoder_.GetRaw();
     default: return 0.0;
   }
 }
@@ -81,9 +71,9 @@ void Hardware::SetWheelPwm(int wheel, double output,double maxOutput) {
   const double limited=motor_output::TitanSetArgument(percent);
   wheelCommands_[wheel] = percent/100.0;
   switch (wheel) {
-    case 0: leftRearMotor_.Set(limited); break;
-    case 1: rightRearMotor_.Set(limited); break;
-    case 2: frontMotor_.Set(limited); break;
+    case 0: frontLeftMotor_.Set(limited); break;
+    case 1: rearMotor_.Set(limited); break;
+    case 2: frontRightMotor_.Set(limited); break;
     default: break;
   }
 }
@@ -95,31 +85,9 @@ double Hardware::GetWheelCommand(int wheel) const {
 
 void Hardware::StopDrive() {
   wheelDrive_.Reset();
-  teleopWheelDrive_.Reset();
+
   for (int wheel = 0; wheel < localization_config::WHEEL_COUNT; ++wheel)
     SetWheelPwm(wheel, 0.0);
-}
-
-bool Hardware::GetLiftUpperLimit() const {
-  return liftUpperLimit_ && (manipulator_config::LIMIT_ACTIVE_LOW?!liftUpperLimit_->Get():liftUpperLimit_->Get());
-}
-bool Hardware::GetLiftLowerLimit() const {
-  return liftLowerLimit_ && (manipulator_config::LIMIT_ACTIVE_LOW?!liftLowerLimit_->Get():liftLowerLimit_->Get());
-}
-double Hardware::GetLiftEncoderRaw() { return liftEncoder_.GetRaw(); }
-void Hardware::SetLiftPwm(double output) {
-  const double cap=manipulator_config::LIFT_OUTPUT;
-  if (!TeleopMotorMotionAllowed() || !std::isfinite(output) || !std::isfinite(cap) ||
-      cap<=0 || cap>1 || !std::isfinite(manipulator_config::LIFT_UP_SIGN) ||
-      std::fabs(manipulator_config::LIFT_UP_SIGN)!=1) output=0;
-  else {
-    output=motor_output::EnforceFloor(output,cap);
-    const double direction=output*manipulator_config::LIFT_UP_SIGN;
-    if ((direction>0 && GetLiftUpperLimit()) || (direction<0 && GetLiftLowerLimit())) output=0;
-  }
-  const int percent=motor_output::TitanPercent(output,cap);
-  liftCommand_=percent/100.0;
-  liftMotor_.Set(motor_output::TitanSetArgument(percent));
 }
 
 void Hardware::DriveTeleopRobotRelative(double forward,double left,double yawRadps,
@@ -146,39 +114,21 @@ void Hardware::DriveWithContext(double forward,double left,double yawRadps,
   }
   double desired[3],counts[3];
   for (int i=0;i<3;++i) {
-    desired[i]=drive_kinematics::WheelSpeedMMps(i,drive_kinematics::LayoutVx(forward,left),
-        drive_kinematics::LayoutVy(forward,left),yawRadps);
+    desired[i]=drive_kinematics::WheelSpeedMMps(i,forward,left,yawRadps);
     counts[i]=GetWheelEncoderRaw(i);
   }
-  auto& controller=teleopWheelActive_?teleopWheelDrive_:wheelDrive_;
-  controller.Update(desired,counts,dt,maxOutput,context);
+  auto& controller=wheelDrive_;
+  controller.Update(desired,counts,dt,maxOutput);
   for (int i=0;i<3;++i) SetWheelPwm(i,controller.Output(i),maxOutput);
 }
 
 std::string Hardware::GetDriveStatus() const {
-  const auto& controller=ActiveWheelDrive();
-  const int wheel=controller.HasFault()?controller.FaultWheel():controller.WaitingWheel();
+  const auto& controller=wheelDrive_;
+  const int wheel=controller.FaultWheel();
   const std::string prefix=wheel>=0 && wheel<3?
       std::string(localization_config::WHEEL_NAME[wheel])+" M"+
       std::to_string(localization_config::WHEEL_TITAN_PORT[wheel])+": ":"";
   return prefix+controller.Status();
-}
-
-void Hardware::SetServoAngle(int servo, double degrees, bool enabled) {
-  if (servo<0 || servo>=2) return;
-  auto& output=servo==0?manualServo_:triangleServo_;
-  if (!enabled || !TeleopMotorMotionAllowed() || !std::isfinite(degrees) ||
-      degrees<manipulator_config::SERVO_MIN_DEG || degrees>manipulator_config::SERVO_MAX_DEG) {
-    output.SetOffline();
-    return;
-  }
-  // Studica's positional servo maps 0..300 degrees to 500..2500 us.
-  output.SetAngle(degrees);
-}
-
-void Hardware::StopServos() {
-  manualServo_.SetOffline();
-  triangleServo_.SetOffline();
 }
 
 // The navX reports clockwise-positive yaw and a board frame with +Y forward,
@@ -194,12 +144,6 @@ double Hardware::GetYawRateDegreesPerSecond() {
 }
 double Hardware::GetWorldAccelX_G() { return imu_.GetWorldLinearAccelY(); }
 double Hardware::GetWorldAccelY_G() { return -imu_.GetWorldLinearAccelX(); }
-double Hardware::GetRawAccelX_G() { return imu_.GetRawAccelX(); }
-double Hardware::GetRawAccelY_G() { return imu_.GetRawAccelY(); }
-double Hardware::GetRawAccelZ_G() { return imu_.GetRawAccelZ(); }
-double Hardware::GetRawGyroX_Dps() { return imu_.GetRawGyroX(); }
-double Hardware::GetRawGyroY_Dps() { return imu_.GetRawGyroY(); }
-double Hardware::GetRawGyroZ_Dps() { return imu_.GetRawGyroZ(); }
 bool Hardware::IsImuConnected() { return imu_.IsConnected(); }
 bool Hardware::IsImuCalibrating() { return imu_.IsCalibrating(); }
 
@@ -243,15 +187,10 @@ LineReading Hardware::ReadLine() {
   // constructing another frc::I2C would attempt to allocate it a second time.
   // A read does not write or change ADC configuration. Negative means aborted.
   uint8_t response[2]={};
-  if (HAL_ReadI2C(HAL_I2C_kOnboard,autonomous_config::COBRA_I2C_ADDRESS,response,2)<0) return {};
-  double volts[4];
-  for (int i=0;i<4;++i) volts[i]=cobra_->GetVoltage(i);
-  auto reading=TrackLine(volts);
+  if (HAL_ReadI2C(HAL_I2C_kOnboard,cobra_config::COBRA_I2C_ADDRESS,response,2)<0) return {};
+  LineReading reading;
+  for (int i=0;i<4;++i) reading.volts[i]=cobra_->GetVoltage(i);
+
   reading.communicationValid=true;
   return reading;
-}
-
-void Hardware::StopManipulator() {
-  SetLiftPwm(0);
-  StopServos();
 }

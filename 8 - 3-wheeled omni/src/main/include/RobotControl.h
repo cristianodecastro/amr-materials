@@ -1,8 +1,9 @@
 #pragma once
 
 #include <memory>
+#include <future>
 #include <string>
-#include <frc/DigitalInput.h>
+
 #include <frc/AnalogInput.h>
 #include <frc/SPI.h>
 #include <frc/Ultrasonic.h>
@@ -13,7 +14,7 @@
 #include <studica/TitanQuad.h>
 #include <studica/TitanQuadEncoder.h>
 #include <studica/Cobra.h>
-#include <studica/Servo.h>
+
 #include "AHRS.h"
 #include "Sensors.h"
 #include "TeleopControl.h"
@@ -34,41 +35,24 @@ class Hardware {
                                double maxOutput, double dt);
   void DriveAutonomousRobotRelative(double forward, double left, double yawRadps,
                                    double maxOutput, double dt);
-  double GetWheelTargetMMps(int i) const { return ActiveWheelDrive().TargetMMps(i); }
-  double GetWheelMeasuredMMps(int i) const { return ActiveWheelDrive().MeasuredMMps(i); }
-  bool HasDriveFault() const { return ActiveWheelDrive().HasFault(); }
-  bool IsDriveStarting() const { return ActiveWheelDrive().IsStarting(); }
+  double GetWheelMeasuredMMps(int i) const { return wheelDrive_.MeasuredMMps(i); }
+  bool HasDriveFault() const { return wheelDrive_.HasFault(); }
   std::string GetDriveStatus() const;
   void StopDrive();
   void SetAutonomousDriveEnabled(bool enabled) { autonomousDriveEnabled_=enabled; }
-  void SetLiftPwm(double output);
-  double GetLiftCommand() const { return liftCommand_; }
-  double GetLiftEncoderRaw();
-  bool GetLiftUpperLimit() const;
-  bool GetLiftLowerLimit() const;
-  void SetServoAngle(int servo, double degrees, bool enabled);
-  void StopServos();
 
   double GetYawDegrees();
   double GetYawRateDegreesPerSecond();
   double GetWorldAccelX_G();
   double GetWorldAccelY_G();
-  double GetRawAccelX_G();
-  double GetRawAccelY_G();
-  double GetRawAccelZ_G();
-  double GetRawGyroX_Dps();
-  double GetRawGyroY_Dps();
-  double GetRawGyroZ_Dps();
   bool IsImuConnected();
   bool IsImuCalibrating();
-  double GetImuUpdateCount() { return imu_.GetUpdateCount(); }
 
   void PingSonar(int index);
   double GetSonarRangeMM(int index) const;
   bool IsSonarRangeValid(int index) const;
   IrReading ReadIr(int index);
   LineReading ReadLine();
-  void StopManipulator();
 
  private:
   static bool TeleopMotorMotionAllowed();
@@ -76,40 +60,28 @@ class Hardware {
   bool DriveMotorMotionAllowed() const;
   void DriveWithContext(double forward,double left,double yawRadps,
                         double maxOutput,double dt,WheelDriveContext context);
-  const WheelDriveController& ActiveWheelDrive() const { return teleopWheelActive_?teleopWheelDrive_:wheelDrive_; }
   bool autonomousDriveEnabled_=false;
-  double liftCommand_=0;
-  std::unique_ptr<frc::DigitalInput> liftUpperLimit_,liftLowerLimit_;
   std::unique_ptr<studica::Cobra> cobra_;
   WheelDriveController wheelDrive_;
-  WheelDriveController teleopWheelDrive_;
   bool teleopWheelActive_=false;
   double wheelCommands_[localization_config::WHEEL_COUNT] = {0.0, 0.0, 0.0};
-  studica::Servo manualServo_{manipulator_config::SERVO_PWM[0]};
-  studica::Servo triangleServo_{manipulator_config::SERVO_PWM[1]};
-  studica::TitanQuad leftRearMotor_{localization_config::TITAN_CAN_ID,
+  studica::TitanQuad frontLeftMotor_{localization_config::TITAN_CAN_ID,
                               localization_config::TITAN_MOTOR_FREQUENCY_HZ,
                               localization_config::WHEEL_TITAN_PORT[0]};
-  studica::TitanQuad rightRearMotor_{localization_config::TITAN_CAN_ID,
+  studica::TitanQuad rearMotor_{localization_config::TITAN_CAN_ID,
                               localization_config::TITAN_MOTOR_FREQUENCY_HZ,
                               localization_config::WHEEL_TITAN_PORT[1]};
-  studica::TitanQuad frontMotor_{localization_config::TITAN_CAN_ID,
+  studica::TitanQuad frontRightMotor_{localization_config::TITAN_CAN_ID,
                               localization_config::TITAN_MOTOR_FREQUENCY_HZ,
                               localization_config::WHEEL_TITAN_PORT[2]};
-  studica::TitanQuad liftMotor_{localization_config::TITAN_CAN_ID,
-                              localization_config::TITAN_MOTOR_FREQUENCY_HZ,
-                              manipulator_config::TITAN_MOTOR_PORT};
-  // Raw counts only: lift gearing/travel conversion is not calibrated yet.
-  studica::TitanQuadEncoder liftEncoder_{liftMotor_,manipulator_config::TITAN_MOTOR_PORT,1.0};
-
-  studica::TitanQuadEncoder leftRearEncoder_{
-      leftRearMotor_, localization_config::WHEEL_TITAN_PORT[0],
+  studica::TitanQuadEncoder frontLeftEncoder_{
+      frontLeftMotor_, localization_config::WHEEL_TITAN_PORT[0],
       localization_config::ENCODER_MM_PER_COUNT};
-  studica::TitanQuadEncoder rightRearEncoder_{
-      rightRearMotor_, localization_config::WHEEL_TITAN_PORT[1],
+  studica::TitanQuadEncoder rearEncoder_{
+      rearMotor_, localization_config::WHEEL_TITAN_PORT[1],
       localization_config::ENCODER_MM_PER_COUNT};
-  studica::TitanQuadEncoder frontEncoder_{
-      frontMotor_, localization_config::WHEEL_TITAN_PORT[2],
+  studica::TitanQuadEncoder frontRightEncoder_{
+      frontRightMotor_, localization_config::WHEEL_TITAN_PORT[2],
       localization_config::ENCODER_MM_PER_COUNT};
 
   frc::Ultrasonic frontSonar_{localization_config::SONARS[0].triggerDio,
@@ -130,13 +102,11 @@ class Localization {
   void Reset(double x_MM,double y_MM,double headingDeg);
   void UpdateOdometry(double dtSeconds);
   void SetAutonomousMode(bool autonomous);
+  bool CorrectPosition(double dx,double dy) { return autonomousMode_ && odometry_.CorrectPosition(dx,dy); }
   bool IsHealthy() const { return autonomousMode_?odometry_.Healthy():teleopTelemetry_.Healthy(); }
-  void PublishTelemetry() const;
   const RobotPose& GetPose() const { return autonomousMode_?odometry_.Pose():teleopTelemetry_.Pose(); }
   double GetBodyVelocityX_MMps() const { return autonomousMode_?odometry_.ForwardSpeed():teleopTelemetry_.ForwardSpeed(); }
   double GetBodyVelocityY_MMps() const { return autonomousMode_?odometry_.LeftSpeed():teleopTelemetry_.LeftSpeed(); }
-  std::string GetStatus() const;
-  double GetImuOffsetDegrees() const { return autonomousMode_?odometry_.OffsetDegrees():teleopTelemetry_.OffsetDegrees(); }
  private:
   Hardware* hardware_;
   drive_kinematics::EncoderGyroOdometry odometry_;
@@ -155,14 +125,21 @@ class RobotSubsystem : public frc2::SubsystemBase {
  private:
   void InitializeMotionDashboard();
   void InitializeSensingDashboard();
-  void InitializeManipulatorDashboard();
+  void InitializeNavigationDashboard();
   void UpdateTeleopDrive(double dt);
   void UpdateSonarPoll(double now);
   void UpdateTapeRoutine(double now,double dt,bool startLeft,bool startRight,bool stop);
+  NavigationInput NavigationSample(double now,double dt);
+  void UpdateNavigation(double now,double dt,bool reference,bool go);
 
   Hardware hardware_;
   Localization localization_{&hardware_};
   TapeAlignmentRoutine tapeRoutine_;
+  GoalNavigationRoutine navigation_;
+  std::future<NavigationPlan> planFuture_;
+  unsigned requestGeneration_=0,planGeneration_=0;
+  bool navigationSelected_=false;
+  nt::NetworkTableEntry referenceCorner_,goToGoal_,stopNavigation_,goalX_,goalY_,goalHeading_;
   nt::NetworkTableEntry startTapeLeft_,startTapeRight_,stopTape_;
   bool autonomousSession_=false;
   std::string routineNotice_;
@@ -171,12 +148,6 @@ class RobotSubsystem : public frc2::SubsystemBase {
   bool driverConnected_=false;
   double driverRawX_=0,driverRawY_=0;
   double driverRightX_=0;
-  bool driverPovPresent_=false;
-  int driverPov_=-1;
-  LiftTeleopController liftTeleop_;
-  ServoTeleopController servoTeleop_;
-  bool driverTriangle_=false;
-  bool driverL1_=false,driverR1_=false;
   LineReading line_;
   CobraCheck cobraCheck_;
   double lastLoopTime_=0;
