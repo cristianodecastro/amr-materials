@@ -92,7 +92,7 @@ constexpr bool WheelOutputIsProportionalAndNotEncoderCompensated() {
   }
   return Abs(b.MeasuredMMps(0))>Abs(a.MeasuredMMps(0));
 }
-static_assert(WheelOutputIsProportionalAndNotEncoderCompensated(),"No wheel boost/trim/hold, even with different encoder speeds");
+static_assert(WheelOutputIsProportionalAndNotEncoderCompensated(),"No encoder compensation/trim/hold; final electrical floor is separate");
 constexpr bool CommonSaturationAndFaultStops() {
   WheelDriveController c;
   const double desired[3]={2000,-1000,500},counts[3]={},zero[3]={};

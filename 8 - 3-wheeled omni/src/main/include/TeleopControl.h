@@ -5,7 +5,7 @@
 #include "RobotConfig.h"
 
 namespace motor_output {
-// Titan's CAN command is a whole percentage. Quantize without power boosts.
+// Titan's CAN command is a whole percentage. Raw capped quantization.
 inline constexpr int TitanPercent(double output,double cap) {
   if (!std::isfinite(output) || !std::isfinite(cap) || cap<=0 || cap>1) return 0;
   const int maximum=static_cast<int>(std::floor(cap*100+1e-9));
@@ -13,11 +13,17 @@ inline constexpr int TitanPercent(double output,double cap) {
   const int percent=std::min(maximum,wanted);
   return output<0?-percent:percent;
 }
-// One electrical boundary for Teleop and Autonomous. Do not apply this sign
-// to the chassis mixer, gyro or raw encoder samples.
+// One electrical boundary for Teleop and Autonomous: preserve true zero,
+// enforce the minimum running duty, then apply wiring polarity. The cap wins:
+// if it cannot supply the minimum, stop instead of sending an unusable duty.
 inline constexpr int WheelTitanPercent(int wheel,double output,double cap) {
   if (wheel<0 || wheel>=localization_config::WHEEL_COUNT) return 0;
-  return TitanPercent(output*localization_config::WHEEL_MOTOR_SIGN[wheel],cap);
+  if (!std::isfinite(output) || output==0 || !std::isfinite(cap) || cap<=0 || cap>1) return 0;
+  const int minimum=static_cast<int>(std::ceil(wheel_drive_config::MIN_RUNNING_OUTPUT*100-1e-9));
+  const int maximum=static_cast<int>(std::floor(cap*100+1e-9));
+  if (maximum<minimum) return 0;
+  const double magnitude=std::max(std::fabs(output),minimum/100.0);
+  return TitanPercent((output<0?-magnitude:magnitude)*localization_config::WHEEL_MOTOR_SIGN[wheel],cap);
 }
 inline double TitanSetArgument(int percent) {
   if (percent==0) return 0;

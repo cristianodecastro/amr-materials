@@ -69,6 +69,9 @@ static constexpr double SENSOR_UPDATE_PERIOD_S=0.050,SENSOR_STALE_S=0.200;
 
 namespace wheel_drive_config {
 // Encoders monitor motion only. They never trim/boost/hold an individual wheel.
+// Installed drivetrain cannot reliably move below this electrical duty.
+// Applies to all nonzero drive commands in both modes; zero still means stop.
+static constexpr double MIN_RUNNING_OUTPUT=0.15;
 static constexpr double SPEED_FILTER_S=0.060,SPEED_WINDOW_S=0.060,MAX_SAMPLE_S=0.10;
 static constexpr double ZERO_SPEED_MMPS=0.5;
 static constexpr double STALL_REQUEST_MMPS=20,STALL_MEASURED_MMPS=3,STALL_OUTPUT=0.12,STALL_TIMEOUT_S=1;

@@ -538,7 +538,7 @@ void WaypointSettlingDoesNotExpireProgressWatchdog() {
   REQUIRE_ARENA(routine.GetStatus().find("Waypoint correction stalled")!=std::string::npos);
 }
 
-void ProportionalTitanOutputAndQuantization() {
+void TitanOutputFloorPolarityAndQuantization() {
   for (double cap:{0.01,0.15,0.159,0.25,0.9,1.0}) for (int n=-2000;n<=2000;++n) {
     const double demand=n/2000.0;
     const int percent=motor_output::TitanPercent(demand,cap);
@@ -547,7 +547,7 @@ void ProportionalTitanOutputAndQuantization() {
     REQUIRE_ARENA(std::abs(percent)<=static_cast<int>(std::floor(cap*100+1e-9)));
     REQUIRE_ARENA(std::fabs(percent/100.0-std::max(-cap,std::min(cap,demand)))<=0.010001);
   }
-  REQUIRE_ARENA(motor_output::TitanPercent(0.04,0.9)==4); // no 15% boost
+  REQUIRE_ARENA(motor_output::TitanPercent(0.04,0.9)==4); // raw quantizer; wheel boundary applies the floor
   REQUIRE_ARENA(motor_output::TitanPercent(0,0.9)==0);
   REQUIRE_ARENA(motor_output::TitanPercent(std::numeric_limits<double>::quiet_NaN(),0.9)==0);
   REQUIRE_ARENA(motor_output::TitanPercent(0.3,0)==0);
@@ -558,6 +558,17 @@ void ProportionalTitanOutputAndQuantization() {
     REQUIRE_ARENA(motor_output::WheelTitanPercent(i,std::numeric_limits<double>::quiet_NaN(),0.9)==0);
     REQUIRE_ARENA(motor_output::WheelTitanPercent(i,0.4,0)==0);
     REQUIRE_ARENA(motor_output::WheelTitanPercent(i,1,0.25)==-25);
+    REQUIRE_ARENA(motor_output::WheelTitanPercent(i,0.000001,0.9)==-15);
+    REQUIRE_ARENA(motor_output::WheelTitanPercent(i,-0.04,0.9)==15);
+    REQUIRE_ARENA(motor_output::WheelTitanPercent(i,1,0.14999)==0);
+    for (double cap:{0.01,0.14999,0.15,0.159,0.25,0.9}) for (int n=-2000;n<=2000;++n) {
+      const int percent=motor_output::WheelTitanPercent(i,n/2000.0,cap);
+      REQUIRE_ARENA(percent==0 || std::abs(percent)>=15);
+      REQUIRE_ARENA(std::abs(percent)<=static_cast<int>(std::floor(cap*100+1e-9)));
+      REQUIRE_ARENA(static_cast<int>(std::fabs(motor_output::TitanSetArgument(percent)*100))==std::abs(percent));
+      if (n==0 || cap<0.15) REQUIRE_ARENA(percent==0);
+      else REQUIRE_ARENA(n*percent<0); // installed polarity, including tiny commands
+    }
   }
   WheelDriveController drive;
   const double demand[3]={-120,-120,240},counts[3]={};
@@ -577,18 +588,22 @@ void ProportionalTitanOutputAndQuantization() {
     // motors rotate opposite the CCW tangent for positive electrical duty,
     // independently established by the user's all-directions Teleop test.
     WheelDriveController mapped;
-    double requested[3],actual[3];
+    double requested[3],actual[3],floored[3];
     for (int i=0;i<3;++i) requested[i]=drive_kinematics::WheelSpeedMMps(i,f,l,yaw);
     mapped.Update(requested,counts,0.02,0.9);
     REQUIRE_ARENA(!mapped.HasFault());
     for (int i=0;i<3;++i) {
       const double electrical=motor_output::WheelTitanPercent(i,mapped.Output(i),0.9)/100.0;
       actual[i]=-electrical*localization_config::MAX_WHEEL_SPEED_MMPS;
+      const double runningSpeed=0.15*localization_config::MAX_WHEEL_SPEED_MMPS;
+      floored[i]=std::fabs(expected[i])<=0.5?0:
+          (expected[i]<0?-1:1)*std::max(runningSpeed,std::fabs(expected[i]));
     }
-    // Half-percent quantization permits <=3 mm/s per wheel at 112 RPM.
-    REQUIRE_ARENA(Near((actual[2]-actual[0])/std::sqrt(3.0),f,4.1));
-    REQUIRE_ARENA(Near((actual[0]+actual[2]-2*actual[1])/3,l,4.1));
-    REQUIRE_ARENA(Near((actual[0]+actual[1]+actual[2])/(3*159.74),yaw,0.019));
+    // Below the running floor, individual wheel ratios change. Independently
+    // check the resulting chassis twist rather than assume ideal requested speed.
+    REQUIRE_ARENA(Near((actual[2]-actual[0])/std::sqrt(3.0),(floored[2]-floored[0])/std::sqrt(3.0),4.1));
+    REQUIRE_ARENA(Near((actual[0]+actual[2]-2*actual[1])/3,(floored[0]+floored[2]-2*floored[1])/3,4.1));
+    REQUIRE_ARENA(Near((actual[0]+actual[1]+actual[2])/(3*159.74),(floored[0]+floored[1]+floored[2])/(3*159.74),0.019));
   }
 }
 void FixedCobraRejectsDisconnectedAndInvalidReadings() {
@@ -602,7 +617,7 @@ void FixedCobraRejectsDisconnectedAndInvalidReadings() {
   REQUIRE_ARENA(!check.VoltagesValid() && !check.ChannelReadingValid(2) && check.BlackLevel(1)==-1);
 }
 // Exercise the real mixer and whole-percent CAN conversion with independent
-// chassis equations. Motor lag is simulated; no fitted friction compensation.
+// chassis equations. Motor lag and the real 15% electrical floor are included.
 void WaypointWithDirectMotorOutput(double lag,bool disturbed,TapeApproach approach) {
   TapeAlignmentRoutine routine; auto in=TapeInput(); in.approach=approach; AnchorTapeRoutine(routine,in);
   const auto target=routine.GetTarget(); RobotPose physical=in.motion.pose;
@@ -739,6 +754,11 @@ void NavigationGoalAndCorrectionSimulation(double finalHeading,bool invalidSenso
     SampleNavigationRanges(in,physical,tick);
     if (invalidSensors) for (auto& v:in.valid) v=false;
     nav.Update(in);
+    if (nav.GetState()==GoalNavigationRoutine::State::Observing &&
+        nav.Status()=="Stopped at waypoint; checking unobstructed outer-wall readings") {
+      REQUIRE_ARENA(nav.Forward()==0 && nav.Left()==0 && nav.Yaw()==0);
+      REQUIRE_ARENA(std::fabs(yaw)<=robot_geometry::Radians(heading_control_config::STATIONARY_YAW_DPS));
+    }
     if (nav.NeedsPositionCorrection()) {
       sawCorrection=true;
       biasX=nav.RequestedPose().x_MM-physical.x_MM; biasY=nav.RequestedPose().y_MM-physical.y_MM;
@@ -828,7 +848,7 @@ void RunActiveChecks() {
   SharpAnalogConversionAndValidity(); YawRateUsesSensorSampleTime();
   FixedCobraReferencesNeedNoCalibration(); FixedCobraRejectsDisconnectedAndInvalidReadings();
   ClockwiseRawCountsMatchOdometryAndWheelMonitor();
-  EncoderGyroOdometryChecks(); ProportionalTitanOutputAndQuantization();
+  EncoderGyroOdometryChecks(); TitanOutputFloorPolarityAndQuantization();
   ClearancePlanningAndWallAssociation();
   NavigationStopAndBadReference();
   YawDirectionCheckAllowsDelayedReversalButRejectsSustainedOpposition();
@@ -845,7 +865,7 @@ void RunActiveChecks() {
 }
 #ifdef ARENA_TEST_STANDALONE
 int main() {
-  try { RunActiveChecks(); std::cout<<"PASS: north-zero odometry, clearance A*, swept footprint/rotation, wall association, four goal simulations, 10 mm arrival, tape, teleop geometry and sensor validity\n"; }
+  try { RunActiveChecks(); std::cout<<"PASS: 15% output floor/zero stops, north-zero odometry, clearance A*, swept footprint/rotation, settled wall observations, four goal simulations, 10 mm arrival, tape, teleop geometry and sensor validity\n"; }
   catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }
 }
 #else

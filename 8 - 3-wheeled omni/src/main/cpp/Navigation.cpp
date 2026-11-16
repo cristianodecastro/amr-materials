@@ -54,7 +54,7 @@ void GoalNavigationRoutine::BeginObservation(double now) {
   forward_=left_=0; state_=State::Observing; phaseStarted_=now;
   observations_[0].clear(); observations_[1].clear();
   for (auto& time:lastStamp_) time=-1;
-  status_="Stopped at waypoint; checking unobstructed outer-wall readings";
+  status_="Settling at waypoint before checking outer-wall readings";
 }
 void GoalNavigationRoutine::ContinueAfterObservation(const NavigationInput& in) {
   const auto& p=in.motion.pose;
@@ -126,8 +126,13 @@ void GoalNavigationRoutine::Update(const NavigationInput& in) {
       effort_+=m.dt; if (effort_>2.5) Fail("No motion progress on planned path");
     }
   } else if (state_==State::Observing) {
+    // Wall referencing requires an unpowered, settled chassis. Inside the
+    // accepted heading tolerance, do not keep nudging the heading at 15%.
+    if (std::fabs(error)<=heading_control_config::HEADING_TOLERANCE_RAD) yaw_=0;
     if (std::hypot(in.forwardMMps,in.leftMMps)>heading_control_config::STATIONARY_SPEED_MMPS ||
+        std::fabs(m.yawRateRadps)>robot_geometry::Radians(heading_control_config::STATIONARY_YAW_DPS) ||
         std::fabs(error)>heading_control_config::HEADING_TOLERANCE_RAD) { BeginObservation(m.now); return; }
+    status_="Stopped at waypoint; checking unobstructed outer-wall readings";
     for (int i=0;i<4;++i) {
       const double stale=(i==0 || i==2)?localization_config::SENSOR_STALE_S:localization_config::SONAR_READING_STALE_S;
       if (in.stamp[i]<=lastStamp_[i] || in.stamp[i]<phaseStarted_+0.05 || !Fresh(m.now,in.stamp[i],stale)) continue;

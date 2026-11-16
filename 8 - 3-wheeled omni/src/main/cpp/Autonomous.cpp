@@ -412,8 +412,8 @@ void WaypointDrive::Update(const MotionInput& m,double measuredForward,double me
     }
   }
   if (waypointPhase_==WaypointPhase::Brake) {
-    // Deceleration is allowed all the way to zero: no minimum-speed floor can
-    // override braking, and no direction reversal is blended through a target.
+    // The chassis request decelerates to a true zero, which bypasses the
+    // electrical minimum duty. No reversal is blended through a target.
     LimitTranslation(oldForward,oldLeft,acceleration_,m.dt);
     status_="Braking before waypoint; waiting for the chassis to settle";
     if (std::hypot(forward_,left_)<0.01) {
