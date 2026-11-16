@@ -117,7 +117,12 @@ static constexpr double MIN_CLEARANCE_MM=40.0;
 static constexpr double POSITION_TOLERANCE_MM=10.0;
 static constexpr double GRID_MM=25.0;
 static constexpr double SPEED_MMPS=180.0,ACCEL_MMPS2=200.0;
-static constexpr double OBSERVATION_SPACING_MM=300.0,OBSERVATION_S=0.65;
+// Intermediate points are pass-through guides, not precision stops.
+static constexpr double LOOKAHEAD_MM=100.0,PASS_RADIUS_MM=50.0,CORNER_SPEED_MMPS=90.0;
+static constexpr double FINAL_APPROACH_MM=220.0,OBSERVATION_S=0.65;
+static constexpr double TRAVEL_HEADING_DEADBAND_RAD=3*robot_geometry::PI/180;
+static constexpr double TIGHT_HEADING_DEADBAND_RAD=0.5*robot_geometry::PI/180;
+static constexpr double TRAVEL_HEADING_KP=1.2;
 static constexpr double MISSION_TIMEOUT_S=180.0;
 static constexpr double DEFAULT_GOAL_X_MM=1600,DEFAULT_GOAL_Y_MM=1600,DEFAULT_GOAL_HEADING_DEG=0;
 // Physical keep-out regions, without robot clearance. Add rows as needed;

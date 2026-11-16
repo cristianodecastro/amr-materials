@@ -235,8 +235,8 @@ NavigationPlan ClearancePlanner::Plan(RobotPose start,RobotPose goal) const {
 }
 
 namespace at=heading_control_config;
-double HeadingMotionControl::Request(double error,double oldYaw,double measuredYaw,double dt) {
-  const double deadband=at::HOLD_HEADING_DEADBAND_RAD;
+double HeadingMotionControl::Request(double error,double oldYaw,double measuredYaw,double dt,
+                                     double deadband,double gain) {
   holdRecheck_=std::max(0.0,holdRecheck_-dt);
   if (holdRecheck_>1e-9 && std::fabs(error)<at::HOLD_RECHECK_WINDOW_RAD) return 0;
   const double toward=(error<0?-1:1)*measuredYaw;
@@ -246,7 +246,7 @@ double HeadingMotionControl::Request(double error,double oldYaw,double measuredY
       toward*(at::HOLD_BRAKE_RESPONSE_S+dt)>=std::fabs(error)-deadband;
   const double limit=at::HOLD_HEADING_MAX_YAW_RADPS;
   const double request=std::max(-limit,std::min(limit,
-      error*at::HOLD_HEADING_KP-measuredYaw*at::HOLD_YAW_RATE_DAMPING));
+      error*gain-measuredYaw*at::HOLD_YAW_RATE_DAMPING));
   // Rate damping releases power; it must not command an opposite turn while
   // still on the same side of the reference. Once the error crosses zero,
   // discard the old turn ramp so it cannot push farther past the reference.
@@ -373,9 +373,11 @@ void TapeAlignmentRoutine::LimitTranslation(double oldForward,double oldLeft,dou
   const double df=forward_-oldForward,dl=left_-oldLeft,delta=std::hypot(df,dl),step=acceleration*dt;
   if (delta>step) { forward_=oldForward+df*step/delta; left_=oldLeft+dl*step/delta; }
 }
-void WaypointDrive::Reset(ArenaPoint target,double now,double speed,double acceleration) {
+void WaypointDrive::Reset(ArenaPoint target,double now,double speed,double acceleration,
+                         double initialForward,double initialLeft) {
   *this=WaypointDrive{}; target_=target; phaseTime_=now;
   maxSpeed_=speed; acceleration_=acceleration;
+  forward_=filteredForward_=initialForward; left_=filteredLeft_=initialLeft;
 }
 void WaypointDrive::LimitTranslation(double oldForward,double oldLeft,double acceleration,double dt) {
   const double df=forward_-oldForward,dl=left_-oldLeft,delta=std::hypot(df,dl),step=acceleration*dt;

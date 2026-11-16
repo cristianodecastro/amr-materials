@@ -5,7 +5,7 @@
 
 // Global planning is independent of motor IO. The real map and footprint must
 // be supplied explicitly; painted tape is not an obstacle. During XY travel
-// heading stays at start.headingRad, followed by a checked turn at the goal.
+// heading is held near start.headingRad, followed by a checked turn at the goal.
 struct NavigationMap {
   double widthMM=2000,heightMM=2000;
   std::vector<ForbiddenRegion> forbidden;
@@ -58,7 +58,9 @@ struct MotionInput {
 class HeadingMotionControl {
  public:
   void Reset() { opposed_=commandTime_=lastRequest_=lastMeasured_=0; direction_=0; holdRecheck_=0; }
-  double Request(double error,double oldYaw,double measuredYaw,double dt);
+  double Request(double error,double oldYaw,double measuredYaw,double dt,
+      double deadband=heading_control_config::HOLD_HEADING_DEADBAND_RAD,
+      double gain=heading_control_config::HOLD_HEADING_KP);
   std::string CheckFeedback(double previousRequest,double measuredYaw,double dt);
   double FeedbackRequest() const { return lastRequest_; }
   double FeedbackMeasured() const { return lastMeasured_; }
@@ -72,7 +74,8 @@ class HeadingMotionControl {
 // Shared XY braking/settling controller for tape tests and planned routes.
 class WaypointDrive {
  public:
-  void Reset(ArenaPoint target,double now,double speed,double acceleration);
+  void Reset(ArenaPoint target,double now,double speed,double acceleration,
+      double initialForward=0,double initialLeft=0);
   void Update(const MotionInput& motion,double measuredForward,double measuredLeft,double headingError);
   bool Reached() const { return reached_; }
   double Forward() const { return forward_; }
@@ -135,6 +138,8 @@ class GoalNavigationRoutine {
   void ContinueAfterObservation(const NavigationInput& in);
   void BeginObservation(double now);
   void NeedNewPlan(const NavigationInput& in);
+  void FollowRoute(const NavigationInput& in);
+  double TravelHeadingDeadband(ArenaPoint center) const;
   NavigationMap map_=DefaultNavigationMap();
   ClearancePlanner planner_{map_,DefaultNavigationFootprint()};
   State state_=State::Unreferenced;
@@ -142,6 +147,8 @@ class GoalNavigationRoutine {
   RobotPose goal_{0,0,0},requestedPose_{0,0,0},progressPose_{0,0,0};
   double travelHeading_=0,started_=0,phaseStarted_=0,settled_=-1,effort_=0,pathLength_=0;
   double forward_=0,left_=0,yaw_=0;
+  double routeVX_=0,routeVY_=0;
+  bool preciseApproach_=false;
   std::vector<ArenaPoint> path_;
   unsigned waypoint_=0;
   double lastStamp_[4]={-1,-1,-1,-1};
