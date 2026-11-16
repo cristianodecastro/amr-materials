@@ -57,11 +57,14 @@ struct MotionInput {
 };
 class HeadingMotionControl {
  public:
-  void Reset() { opposed_=0; direction_=0; holdRecheck_=0; }
+  void Reset() { opposed_=commandTime_=lastRequest_=lastMeasured_=0; direction_=0; holdRecheck_=0; }
   double Request(double error,double oldYaw,double measuredYaw,double dt);
   std::string CheckFeedback(double previousRequest,double measuredYaw,double dt);
+  double FeedbackRequest() const { return lastRequest_; }
+  double FeedbackMeasured() const { return lastMeasured_; }
  private:
   double opposed_=0;
+  double commandTime_=0,lastRequest_=0,lastMeasured_=0;
   double holdRecheck_=0;
   int direction_=0;
 };
@@ -122,6 +125,8 @@ class GoalNavigationRoutine {
   double Forward() const { return forward_; }
   double Left() const { return left_; }
   double Yaw() const { return yaw_; }
+  double FeedbackRequest() const { return heading_.FeedbackRequest(); }
+  double FeedbackMeasured() const { return heading_.FeedbackMeasured(); }
   double PathLengthMM() const { return pathLength_; }
   unsigned WaypointCount() const { return path_.size(); }
   unsigned WaypointIndex() const { return waypoint_; }
@@ -179,6 +184,8 @@ class TapeAlignmentRoutine {
   double GetForwardMMps() const { return forward_; }
   double GetLeftMMps() const { return left_; }
   double GetYawRadps() const { return yaw_; }
+  double FeedbackRequest() const { return heading_.FeedbackRequest(); }
+  double FeedbackMeasured() const { return heading_.FeedbackMeasured(); }
   double GetScanTravelMM() const { return scanTravel_; }
   static bool PoseFromWalls(double leftGap,double rearGap,RobotPose& pose);
  private:

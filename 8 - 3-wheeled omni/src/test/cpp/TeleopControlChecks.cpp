@@ -82,8 +82,9 @@ constexpr bool WheelOutputIsProportionalAndNotEncoderCompensated() {
   const double desired[3]={-120,-120,240}; double ca[3]={},cb[3]={};
   for (int tick=0;tick<35;++tick) {
     for (int i=0;i<3;++i) {
-      ca[i]+=desired[i]*0.02/localization_config::ENCODER_MM_PER_COUNT;
-      cb[i]+=desired[i]*0.03/localization_config::ENCODER_MM_PER_COUNT;
+      // Installed raw counts increase opposite the CCW-positive wheel tangent.
+      ca[i]-=desired[i]*0.02/localization_config::ENCODER_MM_PER_COUNT;
+      cb[i]-=desired[i]*0.03/localization_config::ENCODER_MM_PER_COUNT;
     }
     a.Update(desired,ca,0.02,0.9); b.Update(desired,cb,0.02,0.9);
     if (a.HasFault() || b.HasFault()) return false;

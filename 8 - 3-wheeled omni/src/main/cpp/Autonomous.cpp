@@ -260,10 +260,15 @@ double HeadingMotionControl::Request(double error,double oldYaw,double measuredY
   return oldYaw+std::max(-step,std::min(step,request-oldYaw));
 }
 std::string HeadingMotionControl::CheckFeedback(double previousRequest,double measuredYaw,double dt) {
-  if (std::fabs(previousRequest)<=0.0001) { direction_=0; opposed_=0; return {}; }
+  lastRequest_=previousRequest; lastMeasured_=measuredYaw;
+  if (std::fabs(previousRequest)<=0.0001) { direction_=0; opposed_=commandTime_=0; return {}; }
   const int requestedDirection=previousRequest<0?-1:1;
-  if (requestedDirection!=direction_) opposed_=0;
+  if (requestedDirection!=direction_) opposed_=commandTime_=0;
   direction_=requestedDirection;
+  commandTime_+=dt;
+  // Allow motor reversal and IMU acquisition latency before diagnosing a
+  // sustained wrong-sign response. Do not count coasting into the fault angle.
+  if (commandTime_<=at::YAW_RESPONSE_SETTLE_S+1e-9) return {};
   if (direction_!=0 && std::fabs(measuredYaw)>=at::YAW_DIRECTION_CHECK_MIN_RADPS) {
     if (direction_*measuredYaw<0) opposed_+=std::fabs(measuredYaw)*dt;
     else opposed_=0;

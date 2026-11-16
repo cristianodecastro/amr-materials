@@ -66,7 +66,7 @@ void Hardware::SetWheelPwm(int wheel, double output,double maxOutput) {
   if (wheel < 0 || wheel >= localization_config::WHEEL_COUNT) return;
   if (!std::isfinite(output)) output = 0.0;
   if (!DriveMotorMotionAllowed()) output=0;
-  const int percent=motor_output::TitanPercent(output*localization_config::WHEEL_MOTOR_SIGN[wheel],
+  const int percent=motor_output::WheelTitanPercent(wheel,output,
       std::min(maxOutput,localization_config::TELEOP_MAX_MOTOR_OUTPUT));
   const double limited=motor_output::TitanSetArgument(percent);
   wheelCommands_[wheel] = percent/100.0;

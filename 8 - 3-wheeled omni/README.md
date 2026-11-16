@@ -24,7 +24,9 @@ For body forward speed f, left speed l, and CCW yaw rate w (rad/s), tangent whee
 - M1: -l + L * w
 - M2: +sqrt(3)/2 * f + 0.5 * l + L * w
 
-Positive motor output and encoder counts are configured to follow the CCW tangent arrows in the diagram. Wiring polarity entries in RobotConfig.h are signs only, not motor trims.
+Positive canonical wheel speed follows the CCW tangent arrows in the diagram. The installed motors require negative Titan electrical duty for that direction: `WHEEL_MOTOR_SIGN={-1,-1,-1}`. This polarity is applied once at the final hardware output, equally in Teleop and Autonomous. The dashboard PWM shows the signed electrical duty, so its sign can differ from the canonical wheel-speed request. Wiring polarity entries in RobotConfig.h are signs only, not motor trims.
+
+Motor polarity does not determine encoder wiring polarity. The corrected physical observation is that manually rolling the whole chassis CLOCKWISE increases all three raw encoder counts. Therefore `WHEEL_ENCODER_SIGN={-1,-1,-1}` converts them to the CCW-positive wheel convention. This conversion is applied once in autonomous odometry, Teleop pose telemetry and the shared wheel-speed/direction monitor; hardware and dashboard encoder counts remain raw. If wiring changes, repeat the Disabled rolling check: during CCW motion, decreasing raw counts require -1 and increasing raw counts require +1. The gyro remains CCW-positive.
 
 Commands and encoder odometry use the same geometry. Odometry subtracts gyro rotation from each wheel's travel and integrates nominal encoder distance with reset-relative gyro heading. The former 180-degree layout offset, reversed yaw multiplier and empirical 0.9555 odometry scale are removed.
 
@@ -44,7 +46,7 @@ Sonars use FlexDIO 2/3 front and 0/1 rear (even trigger, odd echo). IR sensors u
 
 Basic teleoperated driving and on-demand photo capture are retained. The inactive project-7 arena mission/planner, simple tasks, colour classification/calibration, Cobra recapture/file persistence, lift, and servo code are removed. Build and vendor configuration remain unchanged.
 
-## Goal navigation: first arena trial (P8-r14)
+## Goal navigation: first arena trial (P8-r17)
 
 Use the **Navigation** tab in project 8. Exact starting X/Y are calculated from valid left-IR and rear-sonar readings, with their center offsets added once. This requires manually placing the robot facing arena north and ensuring both beams see the outer walls, including a rear beam passing between delivery objects. It is not automatic localization from an arbitrary unknown pose.
 
@@ -73,5 +75,7 @@ Navigation speed is capped at 180 mm/s with 200 mm/s^2 acceleration. The shared 
 Readings through storage/delivery regions never correct position during a route. Missing, invalid, stale, repeated, or ambiguous readings are skipped. A waypoint can proceed on encoder/gyro odometry if no usable wall is visible. Stable accepted wall estimates correct only X/Y, preserve gyro and encoder baselines, and trigger replanning from the corrected position. Wall observations occur while stopped, avoiding stale moving-range corrections. Accelerometer data are not double-integrated into autonomous position; existing Teleop observational telemetry remains separate.
 
 Planning runs in a worker so it cannot block the 20 ms control loop. A canceled/old planning result cannot resume motion or overwrite a newer goal. Tape tests and navigation are mutually exclusive; Teleop and on-demand camera capture are retained. No motor trims, static-friction boosts, or empirical odometry scaling are reintroduced.
+
+The yaw direction monitor allows 300 ms after a yaw request starts or reverses, then stops after five degrees of sustained opposite rotation. Braking/coasting during that initial response interval is not counted as a wiring fault. The Navigation tab shows **Yaw request deg/s** and **Gyro yaw deg/s**; positive is CCW. On a fault, these retain the feedback request and measured rate which triggered it. Revision P8-r17 retains the common motor polarity correction based on the reversed physical Teleop directions and corrects the encoder polarity using the clarified observation that CW rolling increases raw counts. After deployment, confirm stick-forward moves forward and right-stick-left turns CCW before autonomous navigation.
 
 Validation includes nominal and non-grid-aligned starts, thin-wall and diagonal clearance, unsafe intermediate rotations, north-zero gyro/odometry transforms, invalid-range rejection, preservation of encoder/gyro baselines during XY correction, and four motor-lag navigation simulations (including corrupted odometry and unavailable range sensors). Physical arena testing is still required; the 10 mm tolerance applies to the estimated pose and depends on sensor calibration and slip.

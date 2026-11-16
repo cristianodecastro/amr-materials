@@ -97,14 +97,38 @@ void AddPhysicalCounts(double (&counts)[3],double forward,double left,double tur
   const double mmPerCount=102*robot_geometry::PI/1464;
   const double wheel[3]={-std::sqrt(3.0)/2*forward+0.5*left+159.74*turn,
       -left+159.74*turn,std::sqrt(3.0)/2*forward+0.5*left+159.74*turn};
-  for (int i=0;i<3;++i) counts[i]+=wheel[i]/mmPerCount;
+  // Installed raw counts increase for CW rolling, opposite canonical travel.
+  for (int i=0;i<3;++i) counts[i]-=wheel[i]/mmPerCount;
+}
+void ClockwiseRawCountsMatchOdometryAndWheelMonitor() {
+  for (double rawDirection:{-1.0,1.0}) {
+    // Positive raw increments are the observed CLOCKWISE chassis rotation.
+    // Deliberately do not derive this input sign from production configuration.
+    drive_kinematics::EncoderGyroOdometry odometry;
+    WheelDriveController drive;
+    double counts[3]={};
+    const double speed=-rawDirection*150,rate=speed/159.74;
+    const double requested[3]={speed,speed,speed};
+    odometry.Reset({500,500,0},counts,0);
+    for (int tick=1;tick<=50;++tick) {
+      for (int i=0;i<3;++i) counts[i]+=rawDirection*150*0.02/(102*robot_geometry::PI/1464);
+      drive.Update(requested,counts,0.02,0.9);
+      REQUIRE_ARENA(!drive.HasFault());
+      REQUIRE_ARENA(odometry.Update(counts,rate*tick*0.02*180/robot_geometry::PI,
+          rate*180/robot_geometry::PI,0.02));
+    }
+    for (int i=0;i<3;++i) REQUIRE_ARENA(Near(drive.MeasuredMMps(i),speed,0.01));
+    REQUIRE_ARENA(Near(odometry.Pose().x_MM,500) && Near(odometry.Pose().y_MM,500));
+    REQUIRE_ARENA(Near(odometry.Pose().headingRad,rate));
+  }
 }
 void KinematicsUsesWheelProjectionAndSingleCountConversion() {
   REQUIRE_ARENA(Near(localization_config::ENCODER_MM_PER_COUNT,0.218881455373059,1e-9));
   for (double forward:{-1000.0,0.0,1000.0}) for (double left:{-1000.0,0.0,1000.0}) {
     const double turn=0.3;
     double counts[3]={},wheel[3]; AddPhysicalCounts(counts,forward,left,turn);
-    for (int i=0;i<3;++i) wheel[i]=counts[i]*localization_config::ENCODER_MM_PER_COUNT;
+    for (int i=0;i<3;++i) wheel[i]=counts[i]*localization_config::WHEEL_ENCODER_SIGN[i]*
+        localization_config::ENCODER_MM_PER_COUNT;
     double actualForward=0,actualLeft=0;
     REQUIRE_ARENA(drive_kinematics::BodyDisplacement(wheel,turn,actualForward,actualLeft));
     REQUIRE_ARENA(Near(actualForward,forward) && Near(actualLeft,left));
@@ -146,7 +170,7 @@ void EncoderDistanceDoesNotDependOnTickRate() {
   // discards low-speed motion from the encoder distance.
   counts[0]=counts[1]=counts[2]=0; odometry.Reset({0,0,0},counts,0);
   for (int tick=0;tick<100;++tick) {
-    --counts[0]; ++counts[2]; REQUIRE_ARENA(odometry.Update(counts,0,0,0.1));
+    ++counts[0]; --counts[2]; REQUIRE_ARENA(odometry.Update(counts,0,0,0.1));
   }
   REQUIRE_ARENA(Near(odometry.Pose().y_MM,
       200*localization_config::ENCODER_MM_PER_COUNT/std::sqrt(3.0)));
@@ -527,6 +551,14 @@ void ProportionalTitanOutputAndQuantization() {
   REQUIRE_ARENA(motor_output::TitanPercent(0,0.9)==0);
   REQUIRE_ARENA(motor_output::TitanPercent(std::numeric_limits<double>::quiet_NaN(),0.9)==0);
   REQUIRE_ARENA(motor_output::TitanPercent(0.3,0)==0);
+  REQUIRE_ARENA(motor_output::WheelTitanPercent(-1,0.4,0.9)==0);
+  REQUIRE_ARENA(motor_output::WheelTitanPercent(3,0.4,0.9)==0);
+  for (int i=0;i<3;++i) {
+    REQUIRE_ARENA(motor_output::WheelTitanPercent(i,0,0.9)==0);
+    REQUIRE_ARENA(motor_output::WheelTitanPercent(i,std::numeric_limits<double>::quiet_NaN(),0.9)==0);
+    REQUIRE_ARENA(motor_output::WheelTitanPercent(i,0.4,0)==0);
+    REQUIRE_ARENA(motor_output::WheelTitanPercent(i,1,0.25)==-25);
+  }
   WheelDriveController drive;
   const double demand[3]={-120,-120,240},counts[3]={};
   drive.Update(demand,counts,0.02,0.9);
@@ -541,6 +573,22 @@ void ProportionalTitanOutputAndQuantization() {
     const double physicalLeft=(expected[0]+expected[2]-2*expected[1])/3;
     const double physicalYaw=(expected[0]+expected[1]+expected[2])/(3*159.74);
     REQUIRE_ARENA(Near(physicalForward,f) && Near(physicalLeft,l) && Near(physicalYaw,yaw));
+    // Exercise the same final electrical mapping used by Hardware. Installed
+    // motors rotate opposite the CCW tangent for positive electrical duty,
+    // independently established by the user's all-directions Teleop test.
+    WheelDriveController mapped;
+    double requested[3],actual[3];
+    for (int i=0;i<3;++i) requested[i]=drive_kinematics::WheelSpeedMMps(i,f,l,yaw);
+    mapped.Update(requested,counts,0.02,0.9);
+    REQUIRE_ARENA(!mapped.HasFault());
+    for (int i=0;i<3;++i) {
+      const double electrical=motor_output::WheelTitanPercent(i,mapped.Output(i),0.9)/100.0;
+      actual[i]=-electrical*localization_config::MAX_WHEEL_SPEED_MMPS;
+    }
+    // Half-percent quantization permits <=3 mm/s per wheel at 112 RPM.
+    REQUIRE_ARENA(Near((actual[2]-actual[0])/std::sqrt(3.0),f,4.1));
+    REQUIRE_ARENA(Near((actual[0]+actual[2]-2*actual[1])/3,l,4.1));
+    REQUIRE_ARENA(Near((actual[0]+actual[1]+actual[2])/(3*159.74),yaw,0.019));
   }
 }
 void FixedCobraRejectsDisconnectedAndInvalidReadings() {
@@ -570,10 +618,10 @@ void WaypointWithDirectMotorOutput(double lag,bool disturbed,TapeApproach approa
     for (int i=0;i<3;++i) desired[i]=drive_kinematics::WheelSpeedMMps(i,routine.GetForwardMMps(),routine.GetLeftMMps(),routine.GetYawRadps());
     drive.Update(desired,counts,0.02,0.9); REQUIRE_ARENA(!drive.HasFault());
     for (int i=0;i<3;++i) {
-      const double duty=motor_output::TitanPercent(drive.Output(i),0.9)/100.0;
-      const double targetSpeed=duty*localization_config::MAX_WHEEL_SPEED_MMPS;
+      const double duty=motor_output::WheelTitanPercent(i,drive.Output(i),0.9)/100.0;
+      const double targetSpeed=-duty*localization_config::MAX_WHEEL_SPEED_MMPS;
       wheelSpeed[i]+=(lag==0?1:0.02/(lag+0.02))*(targetSpeed-wheelSpeed[i]);
-      counts[i]+=wheelSpeed[i]*0.02/localization_config::ENCODER_MM_PER_COUNT;
+      counts[i]-=wheelSpeed[i]*0.02/localization_config::ENCODER_MM_PER_COUNT;
     }
     forward=(wheelSpeed[2]-wheelSpeed[0])/std::sqrt(3.0);
     left=(wheelSpeed[0]+wheelSpeed[2]-2*wheelSpeed[1])/3;
@@ -708,9 +756,10 @@ void NavigationGoalAndCorrectionSimulation(double finalHeading,bool invalidSenso
     for (int i=0;i<3;++i) request[i]=drive_kinematics::WheelSpeedMMps(i,nav.Forward(),nav.Left(),nav.Yaw());
     drive.Update(request,counts,0.02,0.9); REQUIRE_ARENA(!drive.HasFault());
     for (int i=0;i<3;++i) {
-      const double target=motor_output::TitanPercent(drive.Output(i),0.9)/100.0*localization_config::MAX_WHEEL_SPEED_MMPS;
+      const double electrical=motor_output::WheelTitanPercent(i,drive.Output(i),0.9)/100.0;
+      const double target=-electrical*localization_config::MAX_WHEEL_SPEED_MMPS;
       speeds[i]+=0.02/(0.12+0.02)*(target-speeds[i]);
-      counts[i]+=speeds[i]*0.02/localization_config::ENCODER_MM_PER_COUNT;
+      counts[i]-=speeds[i]*0.02/localization_config::ENCODER_MM_PER_COUNT;
     }
     forward=(speeds[2]-speeds[0])/std::sqrt(3.0); left=(speeds[0]+speeds[2]-2*speeds[1])/3;
     yaw=(speeds[0]+speeds[1]+speeds[2])/(3*159.74);
@@ -746,15 +795,43 @@ void NavigationStopAndBadReference() {
   HeadingMotionControl feedback;
   for (int tick=0;tick<1000;++tick) REQUIRE_ARENA(feedback.CheckFeedback(0,robot_geometry::Radians(-2),0.02).empty());
   bool rejected=false;
-  for (int tick=0;tick<20;++tick) if (!feedback.CheckFeedback(0.2,-0.5,0.02).empty()) rejected=true;
+  for (int tick=0;tick<30;++tick) if (!feedback.CheckFeedback(0.2,-0.5,0.02).empty()) rejected=true;
   REQUIRE_ARENA(rejected); // powered yaw genuinely going backwards still stops
+}
+void YawDirectionCheckAllowsDelayedReversalButRejectsSustainedOpposition() {
+  HeadingMotionControl feedback;
+  // A newly requested CCW correction may initially brake a CW turn. The
+  // previous monitor failed after 5 degrees even before the motors reversed.
+  for (int tick=0;tick<15;++tick)
+    REQUIRE_ARENA(feedback.CheckFeedback(0.2,robot_geometry::Radians(-40),0.02).empty());
+  for (int tick=0;tick<20;++tick)
+    REQUIRE_ARENA(feedback.CheckFeedback(0.2,robot_geometry::Radians(20),0.02).empty());
+  // Every reversal establishes its own settling interval, not only startup.
+  for (int tick=0;tick<15;++tick)
+    REQUIRE_ARENA(feedback.CheckFeedback(-0.2,robot_geometry::Radians(40),0.02).empty());
+  for (int tick=0;tick<20;++tick)
+    REQUIRE_ARENA(feedback.CheckFeedback(-0.2,robot_geometry::Radians(-20),0.02).empty());
+  feedback.Reset();
+  int faultTick=-1;
+  for (int tick=0;tick<40;++tick) {
+    const auto fault=feedback.CheckFeedback(0.2,robot_geometry::Radians(-20),0.02);
+    if (!fault.empty()) { faultTick=tick; REQUIRE_ARENA(fault.find("commanded CCW")!=std::string::npos); break; }
+  }
+  REQUIRE_ARENA(faultTick>=27 && faultTick<=30); // 300 ms response + five degrees opposite travel
+  REQUIRE_ARENA(Near(feedback.FeedbackRequest(),0.2));
+  REQUIRE_ARENA(Near(feedback.FeedbackMeasured(),robot_geometry::Radians(-20)));
+  feedback.CheckFeedback(0,0,0.02);
+  for (int tick=0;tick<15;++tick)
+    REQUIRE_ARENA(feedback.CheckFeedback(0.2,robot_geometry::Radians(-40),0.02).empty());
 }
 void RunActiveChecks() {
   SharpAnalogConversionAndValidity(); YawRateUsesSensorSampleTime();
   FixedCobraReferencesNeedNoCalibration(); FixedCobraRejectsDisconnectedAndInvalidReadings();
+  ClockwiseRawCountsMatchOdometryAndWheelMonitor();
   EncoderGyroOdometryChecks(); ProportionalTitanOutputAndQuantization();
   ClearancePlanningAndWallAssociation();
   NavigationStopAndBadReference();
+  YawDirectionCheckAllowsDelayedReversalButRejectsSustainedOpposition();
   NavigationGoalAndCorrectionSimulation(0);
   NavigationGoalAndCorrectionSimulation(robot_geometry::PI/2);
   NavigationGoalAndCorrectionSimulation(-robot_geometry::PI/2);

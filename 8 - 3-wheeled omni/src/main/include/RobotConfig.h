@@ -29,9 +29,13 @@ static constexpr const char* WHEEL_NAME[WHEEL_COUNT]={"Front left","Rear","Front
 // Body +X is forward (TOP of supplied picture), +Y is left; yaw is CCW.
 // Picture radial angles 150/270/30 become 60/180/300 in this body frame.
 static constexpr double WHEEL_ANGLE_DEG[WHEEL_COUNT]={60,180,300};
-// Wiring polarity only: positive output/count follows each CCW tangent arrow.
-static constexpr double WHEEL_MOTOR_SIGN[WHEEL_COUNT]={1,1,1};
-static constexpr double WHEEL_ENCODER_SIGN[WHEEL_COUNT]={1,1,1};
+// Wiring polarity only: canonical positive wheel travel follows the CCW tangent.
+// Installed motors run opposite that tangent for positive Titan electrical duty
+// (confirmed by reversed forward/left/CCW Teleop tests), in BOTH drive modes.
+static constexpr double WHEEL_MOTOR_SIGN[WHEEL_COUNT]={-1,-1,-1};
+// Encoder wiring is independent: passive CW rolling increases all raw counts.
+// Convert once to the canonical CCW-tangent convention used by odometry/monitoring.
+static constexpr double WHEEL_ENCODER_SIGN[WHEEL_COUNT]={-1,-1,-1};
 static constexpr double WHEEL_CENTER_RADIUS_MM[WHEEL_COUNT]={159.74,159.74,159.74};
 static constexpr double WHEEL_RADIUS_MM=51;
 static constexpr double ENCODER_COUNTS_PER_OUTPUT_REV=1464; // 6 * 61 * quadrature 4
@@ -99,6 +103,8 @@ static constexpr double HOLD_RECHECK_WINDOW_RAD=2*robot_geometry::PI/180;
 static constexpr double HOLD_HEADING_MAX_YAW_RADPS=20*robot_geometry::PI/180;
 static constexpr double YAW_DIRECTION_ERROR_RAD=5*robot_geometry::PI/180;
 static constexpr double YAW_DIRECTION_CHECK_MIN_RADPS=0.1*robot_geometry::PI/180;
+// Motor inertia and cached IMU samples can briefly oppose a NEW yaw request.
+static constexpr double YAW_RESPONSE_SETTLE_S=0.30;
 }
 
 namespace navigation_config {

@@ -258,7 +258,7 @@ void RobotSubsystem::InitializeMotionDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Motion");
   tab.AddString("Motion status",[this] {
     // Visible revision distinguishes this executable from stale robot/UI data.
-    const std::string revision="P8-r14 | ";
+    const std::string revision="P8-r17 | ";
     if (!routineNotice_.empty()) return revision+routineNotice_;
     if (frc::RobotState::IsAutonomous()) return revision+(navigationSelected_?navigation_.Status():tapeRoutine_.GetStatus());
     return revision+(hardware_.HasDriveFault()?
@@ -342,7 +342,7 @@ void RobotSubsystem::InitializeSensingDashboard() {
 void RobotSubsystem::InitializeNavigationDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Navigation");
   tab.AddString("Navigation status",[this] {
-    return std::string("P8-r14 | ")+(routineNotice_.empty()?navigation_.Status():routineNotice_);
+    return std::string("P8-r17 | ")+(routineNotice_.empty()?navigation_.Status():routineNotice_);
   }).WithPosition(0,0).WithSize(6,1);
   stopNavigation_=tab.Add("Stop",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
       .WithPosition(6,0).WithSize(2,1).GetEntry();
@@ -367,8 +367,20 @@ void RobotSubsystem::InitializeNavigationDashboard() {
   tab.AddNumber("Robot heading deg",[this] { return localization_.GetPose().headingRad*180/robot_geometry::PI; })
       .WithPosition(6,3).WithSize(2,1);
   tab.AddString("Guide",[] {
-    return "Autonomous + Enable. Face north (0 deg), rear/left beams clear to outer walls. "
-        "Reference corner, then Go. +90 west / -90 east. 40 mm clearance; 10 mm / 1 deg tolerance.";
-  }).WithPosition(0,4).WithSize(8,1);
+    return "North=0 deg. Clear rear/left wall views. Reference corner, then Go.";
+  }).WithPosition(0,4).WithSize(4,1);
+  tab.AddNumber("Yaw request deg/s",[this] {
+    const bool fault=navigationSelected_?navigation_.GetState()==GoalNavigationRoutine::State::Fault:
+        tapeRoutine_.GetState()==TapeAlignmentRoutine::State::Fault;
+    const double value=navigationSelected_?(fault?navigation_.FeedbackRequest():navigation_.Yaw()):
+        (fault?tapeRoutine_.FeedbackRequest():tapeRoutine_.GetYawRadps());
+    return value*180/robot_geometry::PI;
+  }).WithPosition(4,4).WithSize(2,1);
+  tab.AddNumber("Gyro yaw deg/s",[this] {
+    const bool fault=navigationSelected_?navigation_.GetState()==GoalNavigationRoutine::State::Fault:
+        tapeRoutine_.GetState()==TapeAlignmentRoutine::State::Fault;
+    if (fault) return (navigationSelected_?navigation_.FeedbackMeasured():tapeRoutine_.FeedbackMeasured())*180/robot_geometry::PI;
+    return hardware_.GetYawRateDegreesPerSecond();
+  }).WithPosition(6,4).WithSize(2,1);
   referenceCorner_.SetBoolean(false); goToGoal_.SetBoolean(false); stopNavigation_.SetBoolean(false);
 }

@@ -13,6 +13,12 @@ inline constexpr int TitanPercent(double output,double cap) {
   const int percent=std::min(maximum,wanted);
   return output<0?-percent:percent;
 }
+// One electrical boundary for Teleop and Autonomous. Do not apply this sign
+// to the chassis mixer, gyro or raw encoder samples.
+inline constexpr int WheelTitanPercent(int wheel,double output,double cap) {
+  if (wheel<0 || wheel>=localization_config::WHEEL_COUNT) return 0;
+  return TitanPercent(output*localization_config::WHEEL_MOTOR_SIGN[wheel],cap);
+}
 inline double TitanSetArgument(int percent) {
   if (percent==0) return 0;
   const double magnitude=std::nextafter(std::fabs(percent)/100.0,1.0);
