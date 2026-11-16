@@ -52,7 +52,9 @@ static constexpr RangeSensorMount RANGE_SENSOR_MOUNTS[4]={
   {0,-RIGHT_SENSOR_OFFSET_MM,-90},{FRONT_SENSOR_OFFSET_MM,0,0}};
 struct SonarConfig { int triggerDio,echoDio; const char* name; };
 static constexpr int SONAR_COUNT=2;
-static constexpr SonarConfig SONARS[SONAR_COUNT]={{6,7,"Front"},{2,3,"Rear"}};
+// FlexDIO: even channel = trigger (A), odd channel = echo (B).
+// Keep logical order front/rear for the dashboard and wall references.
+static constexpr SonarConfig SONARS[SONAR_COUNT]={{2,3,"Front"},{0,1,"Rear"}};
 static constexpr double SONAR_PING_SPACING_S=0.040,SONAR_ECHO_SETTLE_S=0.060;
 static constexpr double SONAR_MIN_RANGE_MM=20,SONAR_MAX_RANGE_MM=4000,SONAR_READING_STALE_S=0.350;
 // Sharp GP2Y0A21YK analog voltage: VMX Analog In 0 left, 1 right.
