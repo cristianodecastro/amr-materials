@@ -45,6 +45,9 @@ static constexpr double MAX_WHEEL_SPEED_MMPS=2*robot_geometry::PI*WHEEL_RADIUS_M
 // Retain the requested half-speed chassis limit; no wheel trim or distance scale.
 static constexpr double TELEOP_SPEED_MMPS=MAX_WHEEL_SPEED_MMPS/2;
 static constexpr double CONTROL_PERIOD_S=0.020,MAX_CONTROL_GAP_S=0.10;
+// Autonomous can integrate a bounded late sample using the real elapsed time.
+// Controller ramps use a capped step; Teleop keeps its original timing limits.
+static constexpr double AUTO_MAX_SAMPLE_GAP_S=0.50,AUTO_MAX_CONTROL_STEP_S=0.04;
 static constexpr double ARENA_WIDTH_MM=2000,ARENA_HEIGHT_MM=2000;
 static constexpr double START_X_MM=950,START_Y_MM=900,START_HEADING_DEG=0;
 

@@ -82,22 +82,25 @@ class EncoderGyroOdometry {
     forwardSpeed_=leftSpeed_=0;
     healthy_=robot_geometry::Finite(pose_) && std::isfinite(yawDeg);
     for (int i=0;i<3;++i) { previous_[i]=counts[i]; healthy_=healthy_ && std::isfinite(counts[i]); }
+    faultReason_=healthy_?"OK":"Invalid odometry reset";
   }
   bool Update(const double (&counts)[3],double yawDeg,double gyroRateDps,double dt) {
     healthy_=false;
     forwardSpeed_=leftSpeed_=0;
-    if (!std::isfinite(dt) || dt<=0 || dt>localization_config::MAX_CONTROL_GAP_S ||
-        !std::isfinite(yawDeg) || !std::isfinite(gyroRateDps)) return false;
+    if (!std::isfinite(dt) || dt<=0) return Reject("Invalid odometry interval");
+    if (dt>localization_config::AUTO_MAX_SAMPLE_GAP_S) return Reject("Odometry sample gap exceeds 500 ms");
+    if (!std::isfinite(yawDeg) || !std::isfinite(gyroRateDps)) return Reject("IMU yaw/rate sample is not finite");
     double wheel[3];
     for (int i=0;i<3;++i) {
       wheel[i]=(counts[i]-previous_[i])*localization_config::WHEEL_ENCODER_SIGN[i]*
           localization_config::ENCODER_MM_PER_COUNT;
-      if (!std::isfinite(wheel[i]) || std::fabs(wheel[i])/dt>3*localization_config::MAX_WHEEL_SPEED_MMPS) return false;
+      if (!std::isfinite(wheel[i])) return Reject("Encoder sample is not finite");
+      if (std::fabs(wheel[i])/dt>3*localization_config::MAX_WHEEL_SPEED_MMPS) return Reject("Encoder jump/out-of-range speed");
     }
     const double heading=robot_geometry::Wrap(robot_geometry::Radians(yawDeg)+offset_);
     const double turn=robot_geometry::Wrap(heading-pose_.headingRad);
     double forward=0,left=0;
-    if (!BodyDisplacement(wheel,turn,forward,left)) return false;
+    if (!BodyDisplacement(wheel,turn,forward,left)) return Reject("Invalid wheel geometry/displacement");
     const double midpoint=robot_geometry::ArenaAngle(pose_.headingRad+turn/2);
     // Exact constant-twist arc integration; sinc tends to one for straight travel.
     const double arc=std::fabs(turn)<1e-8?1.0:std::sin(turn/2)/(turn/2);
@@ -107,6 +110,7 @@ class EncoderGyroOdometry {
     for (int i=0;i<3;++i) previous_[i]=counts[i];
     forwardSpeed_=forward/dt; leftSpeed_=left/dt;
     healthy_=robot_geometry::Finite(pose_);
+    faultReason_=healthy_?"OK":"Odometry pose is not finite";
     return healthy_;
   }
   void CorrectPosition(double dx,double dy) {
@@ -114,12 +118,15 @@ class EncoderGyroOdometry {
   }
   const RobotPose& Pose() const { return pose_; }
   bool Healthy() const { return healthy_; }
+  const char* FaultReason() const { return faultReason_; }
   double ForwardSpeed() const { return forwardSpeed_; }
   double LeftSpeed() const { return leftSpeed_; }
  private:
+  bool Reject(const char* reason) { faultReason_=reason; return false; }
   RobotPose pose_{0,0,0};
   double previous_[3]={},offset_=0,forwardSpeed_=0,leftSpeed_=0;
   bool healthy_=false;
+  const char* faultReason_="Not initialized";
 };
 
 // Preserve the pre-revision manual pose display. This estimate is observational:
@@ -341,6 +348,14 @@ enum class WheelDriveContext { Autonomous, Teleop };
 // Both modes use the same proportional mixer; only the chassis request is ramped.
 class WheelDriveController {
  public:
+  constexpr void UpdateAutonomous(const double (&desired)[3],const double (&counts)[3],double dt,double maxOutput) {
+    // Position integration already used the real elapsed interval. After a
+    // bounded late sample, rebaseline only this speed/direction monitor so
+    // accumulated counts are not divided by a fictitious 20 ms interval.
+    if (!fault_ && Finite(dt) && dt>wheel_drive_config::MAX_SAMPLE_S && dt<=localization_config::AUTO_MAX_SAMPLE_GAP_S) {
+      Reset(); Update(desired,counts,localization_config::CONTROL_PERIOD_S,maxOutput);
+    } else Update(desired,counts,dt,maxOutput);
+  }
   constexpr void Reset() { *this=WheelDriveController{}; }
   constexpr void Update(const double (&desired)[3],const double (&counts)[3],double dt,double maxOutput) {
     if (fault_) return;

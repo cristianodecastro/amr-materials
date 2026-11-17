@@ -3,11 +3,71 @@
 #include <cmath>
 #include <limits>
 #include <queue>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <chrono>
+#ifdef __linux__
+#include <sys/resource.h>
+#endif
+
+struct NavigationPlanWorker::Impl {
+  std::mutex mutex;
+  std::condition_variable wake;
+  std::function<void()> work;
+  std::atomic<bool> busy{false},ready{false};
+  std::atomic<double> elapsed{0};
+  bool stopping=false;
+  std::thread thread;
+};
+NavigationPlanWorker::NavigationPlanWorker():impl_(new Impl) {
+  auto* state=impl_.get();
+  state->thread=std::thread([state] {
+#ifdef __linux__
+    setpriority(PRIO_PROCESS,0,10); // reduce only this Linux worker's priority
+#endif
+    for (;;) {
+      std::function<void()> work;
+      {
+        std::unique_lock<std::mutex> lock(state->mutex);
+        state->wake.wait(lock,[state] { return state->stopping || static_cast<bool>(state->work); });
+        if (state->stopping) return;
+        work=std::move(state->work);
+      }
+      const auto start=std::chrono::steady_clock::now();
+      work();
+      state->elapsed.store(std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count());
+      state->ready.store(true,std::memory_order_release);
+      state->busy.store(false,std::memory_order_release);
+    }
+  });
+}
+NavigationPlanWorker::~NavigationPlanWorker() {
+  { std::lock_guard<std::mutex> lock(impl_->mutex); impl_->stopping=true; }
+  impl_->wake.notify_one();
+  impl_->thread.join();
+}
+bool NavigationPlanWorker::Submit(std::function<void()> work) {
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  if (impl_->busy.load(std::memory_order_acquire)) return false;
+  impl_->ready.store(false,std::memory_order_release);
+  impl_->busy.store(true,std::memory_order_release);
+  impl_->work=std::move(work); impl_->wake.notify_one(); return true;
+}
+bool NavigationPlanWorker::Busy() const { return impl_->busy.load(std::memory_order_acquire); }
+bool NavigationPlanWorker::Ready() const { return impl_->ready.load(std::memory_order_acquire) && !Busy(); }
+double NavigationPlanWorker::ElapsedMS() const { return impl_->elapsed.load(); }
 
 namespace {
 using navigation_config::Block;
-double Gap(ArenaPoint p,const Block& b,double heading) {
-  const double angle=robot_geometry::ArenaAngle(heading),co=std::cos(angle),si=std::sin(angle);
+void BodyAxes(double heading,double& co,double& si) {
+  // Grid checks repeat one orientation thousands of times. Cache per thread;
+  // the robot and worker never share mutable trigonometry state.
+  thread_local double previous=std::numeric_limits<double>::quiet_NaN(),cachedCo=0,cachedSi=0;
+  if (heading!=previous) { previous=heading; cachedCo=std::cos(heading+robot_geometry::PI/2); cachedSi=std::sin(heading+robot_geometry::PI/2); }
+  co=cachedCo; si=cachedSi;
+}
+double Gap(ArenaPoint p,const Block& b,double co,double si) {
   const double r=navigation_config::BODY_RADIUS_MM,f=navigation_config::FRONT_REACH_MM;
   const double dx=std::max(b.xmin-p.x,std::max(0.0,p.x-b.xmax));
   const double dy=std::max(b.ymin-p.y,std::max(0.0,p.y-b.ymax));
@@ -40,6 +100,7 @@ void LocalObstacleMap::AddHit(ArenaPoint p,double beam) {
   }
   if (hits_.size()>=24) hits_.erase(hits_.begin());
   hits_.push_back({{center.x-extent,center.y-extent,center.x+extent,center.y+extent},0});
+  ++revision_;
 }
 void LocalObstacleMap::ObserveHit(ArenaPoint origin,ArenaPoint hit,double beam,double stamp,int sensor,bool urgent,bool allowObstacle) {
   if (sensor<0 || sensor>=4 || !std::isfinite(stamp)) return;
@@ -61,7 +122,7 @@ void LocalObstacleMap::ObserveHit(ArenaPoint origin,ArenaPoint hit,double beam,d
       }
     }
     if (intersects && exit>=entry && exit<range-navigation_config::OBSTACLE_FREE_RAY_MARGIN_MM) {
-      if (++it->clearVotes>=2) { it=hits_.erase(it); continue; }
+      if (++it->clearVotes>=2) { it=hits_.erase(it); ++revision_; continue; }
     }
     ++it;
   }
@@ -73,21 +134,21 @@ void LocalObstacleMap::ObserveHit(ArenaPoint origin,ArenaPoint hit,double beam,d
   pending={hit,stamp};
 }
 double LocalObstacleMap::Clearance(ArenaPoint p,double heading) const {
+  double co,si; BodyAxes(heading,co,si);
   double gap=1e9;
   if (court_) {
     const double r=navigation_config::BODY_RADIUS_MM;
     gap=std::min(std::min(p.x-r,localization_config::ARENA_WIDTH_MM-p.x-r),
         std::min(p.y-r,localization_config::ARENA_HEIGHT_MM-p.y-r));
-    const double a=robot_geometry::ArenaAngle(heading),co=std::cos(a),si=std::sin(a);
     for (double side:{-r,r}) {
       const double x=p.x+co*navigation_config::FRONT_REACH_MM-si*side;
       const double y=p.y+si*navigation_config::FRONT_REACH_MM+co*side;
       gap=std::min(gap,std::min(std::min(x,localization_config::ARENA_WIDTH_MM-x),
           std::min(y,localization_config::ARENA_HEIGHT_MM-y)));
     }
-    for (const auto& b:navigation_config::COURT_BLOCKS) gap=std::min(gap,Gap(p,b,heading));
+    for (const auto& b:navigation_config::COURT_BLOCKS) gap=std::min(gap,Gap(p,b,co,si));
   }
-  for (const auto& hit:hits_) gap=std::min(gap,Gap(p,hit.bounds,heading));
+  for (const auto& hit:hits_) gap=std::min(gap,Gap(p,hit.bounds,co,si));
   return gap;
 }
 void LocalObstacleMap::ShiftHits(ArenaPoint delta) {
@@ -95,6 +156,7 @@ void LocalObstacleMap::ShiftHits(ArenaPoint delta) {
   for (auto& pending:pending_) if (pending.stamp>=0) { pending.hit.x+=delta.x; pending.hit.y+=delta.y; }
 }
 bool LocalObstacleMap::TurnClear(ArenaPoint center,double from,double to,double margin) const {
+  if (Cancelled()) return false;
   const double angle=robot_geometry::Wrap(to-from);
   const int steps=std::max(1,static_cast<int>(std::ceil(std::fabs(angle)/robot_geometry::Radians(5))));
   for (int i=0;i<=steps;++i)
@@ -102,9 +164,11 @@ bool LocalObstacleMap::TurnClear(ArenaPoint center,double from,double to,double 
   return true;
 }
 bool LocalObstacleMap::SegmentClear(ArenaPoint a,ArenaPoint b,double heading,double margin,bool allowEscape) const {
+  if (Cancelled()) return false;
   const int steps=std::max(1,static_cast<int>(std::ceil(std::hypot(b.x-a.x,b.y-a.y)/10)));
   double previous=Clearance(a,heading); bool escaping=allowEscape && previous>=0 && previous<margin;
   for (int i=0;i<=steps;++i) {
+    if ((i&7)==0 && Cancelled()) return false;
     const double t=static_cast<double>(i)/steps;
     const double gap=Clearance({a.x+t*(b.x-a.x),a.y+t*(b.y-a.y)},heading);
     if (gap>=margin) escaping=false;
@@ -142,6 +206,7 @@ bool LocalObstacleMap::SearchGrid(ArenaPoint start,ArenaPoint goal,double headin
     }
   int end=-1;
   while (!open.empty()) {
+    if (Cancelled()) return false;
     const int i=open.top().second; open.pop(); if (closed[i]) continue; closed[i]=true;
     const auto p=point(i);
     if (distance(p,goal)<=2*step && SegmentClear(p,goal,heading)) { end=i; break; }
@@ -164,8 +229,8 @@ bool LocalObstacleMap::SearchGrid(ArenaPoint start,ArenaPoint goal,double headin
   ArenaPoint previous=start;
   for (unsigned i=0;i<raw.size();) {
     unsigned furthest=i;
-    for (unsigned j=i+1;j<raw.size();++j)
-      if (SegmentClear(previous,raw[j],heading,margin+padding)) furthest=j;
+    for (unsigned j=raw.size()-1;j>i;--j)
+      if (SegmentClear(previous,raw[j],heading,margin+padding)) { furthest=j; break; }
     if (distance(previous,raw[furthest])>1) { points.push_back(raw[furthest]); previous=raw[furthest]; }
     i=furthest+1;
   }

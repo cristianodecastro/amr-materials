@@ -5,6 +5,10 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <thread>
+#include <chrono>
+#include <mutex>
+#include <condition_variable>
 #ifdef ARENA_TEST_STANDALONE
 #include <iostream>
 #else
@@ -200,7 +204,8 @@ void GyroRelativeHeadingAndCurvedTravel() {
   odometry.Reset({0,0,0},counts,137);
   REQUIRE_ARENA(odometry.Update(counts,137,30,0.02));
   REQUIRE_ARENA(Near(odometry.Pose().headingRad,0)); // no extra gyro-rate integration
-  REQUIRE_ARENA(!odometry.Update(counts,137,0,0.2) && !odometry.Healthy());
+  REQUIRE_ARENA(odometry.Update(counts,137,0,0.2) && odometry.Healthy());
+  REQUIRE_ARENA(!odometry.Update(counts,137,0,0.6) && !odometry.Healthy());
   REQUIRE_ARENA(Near(odometry.Pose().x_MM,0));
   odometry.Reset({0,0,0},counts,137); counts[0]=std::numeric_limits<double>::quiet_NaN();
   REQUIRE_ARENA(!odometry.Update(counts,137,0,0.02));
@@ -697,8 +702,8 @@ void MvpStartReferenceAndStop() {
 // Clear-floor tests of the real odometry, controller, electrical mapping and
 // motor lag. An operator, not this MVP, chooses obstacle-free arena segments.
 void MvpDirectGoal(RobotPose goal,double lag,bool disturb=false,const std::string& via="",bool slip=false,bool court=false,bool sensorObstacle=false,
-                   RobotPose initial={250,450,0},bool reportedObstacle=false) {
-  GoalNavigationRoutine nav(court); auto in=MvpReference(nav);
+                   RobotPose initial={250,450,0},bool reportedObstacle=false,bool background=false) {
+  GoalNavigationRoutine nav(court,background); auto in=MvpReference(nav);
   LocalObstacleMap courtGeometry;
   LocalObstacleMap detectedGeometry(false);
   if (sensorObstacle) detectedGeometry.AddHit({250,1021.6},robot_geometry::PI/2);
@@ -739,6 +744,7 @@ void MvpDirectGoal(RobotPose goal,double lag,bool disturb=false,const std::strin
     }
     const unsigned previousLeg=nav.LegIndex();
     nav.Update(in);
+    if (background && nav.IsPlanning()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
     if (nav.LegIndex()>previousLeg) {
       sawPassing=true;
       REQUIRE_ARENA(nav.GetState()==GoalNavigationRoutine::State::Driving);
@@ -752,7 +758,7 @@ void MvpDirectGoal(RobotPose goal,double lag,bool disturb=false,const std::strin
       sawConcurrent=true;
     double request[3];
     for (int i=0;i<3;++i) request[i]=drive_kinematics::WheelSpeedMMps(i,nav.Forward(),nav.Left(),nav.Yaw());
-    drive.Update(request,counts,0.02,0.9); REQUIRE_ARENA(!drive.HasFault());
+    drive.UpdateAutonomous(request,counts,0.02,0.9); REQUIRE_ARENA(!drive.HasFault());
     double output[3]; for (int i=0;i<3;++i) output[i]=drive.Output(i);
     motor_output::PrepareAutonomousVector(output,0.9);
     for (int i=0;i<3;++i) {
@@ -988,6 +994,76 @@ void VerifiedRetreatKeepsMissionActive() {
   REQUIRE_ARENA(nav.IsRunning() && nav.Forward()<0); // confirmed obstacle occupies goal: move to clearer space and retry
   REQUIRE_ARENA(nav.Status().find("Recovery")!=std::string::npos && Near(nav.Goal().y_MM,1600));
 }
+void BoundedLateSamplesKeepOdometryAndAutoDriveHealthy() {
+  const RobotPose initial={547,828,robot_geometry::Radians(34.9)};
+  drive_kinematics::EncoderGyroOdometry odometry;
+  double counts[3]={}; odometry.Reset(initial,counts,137);
+  double elapsed=0;
+  for (double dt:{0.02,0.18,0.02,0.12,0.02}) {
+    elapsed+=dt; AddPhysicalCounts(counts,200*dt,40*dt,0.1*dt);
+    REQUIRE_ARENA(odometry.Update(counts,137+0.1*elapsed*180/robot_geometry::PI,0.1*180/robot_geometry::PI,dt));
+    REQUIRE_ARENA(odometry.Healthy() && Near(odometry.ForwardSpeed(),200) && Near(odometry.LeftSpeed(),40));
+  }
+  const double a=robot_geometry::ArenaAngle(initial.headingRad),vx=200*std::cos(a)-40*std::sin(a),vy=200*std::sin(a)+40*std::cos(a);
+  REQUIRE_ARENA(Near(odometry.Pose().x_MM,initial.x_MM+(vx*std::sin(0.1*elapsed)+vy*(std::cos(0.1*elapsed)-1))/0.1));
+  REQUIRE_ARENA(Near(odometry.Pose().y_MM,initial.y_MM+(vx*(1-std::cos(0.1*elapsed))+vy*std::sin(0.1*elapsed))/0.1));
+  WheelDriveController automatic,manual;
+  double desired[3]={-200,0,200},baseline[3]={};
+  automatic.UpdateAutonomous(desired,baseline,0.02,0.9);
+  automatic.UpdateAutonomous(desired,counts,0.18,0.9);
+  REQUIRE_ARENA(!automatic.HasFault() && automatic.Output(0)<0 && automatic.Output(2)>0);
+  automatic.UpdateAutonomous(desired,counts,0.02,0.9); REQUIRE_ARENA(!automatic.HasFault());
+  manual.Update(desired,counts,0.18,0.9); REQUIRE_ARENA(manual.HasFault());
+  automatic.UpdateAutonomous(desired,counts,0.6,0.9); REQUIRE_ARENA(automatic.HasFault());
+  automatic.UpdateAutonomous(desired,counts,0.18,0.9); REQUIRE_ARENA(automatic.HasFault()); // never clear a genuine latched fault
+  GoalNavigationRoutine nav(false); auto in=MvpReference(nav);
+  in.motion.pose=initial; for (auto& valid:in.valid) valid=false;
+  REQUIRE_ARENA(nav.StartGoal({900,900,0},in));
+  in.motion.now+=0.18; in.motion.dt=0.18; in.motion.pose=odometry.Pose(); nav.Update(in);
+  REQUIRE_ARENA(nav.IsRunning());
+  in.motion.dt=0.02; in.motion.now+=0.02; nav.Update(in); REQUIRE_ARENA(nav.IsRunning());
+}
+void HealthFailuresIdentifyTheirActualSource() {
+  for (const std::string issue:{"IMU disconnected","IMU is calibrating","Control Station disconnected","Odometry: Encoder sample is not finite"}) {
+    GoalNavigationRoutine nav(false); auto in=MvpReference(nav);
+    REQUIRE_ARENA(nav.StartGoal({250,950,0},in));
+    in.motion.healthy=false; in.healthIssue=issue; nav.Update(in);
+    REQUIRE_ARENA(nav.GetState()==GoalNavigationRoutine::State::Fault && nav.Status().find(issue)!=std::string::npos);
+    REQUIRE_ARENA(nav.Forward()==0 && nav.Left()==0 && nav.Yaw()==0);
+  }
+  GoalNavigationRoutine nav(false); auto in=MvpReference(nav);
+  REQUIRE_ARENA(nav.StartGoal({250,950,0},in)); in.motion.dt=0.6; nav.Update(in);
+  REQUIRE_ARENA(nav.Status().find("Control loop gap 600 ms")!=std::string::npos);
+}
+void SlowWorkerNeverBlocksFeedbackAndCancelledPlansStayStopped() {
+  NavigationPlanWorker worker; std::mutex mutex; std::condition_variable wake; bool entered=false,release=false;
+  REQUIRE_ARENA(worker.Submit([&] {
+    std::unique_lock<std::mutex> lock(mutex); entered=true; wake.notify_one(); wake.wait(lock,[&] { return release; });
+  }));
+  bool started=false;
+  { std::unique_lock<std::mutex> lock(mutex); started=wake.wait_for(lock,std::chrono::seconds(2),[&] { return entered; }); }
+  // The worker remains deliberately blocked while real control components
+  // consume ten normal feedback frames (200 ms of robot time).
+  drive_kinematics::EncoderGyroOdometry odometry; double counts[3]={}; odometry.Reset({547,828,robot_geometry::Radians(34.9)},counts,137);
+  bool feedbackHealthy=true;
+  for (int tick=0;tick<10;++tick) { AddPhysicalCounts(counts,2,0,0); feedbackHealthy=odometry.Update(counts,137,0,0.02) && feedbackHealthy; }
+  const bool remainedBusy=worker.Busy() && !worker.Ready();
+  { std::lock_guard<std::mutex> lock(mutex); release=true; } wake.notify_one();
+  const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(2);
+  while (!worker.Ready() && std::chrono::steady_clock::now()<deadline) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  REQUIRE_ARENA(started && remainedBusy && feedbackHealthy && odometry.Healthy() && worker.Ready());
+  GoalNavigationRoutine nav(true,true); auto in=MvpReference(nav);
+  in.motion.pose={547,828,robot_geometry::Radians(34.9)}; for (auto& valid:in.valid) valid=false;
+  REQUIRE_ARENA(nav.StartGoal({1700,1700,robot_geometry::PI/2},in)); nav.Update(in);
+  REQUIRE_ARENA(nav.IsRunning() && nav.IsPlanning());
+  nav.Abort();
+  for (int tick=0;tick<100;++tick) {
+    in.motion.now+=0.02; nav.Update(in); std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    REQUIRE_ARENA(nav.GetState()==GoalNavigationRoutine::State::Aborted && nav.Forward()==0 && nav.Left()==0 && nav.Yaw()==0);
+  }
+  nav.Enter(); in=MvpReference(nav); // the same worker can serve a new session
+  REQUIRE_ARENA(nav.StartGoal({250,700,0},in)); nav.Update(in); REQUIRE_ARENA(nav.IsRunning());
+}
 void MvpManualRouteInput() {
   GoalNavigationRoutine nav(false); auto in=MvpReference(nav);
   for (const std::string bad:{"wrong","250,700,90,1","250,700,nan","250,","-1,700","250,2500","250,700; nope"}) {
@@ -1045,6 +1121,8 @@ void RunActiveChecks() {
   MvpStartReferenceAndStop();
   FlexibleInitializationChecks(); IntermediatePoseToleranceChecks(); ContinuousTransitChecks(); TravelWallSupportChecks(); SensorDetourChecks(); CourtDetourGeometryChecks();
   ObstacleEvidenceChecks(); ReportedNoDetourPoseChecks(); VerifiedRetreatKeepsMissionActive();
+  BoundedLateSamplesKeepOdometryAndAutoDriveHealthy(); HealthFailuresIdentifyTheirActualSource();
+  SlowWorkerNeverBlocksFeedbackAndCancelledPlansStayStopped();
   MvpManualRouteInput();
   for (double lag:{0.12,0.18}) {
     MvpDirectGoal({250,1450,0},lag);
@@ -1074,6 +1152,10 @@ void RunActiveChecks() {
         {632.8,580.8,robot_geometry::Radians(-4.37)});
     MvpDirectGoal({1700,1700,robot_geometry::PI/2},lag,false,topRight.intermediatePoses,false,true,false,
         {632.8,580.8,robot_geometry::Radians(-4.37)},true);
+    MvpDirectGoal({1700,1700,robot_geometry::PI/2},lag,false,"",false,true,false,
+        {547,828,robot_geometry::Radians(34.9)},false,true);
+    MvpDirectGoal({1700,1700,robot_geometry::PI/2},lag,false,topRight.intermediatePoses,false,true,false,
+        {547,828,robot_geometry::Radians(34.9)},false,true);
   }
   TapeRoutineChecks(); WaypointSettlingDoesNotExpireProgressWatchdog();
   for (double lag:{0.0,0.12,0.25}) for (double deadband:{0.0,70.0,100.0})
@@ -1084,7 +1166,7 @@ void RunActiveChecks() {
 }
 #ifdef ARENA_TEST_STANDALONE
 int main() {
-  try { RunActiveChecks(); std::cout<<"PASS: 28 motion simulations; reported-pose recovery, alternate orientations, obstacle evidence/free rays, verified retreat, continuous transit, wall fusion, 15% floor, tape and teleop\n"; }
+  try { RunActiveChecks(); std::cout<<"PASS: 32 motion simulations; background planning/cancellation, 120/180 ms late-frame catch-up, specific health diagnostics, recovery, wall fusion, 15% floor, tape and Teleop isolation\n"; }
   catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }
 }
 #else

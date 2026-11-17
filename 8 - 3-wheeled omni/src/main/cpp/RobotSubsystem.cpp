@@ -26,6 +26,7 @@ void RobotSubsystem::EnterAutonomous() {
   localization_.SetAutonomousMode(true);
   tapeRoutine_.Enter(); autonomousSession_=true; routineNotice_.clear();
   navigation_.Enter(); navigationSelected_=false;
+  peakControlDt_=0;
 }
 void RobotSubsystem::StopAll() {
   hardware_.SetAutonomousDriveEnabled(false);
@@ -43,6 +44,7 @@ void RobotSubsystem::Periodic() {
   const double now=frc::Timer::GetFPGATimestamp(),dt=now-lastLoopTime_;
   lastLoopTime_=now;
   controlDt_=dt;
+  if (std::isfinite(dt)) peakControlDt_=std::max(peakControlDt_,dt);
   const bool enabled=frc::RobotState::IsEnabled();
   if (hardware_.IsImuConnected() && !hardware_.IsImuCalibrating())
     localization_.UpdateOdometry(dt);
@@ -100,11 +102,16 @@ void RobotSubsystem::Periodic() {
 
 NavigationInput RobotSubsystem::NavigationSample(double now,double dt) {
   NavigationInput in;
+  const bool station=frc::DriverStation::GetInstance().IsDSAttached(),imu=hardware_.IsImuConnected();
+  const bool calibrating=hardware_.IsImuCalibrating(),odometry=localization_.IsHealthy();
   in.motion={localization_.GetPose(),now,dt,
-      hardware_.IsImuConnected() && !hardware_.IsImuCalibrating() && localization_.IsHealthy() &&
-      frc::DriverStation::GetInstance().IsDSAttached(),false,false,
+      imu && !calibrating && odometry && station,false,false,
       robot_geometry::Radians(hardware_.GetYawRateDegreesPerSecond())};
   in.forwardMMps=localization_.GetBodyVelocityX_MMps(); in.leftMMps=localization_.GetBodyVelocityY_MMps();
+  if (!station) in.healthIssue="Control Station disconnected";
+  else if (!imu) in.healthIssue="IMU disconnected";
+  else if (calibrating) in.healthIssue="IMU is calibrating";
+  else if (!odometry) in.healthIssue=std::string("Odometry: ")+localization_.OdometryFaultReason();
   in.rangeMM[0]=irReading_[0].distanceMM; in.valid[0]=irReading_[0].valid; in.stamp[0]=lastSensorTime_;
   in.rangeMM[2]=irReading_[1].distanceMM; in.valid[2]=irReading_[1].valid; in.stamp[2]=lastSensorTime_;
   in.rangeMM[1]=sonarRanges_MM_[1]; in.valid[1]=sonarRangeValid_[1]; in.stamp[1]=sonarReadTime_[1];
@@ -241,7 +248,7 @@ void RobotSubsystem::InitializeMotionDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Motion");
   tab.AddString("Motion status",[this] {
     // Visible revision distinguishes this executable from stale robot/UI data.
-    const std::string revision="P8-r25 MVP | ";
+    const std::string revision="P8-r26 MVP | ";
     if (!routineNotice_.empty()) return revision+routineNotice_;
     if (frc::RobotState::IsAutonomous()) return revision+(navigationSelected_?navigation_.Status():tapeRoutine_.GetStatus());
     return revision+(hardware_.HasDriveFault()?
@@ -257,7 +264,9 @@ void RobotSubsystem::InitializeMotionDashboard() {
   tab.AddNumber("Y (mm)",[this] { return localization_.GetPose().y_MM; }).WithPosition(2,1).WithSize(2,1);
   tab.AddNumber("Heading N=0 deg",[this] { return localization_.GetPose().headingRad*180/robot_geometry::PI; })
       .WithPosition(4,1).WithSize(2,1);
-  tab.AddNumber("Loop (ms)",[this] { return controlDt_*1000; }).WithPosition(6,1).WithSize(2,1);
+  tab.AddString("Loop / peak ms",[this] {
+    return std::to_string(static_cast<int>(controlDt_*1000))+" / "+std::to_string(static_cast<int>(peakControlDt_*1000));
+  }).WithPosition(6,1).WithSize(2,1);
   for (int i=0;i<localization_config::WHEEL_COUNT;++i) {
     const int x=i==1?4:0,y=i==2?3:2;
     const std::string port="M"+std::to_string(localization_config::WHEEL_TITAN_PORT[i]);
@@ -355,7 +364,9 @@ void RobotSubsystem::InitializePoseDashboard() {
 void RobotSubsystem::InitializeNavigationDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Navigation");
   tab.AddString("Navigation status",[this] {
-    return std::string("P8-r25 MVP | ")+(routineNotice_.empty()?navigation_.Status():routineNotice_);
+    const std::string plan=navigation_.LastPlanMS()>0?
+        " | last plan "+std::to_string(static_cast<int>(std::ceil(navigation_.LastPlanMS())))+" ms":"";
+    return std::string("P8-r26 MVP | ")+(routineNotice_.empty()?navigation_.Status():routineNotice_)+plan;
   }).WithPosition(0,0).WithSize(6,1);
   stopNavigation_=tab.Add("Stop",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
       .WithPosition(6,0).WithSize(2,1).GetEntry();

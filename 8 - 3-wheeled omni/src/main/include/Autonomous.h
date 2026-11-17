@@ -1,6 +1,9 @@
 #pragma once
 #include <string>
 #include <vector>
+#include <atomic>
+#include <functional>
+#include <memory>
 #include "RobotConfig.h"
 
 struct MotionInput {
@@ -53,6 +56,7 @@ struct NavigationInput {
   // left IR, rear sonar, right IR, front sonar (same order as sensor mounts).
   double rangeMM[4]={-1,-1,-1,-1},stamp[4]={-1,-1,-1,-1};
   bool valid[4]={false,false,false,false};
+  std::string healthIssue;
 };
 struct PoseInitialization {
   std::string xMM="-",yMM="-";
@@ -65,7 +69,10 @@ class LocalObstacleMap {
  public:
   explicit LocalObstacleMap(bool court=true):court_(court) {}
   bool UsesCourt() const { return court_; }
-  void ClearHits() { hits_.clear(); for (auto& pending:pending_) pending.stamp=-1; for (auto& stamp:rayStamp_) stamp=-1; }
+  void SetCancellation(std::shared_ptr<std::atomic<bool>> cancelled) { cancelled_=std::move(cancelled); }
+  bool Cancelled() const { return cancelled_ && cancelled_->load(std::memory_order_relaxed); }
+  unsigned Revision() const { return revision_; }
+  void ClearHits() { ++revision_; hits_.clear(); for (auto& pending:pending_) pending.stamp=-1; for (auto& stamp:rayStamp_) stamp=-1; }
   void AddHit(ArenaPoint hit,double beamRad);
   void ObserveHit(ArenaPoint origin,ArenaPoint hit,double beam,double stamp,int sensor,bool urgent,bool allowObstacle=true);
   void ShiftHits(ArenaPoint delta);
@@ -76,15 +83,32 @@ class LocalObstacleMap {
  private:
   bool SearchGrid(ArenaPoint start,ArenaPoint goal,double heading,std::vector<ArenaPoint>& points,double step,double padding) const;
   bool court_;
+  unsigned revision_=0;
+  std::shared_ptr<std::atomic<bool>> cancelled_;
   struct Hit { navigation_config::Block bounds; unsigned clearVotes=0; };
   struct Candidate { ArenaPoint hit={0,0}; double stamp=-1; };
   std::vector<Hit> hits_;
   Candidate pending_[4];
   double rayStamp_[4]={-1,-1,-1,-1};
 };
+// One low-priority worker. Hardware, odometry and motor writes stay on the
+// robot loop; only a copied navigation/map state is searched here.
+class NavigationPlanWorker {
+ public:
+  NavigationPlanWorker();
+  ~NavigationPlanWorker();
+  bool Submit(std::function<void()> work);
+  bool Busy() const;
+  bool Ready() const;
+  double ElapsedMS() const;
+ private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+};
 class GoalNavigationRoutine {
  public:
-  explicit GoalNavigationRoutine(bool useCourtMap=true):obstacles_(useCourtMap) {}
+  explicit GoalNavigationRoutine(bool useCourtMap=true,bool backgroundPlanning=false):obstacles_(useCourtMap),backgroundPlanning_(backgroundPlanning) {}
+  ~GoalNavigationRoutine();
   enum class State { Unreferenced, Reference, ReferenceReady, Ready, Driving,
     FinalHeading, Complete, Aborted, Fault };
   void Enter();
@@ -113,6 +137,8 @@ class GoalNavigationRoutine {
   double RemainingMM() const { return remaining_; }
   unsigned IntermediateCount() const { return route_.empty()?0:route_.size()-1; }
   unsigned LegIndex() const { return leg_; }
+  bool IsPlanning() const { return backgroundPlanning_ && planner_ && (pendingPlan_ || planner_->Busy()); }
+  double LastPlanMS() const { return lastPlanMS_; }
  private:
   void Stop() { forward_=left_=yaw_=0; }
   void DriveRoute(const NavigationInput& in,double previousYaw);
@@ -125,6 +151,10 @@ class GoalNavigationRoutine {
   bool RecoverRoute(const NavigationInput& in,unsigned rejoinIndex);
   void InstallRecovery(const NavigationInput& in,unsigned rejoinIndex,const std::vector<RobotPose>& points,int preciseTurn=-1);
   void ConstrainMotion(const NavigationInput& in);
+  bool RequestPlan(const NavigationInput& in,bool turn,double heading=0);
+  bool PollPlan();
+  void ContinueWhilePlanning(const NavigationInput& in);
+  void CancelPlanning();
   RobotPose SamplePose(double stamp) const;
   State state_=State::Unreferenced;
   bool referenced_=false;
@@ -161,6 +191,13 @@ class GoalNavigationRoutine {
   HeadingMotionControl heading_;
   std::string status_="Set initialization, then Initialize pose";
   std::string initializationStatus_="X/Y: number or '-'. Sensor walls: X=value, Y=value or '-'.";
+  bool backgroundPlanning_=false;
+  std::shared_ptr<NavigationPlanWorker> planner_;
+  std::shared_ptr<GoalNavigationRoutine> pendingPlan_;
+  std::shared_ptr<std::atomic<bool>> cancelPlan_;
+  unsigned pendingMapRevision_=0;
+  ArenaPoint planningVelocity_={0,0};
+  double planningHeading_=0,lastPlanMS_=0;
 };
 
 enum class TapeApproach { FromLeft, FromRight };

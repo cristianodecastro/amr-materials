@@ -118,7 +118,8 @@ void Hardware::DriveWithContext(double forward,double left,double yawRadps,
     counts[i]=GetWheelEncoderRaw(i);
   }
   auto& controller=wheelDrive_;
-  controller.Update(desired,counts,dt,maxOutput);
+  if (teleop) controller.Update(desired,counts,dt,maxOutput);
+  else controller.UpdateAutonomous(desired,counts,dt,maxOutput);
   double output[3]; for (int i=0;i<3;++i) output[i]=controller.Output(i);
   if (!teleop) motor_output::PrepareAutonomousVector(output,maxOutput);
   for (int i=0;i<3;++i) SetWheelPwm(i,output[i],maxOutput);

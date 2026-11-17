@@ -107,6 +107,7 @@ class Localization {
     if (autonomousMode_) odometry_.CorrectPosition(delta.x,delta.y);
   }
   bool IsHealthy() const { return autonomousMode_?odometry_.Healthy():teleopTelemetry_.Healthy(); }
+  const char* OdometryFaultReason() const { return autonomousMode_?odometry_.FaultReason():"Teleop odometry unavailable"; }
   const RobotPose& GetPose() const { return autonomousMode_?odometry_.Pose():teleopTelemetry_.Pose(); }
   double GetBodyVelocityX_MMps() const { return autonomousMode_?odometry_.ForwardSpeed():teleopTelemetry_.ForwardSpeed(); }
   double GetBodyVelocityY_MMps() const { return autonomousMode_?odometry_.LeftSpeed():teleopTelemetry_.LeftSpeed(); }
@@ -140,7 +141,7 @@ class RobotSubsystem : public frc2::SubsystemBase {
   Hardware hardware_;
   Localization localization_{&hardware_};
   TapeAlignmentRoutine tapeRoutine_;
-  GoalNavigationRoutine navigation_;
+  GoalNavigationRoutine navigation_{true,true}; // robot uses the background planner
   bool navigationSelected_=false;
   nt::NetworkTableEntry initializePose_,initializeFromTab_,goToGoal_,stopNavigation_,goalX_,goalY_,goalHeading_;
   nt::NetworkTableEntry intermediatePoses_,initialX_,initialY_,initialHeading_,wallReferences_[4];
@@ -160,6 +161,7 @@ class RobotSubsystem : public frc2::SubsystemBase {
   CobraCheck cobraCheck_;
   double lastLoopTime_=0;
   double controlDt_=localization_config::CONTROL_PERIOD_S;
+  double peakControlDt_=0;
   double lastSensorTime_=-1;
   IrReading irReading_[localization_config::IR_COUNT];
   int nextSonarIndex_=0;

@@ -7,12 +7,17 @@ namespace {
 bool Fresh(double now,double stamp,double stale) {
   return std::isfinite(stamp) && stamp>=0 && now>=stamp && now-stamp<=stale;
 }
-bool HealthyMotion(const NavigationInput& in) {
+std::string MotionIssue(const NavigationInput& in) {
   const auto& m=in.motion;
-  return m.healthy && robot_geometry::Finite(m.pose) && std::isfinite(m.now) &&
-      std::isfinite(m.dt) && m.dt>0 && m.dt<=localization_config::MAX_CONTROL_GAP_S &&
-      std::isfinite(m.yawRateRadps) && std::isfinite(in.forwardMMps) && std::isfinite(in.leftMMps);
+  if (!std::isfinite(m.now) || !std::isfinite(m.dt) || m.dt<=0) return "Invalid control clock/interval";
+  if (m.dt>localization_config::AUTO_MAX_SAMPLE_GAP_S) return "Control loop gap "+std::to_string(static_cast<int>(m.dt*1000))+" ms exceeds 500 ms";
+  if (!m.healthy) return in.healthIssue.empty()?"Odometry/IMU health check failed":in.healthIssue;
+  if (!robot_geometry::Finite(m.pose)) return "Odometry pose is not finite";
+  if (!std::isfinite(m.yawRateRadps)) return "IMU yaw-rate sample is not finite";
+  if (!std::isfinite(in.forwardMMps) || !std::isfinite(in.leftMMps)) return "Odometry velocity is not finite";
+  return {};
 }
+bool HealthyMotion(const NavigationInput& in) { return MotionIssue(in).empty(); }
 bool UsableRange(const NavigationInput& in,int sensor) {
   const bool ir=sensor==0 || sensor==2;
   const double range=in.rangeMM[sensor];
@@ -52,12 +57,16 @@ bool ReadIntermediatePoses(const std::string& text,double heading,std::vector<Ro
   return true;
 }
 }
-void GoalNavigationRoutine::Enter() { *this=GoalNavigationRoutine{obstacles_.UsesCourt()}; }
-void GoalNavigationRoutine::Abort() { Stop(); state_=State::Aborted; status_="Stopped"; }
-void GoalNavigationRoutine::Fail(const std::string& message) { Stop(); state_=State::Fault; status_=message; }
+GoalNavigationRoutine::~GoalNavigationRoutine() { CancelPlanning(); }
+void GoalNavigationRoutine::Enter() {
+  auto worker=planner_; const bool background=backgroundPlanning_,court=obstacles_.UsesCourt();
+  CancelPlanning(); *this=GoalNavigationRoutine{court,background}; planner_=std::move(worker);
+}
+void GoalNavigationRoutine::Abort() { CancelPlanning(); Stop(); state_=State::Aborted; status_="Stopped"; }
+void GoalNavigationRoutine::Fail(const std::string& message) { CancelPlanning(); Stop(); state_=State::Fault; status_=message; }
 bool GoalNavigationRoutine::InitializePose(const PoseInitialization& settings) {
   if (IsRunning() && state_!=State::Reference && state_!=State::ReferenceReady) return false;
-  Stop(); positionCorrection_={0,0}; referenced_=false; state_=State::Unreferenced;
+  CancelPlanning(); Stop(); positionCorrection_={0,0}; referenced_=false; state_=State::Unreferenced;
   const auto reject=[this](const std::string& message) { status_=initializationStatus_=message; return false; };
   bool known[2]; double coordinate[2]={}; WallReference references[4];
   if (!OptionalCoordinate(settings.xMM,known[0],coordinate[0]) ||
@@ -89,7 +98,7 @@ void GoalNavigationRoutine::ConfirmReference() {
 bool GoalNavigationRoutine::StartGoal(RobotPose goal,const NavigationInput& in,const std::string& intermediatePoses) {
   if (IsRunning()) return false;
   if (!referenced_) { status_="Initialize pose first"; return false; }
-  if (!HealthyMotion(in)) { status_="Cannot start: IMU/odometry unavailable"; return false; }
+  if (!HealthyMotion(in)) { status_="Cannot start: "+MotionIssue(in); return false; }
   if (!robot_geometry::Finite(goal) || goal.x_MM<0 || goal.y_MM<0 ||
       goal.x_MM>localization_config::ARENA_WIDTH_MM || goal.y_MM>localization_config::ARENA_HEIGHT_MM) {
     status_="Goal must be inside the arena with finite coordinates"; return false;
@@ -109,7 +118,7 @@ bool GoalNavigationRoutine::StartGoal(RobotPose goal,const NavigationInput& in,c
       status_="Goal pose footprint overlaps a court barrier or outer wall"; return false;
     }
   }
-  route.push_back(goal); route_=std::move(route); leg_=0; worldVX_=worldVY_=0;
+  CancelPlanning(); route.push_back(goal); route_=std::move(route); leg_=0; worldVX_=worldVY_=0;
   legStart_={in.motion.pose.x_MM,in.motion.pose.y_MM}; carryHeading_=clearanceHeading_=false;
   detourActive_=recoveryActive_=haveRetreatOrigin_=false; preciseTurnLeg_=-1; obstacles_.ClearHits(); for (auto& stamp:observedStamp_) stamp=-1;
   finalControllerReady_=route_.size()==1;
@@ -124,6 +133,59 @@ bool GoalNavigationRoutine::StartGoal(RobotPose goal,const NavigationInput& in,c
   for (auto& time:wallTime_) time=-1;
   status_=route_.size()==1?"Direct XY travel; holding starting heading":"Manual pose route started";
   return true;
+}
+void GoalNavigationRoutine::CancelPlanning() {
+  if (cancelPlan_) cancelPlan_->store(true,std::memory_order_relaxed);
+  pendingPlan_.reset(); cancelPlan_.reset();
+}
+bool GoalNavigationRoutine::RequestPlan(const NavigationInput& in,bool turn,double heading) {
+  if (!planner_) planner_=std::make_shared<NavigationPlanWorker>();
+  if (pendingPlan_) return false;
+  const double a=robot_geometry::ArenaAngle(in.motion.pose.headingRad),co=std::cos(a),si=std::sin(a);
+  planningVelocity_={co*in.forwardMMps-si*in.leftMMps,si*in.forwardMMps+co*in.leftMMps};
+  planningHeading_=turn?heading:(leg_+1<route_.size()?route_[leg_].headingRad:travelHeading_);
+  if (planner_->Busy()) return false; // an explicitly cancelled older job is winding down
+  auto plan=std::make_shared<GoalNavigationRoutine>(*this);
+  plan->backgroundPlanning_=false; plan->planner_.reset(); plan->pendingPlan_.reset();
+  auto cancelled=std::make_shared<std::atomic<bool>>(false);
+  plan->cancelPlan_=cancelled; plan->obstacles_.SetCancellation(cancelled);
+  pendingMapRevision_=obstacles_.Revision(); cancelPlan_=cancelled; pendingPlan_=plan;
+  planner_->Submit([plan,in,turn,heading] {
+    try {
+      if (turn) plan->PrepareTurnDetour(in,heading); else plan->EnsureClearRoute(in);
+    } catch (const std::exception& e) { plan->Fail(std::string("Route planning error: ")+e.what()); }
+      catch (...) { plan->Fail("Route planning error"); }
+  });
+  return false;
+}
+bool GoalNavigationRoutine::PollPlan() {
+  if (!pendingPlan_) return false;
+  if (!planner_->Ready()) return true;
+  auto plan=pendingPlan_; pendingPlan_.reset(); cancelPlan_.reset(); lastPlanMS_=planner_->ElapsedMS();
+  if (plan->state_==State::Fault) {
+    if (pendingMapRevision_==obstacles_.Revision()) Fail(plan->status_);
+    return false; // changed evidence must be replanned, not rejected by a stale result
+  }
+  // Commit only the route. Live sensor history, corrected pose, current
+  // velocities, elapsed task time and heading feedback remain on this thread.
+  route_=std::move(plan->route_); leg_=plan->leg_; legStart_=plan->legStart_;
+  detourActive_=plan->detourActive_; detourEnd_=plan->detourEnd_; preciseTurnLeg_=plan->preciseTurnLeg_;
+  recoveryActive_=plan->recoveryActive_; haveRetreatOrigin_=plan->haveRetreatOrigin_; retreatOrigin_=plan->retreatOrigin_;
+  clearanceHeading_=plan->clearanceHeading_; clearanceHeadingTarget_=plan->clearanceHeadingTarget_;
+  carryHeading_=plan->carryHeading_; carriedHeading_=plan->carriedHeading_; travelHeading_=plan->travelHeading_;
+  state_=State::Driving; finalControllerReady_=false; settled_=-1;
+  return false;
+}
+void GoalNavigationRoutine::ContinueWhilePlanning(const NavigationInput& in) {
+  const double a=robot_geometry::ArenaAngle(in.motion.pose.headingRad),co=std::cos(a),si=std::sin(a);
+  forward_=co*planningVelocity_.x+si*planningVelocity_.y; left_=-si*planningVelocity_.x+co*planningVelocity_.y;
+  const double speed=std::hypot(forward_,left_);
+  if (speed>navigation_config::SPEED_MMPS) { forward_*=navigation_config::SPEED_MMPS/speed; left_*=navigation_config::SPEED_MMPS/speed; }
+  yaw_=obstacles_.TurnClear({in.motion.pose.x_MM,in.motion.pose.y_MM},in.motion.pose.headingRad,planningHeading_)?
+      heading_.Request(robot_geometry::Wrap(planningHeading_-in.motion.pose.headingRad),heading_.FeedbackRequest(),in.motion.yawRateRadps,in.motion.dt,
+          navigation_config::INTERMEDIATE_HEADING_TOLERANCE_RAD,navigation_config::TRAVEL_HEADING_KP):0;
+  ConstrainMotion(in); // never blindly replay a previous command into new evidence
+  status_="Calculating detour; live odometry and clearance control";
 }
 double GoalNavigationRoutine::GuideRadius(unsigned index) const {
   const auto& p=route_[index];
@@ -324,6 +386,7 @@ bool GoalNavigationRoutine::EnsureClearRoute(const NavigationInput& in) {
     clearanceHeading_=true; clearanceHeadingTarget_=wantedHeading; return true;
   }
   // Repair only the current manual leg; preserve every subsequent requested pose.
+  if (backgroundPlanning_) return RequestPlan(in,false);
   unsigned original=detourActive_?detourEnd_:leg_;
   const auto rejoin=route_[original]; std::vector<ArenaPoint> bypass;
   if (!obstacles_.Detour(start,{rejoin.x_MM,rejoin.y_MM},in.motion.pose.headingRad,bypass)) {
@@ -345,6 +408,7 @@ bool GoalNavigationRoutine::EnsureClearRoute(const NavigationInput& in) {
   return true;
 }
 bool GoalNavigationRoutine::PrepareTurnDetour(const NavigationInput& in,double heading) {
+  if (backgroundPlanning_) return RequestPlan(in,true,heading);
   const ArenaPoint start={in.motion.pose.x_MM,in.motion.pose.y_MM};
   std::vector<ArenaPoint> best; ArenaPoint staging={0,0}; double bestLength=1e9;
   const double step=navigation_config::DETOUR_GRID_MM;
@@ -409,6 +473,7 @@ bool GoalNavigationRoutine::RecoverRoute(const NavigationInput& in,unsigned orig
       if (!duplicate) headings.push_back(value);
     }
     for (double heading:headings) {
+      if (obstacles_.Cancelled()) return false;
       if (searches>=8) break;
       if (obstacles_.Clearance(goal,heading)<margin) continue;
       struct Stage { ArenaPoint point; double cost; };
@@ -545,20 +610,25 @@ void GoalNavigationRoutine::Update(const NavigationInput& input) {
     state_=State::ReferenceReady; status_="Starting pose ready"; return;
   }
   if (state_==State::ReferenceReady) return;
-  if (!HealthyMotion(in)) { Fail("IMU/odometry or Control Station unavailable - stopped"); return; }
+  const auto issue=MotionIssue(in);
+  if (!issue.empty()) { Fail(issue+" - stopped"); return; }
+  in.motion.dt=std::min(in.motion.dt,localization_config::AUTO_MAX_CONTROL_STEP_S);
   CorrectFromWalls(in);
   ObserveObstacles(in);
   if (m.now-started_>navigation_config::MISSION_TIMEOUT_S) { Fail("Task timeout - stopped"); return; }
   const auto fault=heading_.CheckFeedback(previousYaw,m.yawRateRadps,m.dt);
   if (!fault.empty()) { Fail(fault); return; }
+  if (PollPlan()) { ContinueWhilePlanning(in); return; }
+  if (!IsRunning()) return;
   remaining_=std::hypot(goal_.x_MM-m.pose.x_MM,goal_.y_MM-m.pose.y_MM);
   if (state_==State::Driving) {
     AdvanceRoute(in); // leave accepted guides before checking/replanning the next segment
-    if (!EnsureClearRoute(in)) return;
+    if (!EnsureClearRoute(in)) { if (IsPlanning()) ContinueWhilePlanning(in); return; }
     DriveRoute(in,previousYaw);
   } else if (state_==State::FinalHeading) {
     if (!obstacles_.TurnClear({m.pose.x_MM,m.pose.y_MM},m.pose.headingRad,goal_.headingRad)) {
       if (PrepareTurnDetour(in,goal_.headingRad)) { DriveRoute(in,previousYaw); ConstrainMotion(in); }
+      else if (IsPlanning()) ContinueWhilePlanning(in);
       return;
     }
     if (remaining_>navigation_config::POSITION_TOLERANCE_MM) {
@@ -577,5 +647,6 @@ void GoalNavigationRoutine::Update(const NavigationInput& input) {
       if (m.now-settled_>=0.30) { Stop(); state_=State::Complete; status_="Goal reached: within 10 mm / 1 deg"; }
     } else settled_=-1;
   }
-  if (IsRunning()) ConstrainMotion(in);
+  if (IsPlanning()) ContinueWhilePlanning(in);
+  else if (IsRunning()) ConstrainMotion(in);
 }
