@@ -34,9 +34,43 @@ void LocalObstacleMap::AddHit(ArenaPoint p,double beam) {
   // The return is the NEAR surface. Put assumed depth behind it, not toward us.
   const ArenaPoint center={p.x+r*std::cos(beam),p.y+r*std::sin(beam)};
   const double extent=r*(std::fabs(std::cos(beam))+std::fabs(std::sin(beam)));
-  for (const auto& b:hits_) if (std::hypot(center.x-(b.xmin+b.xmax)/2,center.y-(b.ymin+b.ymax)/2)<r) return;
+  for (auto& hit:hits_) {
+    const auto& b=hit.bounds;
+    if (std::hypot(center.x-(b.xmin+b.xmax)/2,center.y-(b.ymin+b.ymax)/2)<r) { hit.clearVotes=0; return; }
+  }
   if (hits_.size()>=24) hits_.erase(hits_.begin());
-  hits_.push_back({center.x-extent,center.y-extent,center.x+extent,center.y+extent});
+  hits_.push_back({{center.x-extent,center.y-extent,center.x+extent,center.y+extent},0});
+}
+void LocalObstacleMap::ObserveHit(ArenaPoint origin,ArenaPoint hit,double beam,double stamp,int sensor,bool urgent,bool allowObstacle) {
+  if (sensor<0 || sensor>=4 || !std::isfinite(stamp)) return;
+  if (stamp<=rayStamp_[sensor]) return;
+  rayStamp_[sensor]=stamp;
+  // A new ray that passes entirely through an old patch twice disproves it.
+  // This clears bad echoes without forgetting an unseen, confirmed obstacle.
+  const double range=std::hypot(hit.x-origin.x,hit.y-origin.y),direction[]={std::cos(beam),std::sin(beam)};
+  for (auto it=hits_.begin();it!=hits_.end();) {
+    double entry=0,exit=range; bool intersects=true;
+    const double starts[]={origin.x,origin.y},lo[]={it->bounds.xmin,it->bounds.ymin},hi[]={it->bounds.xmax,it->bounds.ymax};
+    for (int axis=0;axis<2;++axis) {
+      if (std::fabs(direction[axis])<1e-9) {
+        if (starts[axis]<lo[axis] || starts[axis]>hi[axis]) intersects=false;
+      } else {
+        double a=(lo[axis]-starts[axis])/direction[axis],b=(hi[axis]-starts[axis])/direction[axis];
+        if (a>b) std::swap(a,b);
+        entry=std::max(entry,a); exit=std::min(exit,b);
+      }
+    }
+    if (intersects && exit>=entry && exit<range-navigation_config::OBSTACLE_FREE_RAY_MARGIN_MM) {
+      if (++it->clearVotes>=2) { it=hits_.erase(it); continue; }
+    }
+    ++it;
+  }
+  auto& pending=pending_[sensor];
+  if (!allowObstacle) { pending.stamp=-1; return; }
+  const bool repeated=pending.stamp>=0 && stamp>pending.stamp && stamp-pending.stamp<=navigation_config::OBSTACLE_CONFIRM_WINDOW_S &&
+      std::hypot(hit.x-pending.hit.x,hit.y-pending.hit.y)<=navigation_config::OBSTACLE_MATCH_MM;
+  if (urgent || repeated) AddHit(hit,beam);
+  pending={hit,stamp};
 }
 double LocalObstacleMap::Clearance(ArenaPoint p,double heading) const {
   double gap=1e9;
@@ -53,11 +87,12 @@ double LocalObstacleMap::Clearance(ArenaPoint p,double heading) const {
     }
     for (const auto& b:navigation_config::COURT_BLOCKS) gap=std::min(gap,Gap(p,b,heading));
   }
-  for (const auto& b:hits_) gap=std::min(gap,Gap(p,b,heading));
+  for (const auto& hit:hits_) gap=std::min(gap,Gap(p,hit.bounds,heading));
   return gap;
 }
 void LocalObstacleMap::ShiftHits(ArenaPoint delta) {
-  for (auto& b:hits_) { b.xmin+=delta.x; b.xmax+=delta.x; b.ymin+=delta.y; b.ymax+=delta.y; }
+  for (auto& hit:hits_) { auto& b=hit.bounds; b.xmin+=delta.x; b.xmax+=delta.x; b.ymin+=delta.y; b.ymax+=delta.y; }
+  for (auto& pending:pending_) if (pending.stamp>=0) { pending.hit.x+=delta.x; pending.hit.y+=delta.y; }
 }
 bool LocalObstacleMap::TurnClear(ArenaPoint center,double from,double to,double margin) const {
   const double angle=robot_geometry::Wrap(to-from);
@@ -79,11 +114,16 @@ bool LocalObstacleMap::SegmentClear(ArenaPoint a,ArenaPoint b,double heading,dou
   return true;
 }
 bool LocalObstacleMap::Detour(ArenaPoint start,ArenaPoint goal,double heading,std::vector<ArenaPoint>& points) const {
+  if (SearchGrid(start,goal,heading,points,navigation_config::DETOUR_GRID_MM,navigation_config::INTERMEDIATE_POSITION_TOLERANCE_MM)) return true;
+  // A coarse grid / passing buffer can close a real, clear passage. Refine
+  // discretization and tracking padding; never shrink the robot or clearance.
+  return SearchGrid(start,goal,heading,points,navigation_config::DETOUR_GRID_MM/2,10);
+}
+bool LocalObstacleMap::SearchGrid(ArenaPoint start,ArenaPoint goal,double heading,std::vector<ArenaPoint>& points,double step,double padding) const {
   points.clear();
   const double margin=navigation_config::OBSTACLE_CLEARANCE_MM;
   if (Clearance(goal,heading)<margin || Clearance(start,heading)<0) return false;
   if (SegmentClear(start,goal,heading,margin,true)) { points.push_back(goal); return true; }
-  const double step=navigation_config::DETOUR_GRID_MM;
   const int nx=static_cast<int>(localization_config::ARENA_WIDTH_MM/step)+1;
   const int ny=static_cast<int>(localization_config::ARENA_HEIGHT_MM/step)+1,n=nx*ny;
   const auto point=[=](int i) { return ArenaPoint{(i%nx)*step,(i/nx)*step}; };
@@ -112,7 +152,7 @@ bool LocalObstacleMap::Detour(ArenaPoint start,ArenaPoint goal,double heading,st
       const int j=y*nx+x; if (closed[j]) continue;
       const auto next=point(j);
       // Extra waypoint tolerance protects corners as the chassis blends segments.
-      if (!SegmentClear(p,next,heading,margin+navigation_config::INTERMEDIATE_POSITION_TOLERANCE_MM)) continue;
+      if (!SegmentClear(p,next,heading,margin+padding)) continue;
       const double tentative=cost[i]+distance(p,next);
       if (tentative<cost[j]) { cost[j]=tentative; parent[j]=i; open.push({tentative+distance(next,goal),j}); }
     }
@@ -125,7 +165,7 @@ bool LocalObstacleMap::Detour(ArenaPoint start,ArenaPoint goal,double heading,st
   for (unsigned i=0;i<raw.size();) {
     unsigned furthest=i;
     for (unsigned j=i+1;j<raw.size();++j)
-      if (SegmentClear(previous,raw[j],heading,margin+navigation_config::INTERMEDIATE_POSITION_TOLERANCE_MM)) furthest=j;
+      if (SegmentClear(previous,raw[j],heading,margin+padding)) furthest=j;
     if (distance(previous,raw[furthest])>1) { points.push_back(raw[furthest]); previous=raw[furthest]; }
     i=furthest+1;
   }

@@ -132,6 +132,9 @@ static constexpr double OBSTACLE_CLEARANCE_MM=30;
 static constexpr double DETOUR_GRID_MM=50,DETOUR_SPEED_MMPS=200;
 static constexpr double CLEARANCE_BRAKE_HORIZON_S=0.25;
 static constexpr double SENSED_OBSTACLE_RADIUS_MM=100,OBSTACLE_OBSERVE_RANGE_MM=650;
+static constexpr double OBSTACLE_CONFIRM_WINDOW_S=0.8,OBSTACLE_MATCH_MM=100;
+static constexpr double OBSTACLE_FREE_RAY_MARGIN_MM=60,RECOVERY_SPEED_MMPS=120;
+static constexpr double RECOVERY_SEARCH_RADIUS_MM=400;
 struct Block { double xmin,ymin,xmax,ymax; };
 // Physical keep-out regions from court_barriers.png; tape square stays free.
 static constexpr Block COURT_BLOCKS[]={
@@ -145,7 +148,7 @@ static constexpr GoalPreset GOALS[]={
     {"Short north",250,700,0,""},
     {"North via 700",250,950,0,"250,700,0"},
     {"Long north",250,1200,0,"250,700,0;250,950,0"},
-    {"Top right",1700,1700,90,"650,850,0;1500,850,0;1700,1400,90"}};
+    {"Top right",1700,1700,90,"650,850,0;1500,850,90;1700,1400,90"}};
 static constexpr double DEFAULT_GOAL_X_MM=GOALS[0].xMM,DEFAULT_GOAL_Y_MM=GOALS[0].yMM,DEFAULT_GOAL_HEADING_DEG=GOALS[0].headingDeg;
 }
 // Explicit-start corner reference and tape approach. Arena +X east, +Y north.

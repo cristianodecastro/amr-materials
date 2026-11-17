@@ -696,12 +696,16 @@ void MvpStartReferenceAndStop() {
 }
 // Clear-floor tests of the real odometry, controller, electrical mapping and
 // motor lag. An operator, not this MVP, chooses obstacle-free arena segments.
-void MvpDirectGoal(RobotPose goal,double lag,bool disturb=false,const std::string& via="",bool slip=false,bool court=false,bool sensorObstacle=false) {
+void MvpDirectGoal(RobotPose goal,double lag,bool disturb=false,const std::string& via="",bool slip=false,bool court=false,bool sensorObstacle=false,
+                   RobotPose initial={250,450,0},bool reportedObstacle=false) {
   GoalNavigationRoutine nav(court); auto in=MvpReference(nav);
   LocalObstacleMap courtGeometry;
   LocalObstacleMap detectedGeometry(false);
   if (sensorObstacle) detectedGeometry.AddHit({250,1021.6},robot_geometry::PI/2);
-  RobotPose physical=in.motion.pose;
+  const double initialBeam=robot_geometry::ArenaAngle(initial.headingRad);
+  const ArenaPoint reportedHit={initial.x_MM+471.6*std::cos(initialBeam),initial.y_MM+471.6*std::sin(initialBeam)};
+  if (reportedObstacle) detectedGeometry.AddHit(reportedHit,initialBeam);
+  RobotPose physical=in.motion.pose=initial;
   double counts[3]={},wheel[3]={},forward=0,left=0,yaw=0;
   drive_kinematics::EncoderGyroOdometry odometry;
   odometry.Reset(physical,counts,137); // raw gyro is not the arena reference
@@ -713,7 +717,7 @@ void MvpDirectGoal(RobotPose goal,double lag,bool disturb=false,const std::strin
       physical.headingRad+=robot_geometry::Radians(5);
       AddPhysicalCounts(counts,0,0,robot_geometry::Radians(5));
     }
-    REQUIRE_ARENA(odometry.Update(counts,robot_geometry::Wrap(robot_geometry::Radians(137)+physical.headingRad)*180/robot_geometry::PI,
+    REQUIRE_ARENA(odometry.Update(counts,robot_geometry::Wrap(robot_geometry::Radians(137)+physical.headingRad-initial.headingRad)*180/robot_geometry::PI,
         yaw*180/robot_geometry::PI,0.02));
     in.motion.pose=odometry.Pose(); in.motion.now=0.1+tick*0.02; in.motion.yawRateRadps=yaw;
     in.forwardMMps=odometry.ForwardSpeed(); in.leftMMps=odometry.LeftSpeed();
@@ -724,8 +728,14 @@ void MvpDirectGoal(RobotPose goal,double lag,bool disturb=false,const std::strin
       in.rangeMM[0]=physical.x_MM-60; in.rangeMM[1]=physical.y_MM-173;
       in.stamp[0]=in.stamp[1]=in.motion.now;
     }
-    if (sensorObstacle && tick==5) {
+    if (sensorObstacle && (tick==5 || tick==10)) {
       in.valid[3]=true; in.rangeMM[3]=1021.6-physical.y_MM-171.6; in.stamp[3]=in.motion.now;
+    }
+    if (reportedObstacle && (tick==5 || tick==10)) {
+      const double beam=robot_geometry::ArenaAngle(physical.headingRad),co=std::cos(beam),si=std::sin(beam);
+      const ArenaPoint origin={physical.x_MM+171.6*co,physical.y_MM+171.6*si};
+      in.valid[3]=true; in.stamp[3]=in.motion.now;
+      in.rangeMM[3]=((reportedHit.x-origin.x)*std::cos(initialBeam)+(reportedHit.y-origin.y)*std::sin(initialBeam))/std::cos(beam-initialBeam);
     }
     const unsigned previousLeg=nav.LegIndex();
     nav.Update(in);
@@ -760,7 +770,7 @@ void MvpDirectGoal(RobotPose goal,double lag,bool disturb=false,const std::strin
     physical.headingRad=robot_geometry::Wrap(physical.headingRad+yaw*0.02);
     if (court && courtGeometry.Clearance({physical.x_MM,physical.y_MM},physical.headingRad)<0)
       throw std::runtime_error("Court collision toward "+std::to_string(goal.x_MM)+","+std::to_string(goal.y_MM)+" during detour at "+std::to_string(physical.x_MM)+","+std::to_string(physical.y_MM)+" heading "+std::to_string(physical.headingRad*180/robot_geometry::PI));
-    REQUIRE_ARENA(!sensorObstacle || detectedGeometry.Clearance({physical.x_MM,physical.y_MM},physical.headingRad)>=0);
+    REQUIRE_ARENA(!(sensorObstacle || reportedObstacle) || detectedGeometry.Clearance({physical.x_MM,physical.y_MM},physical.headingRad)>=0);
   }
   if (nav.GetState()!=GoalNavigationRoutine::State::Complete) throw std::runtime_error("MVP did not finish: "+nav.Status());
   REQUIRE_ARENA(std::hypot(physical.x_MM-goal.x_MM,physical.y_MM-goal.y_MM)<=10);
@@ -893,6 +903,8 @@ void SensorDetourChecks() {
     in.stamp[sensor]=in.motion.now;
     const RobotPose goals[]={{100,1000,0},{1000,100,0},{1900,1000,0},{1000,1900,0}};
     REQUIRE_ARENA(nav.StartGoal(goals[sensor],in)); nav.Update(in);
+    REQUIRE_ARENA(nav.IntermediateCount()==0); // non-urgent single echoes are provisional
+    in.motion.now+=0.1; in.stamp[sensor]=in.motion.now; nav.Update(in);
     if (!nav.IsRunning()) throw std::runtime_error("Sensor detour "+std::to_string(sensor)+": "+nav.Status());
     REQUIRE_ARENA(nav.IsRunning() && std::hypot(nav.Forward(),nav.Left())>0 && nav.IntermediateCount()>0);
     REQUIRE_ARENA(nav.Status().find("Detour")!=std::string::npos);
@@ -918,6 +930,63 @@ void CourtDetourGeometryChecks() {
   GoalNavigationRoutine nav; auto in=MvpReference(nav);
   REQUIRE_ARENA(nav.StartGoal({1500,450,0},in)); nav.Update(in);
   REQUIRE_ARENA(nav.IsRunning() && nav.IntermediateCount()>0 && std::hypot(nav.Forward(),nav.Left())>0);
+}
+void ObstacleEvidenceChecks() {
+  LocalObstacleMap map(false);
+  const ArenaPoint start={1000,500},hit={1000,900},end={1000,1800};
+  map.ObserveHit(start,hit,robot_geometry::PI/2,1,3,false);
+  REQUIRE_ARENA(map.SegmentClear(start,end,0)); // one non-urgent echo is provisional
+  map.ObserveHit(start,hit,robot_geometry::PI/2,1,3,false);
+  REQUIRE_ARENA(map.SegmentClear(start,end,0)); // cached data cannot confirm a hit
+  map.ObserveHit(start,hit,robot_geometry::PI/2,1.1,3,false);
+  REQUIRE_ARENA(!map.SegmentClear(start,end,0));
+  map.ObserveHit(start,end,robot_geometry::PI/2,1.2,3,false,false);
+  REQUIRE_ARENA(!map.SegmentClear(start,end,0)); // one contrary ray is not enough
+  map.ObserveHit(start,end,robot_geometry::PI/2,1.2,3,false,false);
+  REQUIRE_ARENA(!map.SegmentClear(start,end,0));
+  map.ObserveHit(start,end,robot_geometry::PI/2,1.3,3,false,false);
+  REQUIRE_ARENA(map.SegmentClear(start,end,0)); // two clear rays remove the disproved patch
+  map.ClearHits();
+  map.ObserveHit(start,hit,robot_geometry::PI/2,2,3,true);
+  REQUIRE_ARENA(!map.SegmentClear(start,end,0)); // urgent evidence takes effect immediately
+  map.ClearHits();
+  map.ObserveHit(start,hit,robot_geometry::PI/2,3,3,false);
+  map.ObserveHit(start,hit,robot_geometry::PI/2,4,3,false);
+  REQUIRE_ARENA(map.SegmentClear(start,end,0)); // a stale provisional echo cannot confirm a new one
+}
+void ReportedNoDetourPoseChecks() {
+  const RobotPose pose={632.8,580.8,robot_geometry::Radians(-4.37)};
+  const auto& preset=navigation_config::GOALS[3];
+  LocalObstacleMap map;
+  REQUIRE_ARENA(map.SegmentClear({pose.x_MM,pose.y_MM},{650,850},pose.headingRad));
+  GoalNavigationRoutine nav; auto in=MvpReference(nav); in.motion.pose=pose;
+  for (auto& valid:in.valid) valid=false;
+  REQUIRE_ARENA(nav.StartGoal({preset.xMM,preset.yMM,robot_geometry::Radians(preset.headingDeg)},in,preset.intermediatePoses));
+  in.valid[3]=true; in.rangeMM[3]=300; in.stamp[3]=in.motion.now; nav.Update(in);
+  REQUIRE_ARENA(nav.IsRunning() && nav.IntermediateCount()==3 && std::hypot(nav.Forward(),nav.Left())>0);
+  in.motion.now+=0.1; in.stamp[3]=in.motion.now; nav.Update(in);
+  // Even confirmed evidence that blocks the first guide must not latch a
+  // fixed-heading planning fault. A different heading / next guide is tried.
+  if (!nav.IsRunning()) throw std::runtime_error("Reported pose recovery: "+nav.Status());
+  REQUIRE_ARENA(std::hypot(nav.Forward(),nav.Left())>0 || std::fabs(nav.Yaw())>0);
+  REQUIRE_ARENA(Near(nav.Goal().x_MM,1700) && Near(nav.Goal().y_MM,1700));
+  // No-intermediate travel needs an orientation change before a north-wall
+  // destination: the 0-degree footprint cannot fit at (1700,1700).
+  nav.Abort(); in=MvpReference(nav); for (auto& valid:in.valid) valid=false;
+  std::vector<ArenaPoint> path;
+  REQUIRE_ARENA(!map.Detour({250,450},{1700,1700},0,path));
+  REQUIRE_ARENA(nav.StartGoal({1700,1700,robot_geometry::PI/2},in)); nav.Update(in);
+  REQUIRE_ARENA(nav.IsRunning() && (std::hypot(nav.Forward(),nav.Left())>0 || std::fabs(nav.Yaw())>0));
+}
+void VerifiedRetreatKeepsMissionActive() {
+  GoalNavigationRoutine nav(false); auto in=MvpReference(nav); in.motion.pose={1000,1000,0};
+  for (auto& valid:in.valid) valid=false;
+  in.valid[1]=in.valid[3]=true; in.rangeMM[1]=600; in.rangeMM[3]=300;
+  in.stamp[1]=in.stamp[3]=in.motion.now;
+  REQUIRE_ARENA(nav.StartGoal({1000,1600,0},in)); nav.Update(in);
+  in.motion.now+=0.1; in.stamp[1]=in.stamp[3]=in.motion.now; nav.Update(in);
+  REQUIRE_ARENA(nav.IsRunning() && nav.Forward()<0); // confirmed obstacle occupies goal: move to clearer space and retry
+  REQUIRE_ARENA(nav.Status().find("Recovery")!=std::string::npos && Near(nav.Goal().y_MM,1600));
 }
 void MvpManualRouteInput() {
   GoalNavigationRoutine nav(false); auto in=MvpReference(nav);
@@ -975,6 +1044,7 @@ void RunActiveChecks() {
   YawDirectionCheckAllowsDelayedReversalButRejectsSustainedOpposition();
   MvpStartReferenceAndStop();
   FlexibleInitializationChecks(); IntermediatePoseToleranceChecks(); ContinuousTransitChecks(); TravelWallSupportChecks(); SensorDetourChecks(); CourtDetourGeometryChecks();
+  ObstacleEvidenceChecks(); ReportedNoDetourPoseChecks(); VerifiedRetreatKeepsMissionActive();
   MvpManualRouteInput();
   for (double lag:{0.12,0.18}) {
     MvpDirectGoal({250,1450,0},lag);
@@ -998,6 +1068,13 @@ void RunActiveChecks() {
   REQUIRE_ARENA(Near(topRight.xMM,1700) && Near(topRight.yMM,1700) && Near(topRight.headingDeg,90));
   for (double lag:{0.12,0.18})
     MvpDirectGoal({topRight.xMM,topRight.yMM,robot_geometry::Radians(topRight.headingDeg)},lag,false,topRight.intermediatePoses,false,true);
+  for (double lag:{0.12,0.18}) {
+    MvpDirectGoal({1700,1700,robot_geometry::PI/2},lag,false,"",false,true);
+    MvpDirectGoal({1700,1700,robot_geometry::PI/2},lag,false,topRight.intermediatePoses,false,true,false,
+        {632.8,580.8,robot_geometry::Radians(-4.37)});
+    MvpDirectGoal({1700,1700,robot_geometry::PI/2},lag,false,topRight.intermediatePoses,false,true,false,
+        {632.8,580.8,robot_geometry::Radians(-4.37)},true);
+  }
   TapeRoutineChecks(); WaypointSettlingDoesNotExpireProgressWatchdog();
   for (double lag:{0.0,0.12,0.25}) for (double deadband:{0.0,70.0,100.0})
     for (bool near:{false,true}) WaypointWithCoastingAndMotorDeadband(lag,deadband,near);
@@ -1007,7 +1084,7 @@ void RunActiveChecks() {
 }
 #ifdef ARENA_TEST_STANDALONE
 int main() {
-  try { RunActiveChecks(); std::cout<<"PASS: continuous transit/heading, top-right route, optional XY and four-sensor initialization, live wall fusion/slip, timestamp compensation, sensor/court detours, gyro/encoders, 15% floor, tape and teleop\n"; }
+  try { RunActiveChecks(); std::cout<<"PASS: 28 motion simulations; reported-pose recovery, alternate orientations, obstacle evidence/free rays, verified retreat, continuous transit, wall fusion, 15% floor, tape and teleop\n"; }
   catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }
 }
 #else

@@ -65,16 +65,22 @@ class LocalObstacleMap {
  public:
   explicit LocalObstacleMap(bool court=true):court_(court) {}
   bool UsesCourt() const { return court_; }
-  void ClearHits() { hits_.clear(); }
+  void ClearHits() { hits_.clear(); for (auto& pending:pending_) pending.stamp=-1; for (auto& stamp:rayStamp_) stamp=-1; }
   void AddHit(ArenaPoint hit,double beamRad);
+  void ObserveHit(ArenaPoint origin,ArenaPoint hit,double beam,double stamp,int sensor,bool urgent,bool allowObstacle=true);
   void ShiftHits(ArenaPoint delta);
   double Clearance(ArenaPoint center,double heading) const;
   bool SegmentClear(ArenaPoint a,ArenaPoint b,double heading,double margin=navigation_config::OBSTACLE_CLEARANCE_MM,bool allowEscape=false) const;
   bool TurnClear(ArenaPoint center,double from,double to,double margin=navigation_config::OBSTACLE_CLEARANCE_MM) const;
   bool Detour(ArenaPoint start,ArenaPoint goal,double heading,std::vector<ArenaPoint>& points) const;
  private:
+  bool SearchGrid(ArenaPoint start,ArenaPoint goal,double heading,std::vector<ArenaPoint>& points,double step,double padding) const;
   bool court_;
-  std::vector<navigation_config::Block> hits_;
+  struct Hit { navigation_config::Block bounds; unsigned clearVotes=0; };
+  struct Candidate { ArenaPoint hit={0,0}; double stamp=-1; };
+  std::vector<Hit> hits_;
+  Candidate pending_[4];
+  double rayStamp_[4]={-1,-1,-1,-1};
 };
 class GoalNavigationRoutine {
  public:
@@ -111,10 +117,13 @@ class GoalNavigationRoutine {
   void Stop() { forward_=left_=yaw_=0; }
   void DriveRoute(const NavigationInput& in,double previousYaw);
   void AdvanceRoute(const NavigationInput& in);
+  double GuideRadius(unsigned index) const;
   void CorrectFromWalls(NavigationInput& in);
   bool EnsureClearRoute(const NavigationInput& in);
   void ObserveObstacles(const NavigationInput& in);
   bool PrepareTurnDetour(const NavigationInput& in,double heading);
+  bool RecoverRoute(const NavigationInput& in,unsigned rejoinIndex);
+  void InstallRecovery(const NavigationInput& in,unsigned rejoinIndex,const std::vector<RobotPose>& points,int preciseTurn=-1);
   void ConstrainMotion(const NavigationInput& in);
   RobotPose SamplePose(double stamp) const;
   State state_=State::Unreferenced;
@@ -134,6 +143,8 @@ class GoalNavigationRoutine {
   WallReference walls_[4];
   LocalObstacleMap obstacles_;
   bool detourActive_=false;
+  bool recoveryActive_=false,haveRetreatOrigin_=false;
+  ArenaPoint retreatOrigin_={0,0};
   unsigned detourEnd_=0;
   int preciseTurnLeg_=-1;
   double observedStamp_[4]={-1,-1,-1,-1};
