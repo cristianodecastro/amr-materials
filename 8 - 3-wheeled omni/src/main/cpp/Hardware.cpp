@@ -119,7 +119,9 @@ void Hardware::DriveWithContext(double forward,double left,double yawRadps,
   }
   auto& controller=wheelDrive_;
   controller.Update(desired,counts,dt,maxOutput);
-  for (int i=0;i<3;++i) SetWheelPwm(i,controller.Output(i),maxOutput);
+  double output[3]; for (int i=0;i<3;++i) output[i]=controller.Output(i);
+  if (!teleop) motor_output::PrepareAutonomousVector(output,maxOutput);
+  for (int i=0;i<3;++i) SetWheelPwm(i,output[i],maxOutput);
 }
 
 std::string Hardware::GetDriveStatus() const {

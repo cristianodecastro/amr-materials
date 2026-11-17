@@ -575,6 +575,13 @@ void TitanOutputFloorPolarityAndQuantization() {
   drive.Update(demand,counts,0.02,0.9);
   for (int i=0;i<3;++i) REQUIRE_ARENA(Near(drive.Output(i),demand[i]/localization_config::MAX_WHEEL_SPEED_MMPS));
   REQUIRE_ARENA(localization_config::WHEEL_TITAN_PORT[0]==0 && localization_config::WHEEL_TITAN_PORT[1]==1 && localization_config::WHEEL_TITAN_PORT[2]==2);
+  double sideways[3]={-0.01,0.02,-0.01};
+  motor_output::PrepareAutonomousVector(sideways,0.9);
+  REQUIRE_ARENA(Near(sideways[0],-0.15) && Near(sideways[1],0.30) && Near(sideways[2],-0.15));
+  REQUIRE_ARENA(Near(sideways[0]+sideways[1]+sideways[2],0));
+  double cancellation[3]={0.3,0.0003,-0.2997};
+  motor_output::PrepareAutonomousVector(cancellation,0.9);
+  REQUIRE_ARENA(Near(cancellation[0],0.3)); // never amplify a tiny residual into a 90% peak
   // Verify actual vectors independently of production's trigonometry/inverse.
   for (double f:{-100.0,0.0,100.0}) for (double l:{-100.0,0.0,100.0}) for (double yaw:{-0.5,0.0,0.5}) {
     const double expected[3]={-std::sqrt(3.0)/2*f+0.5*l+159.74*yaw,-l+159.74*yaw,
@@ -632,8 +639,10 @@ void WaypointWithDirectMotorOutput(double lag,bool disturbed,TapeApproach approa
     double desired[3];
     for (int i=0;i<3;++i) desired[i]=drive_kinematics::WheelSpeedMMps(i,routine.GetForwardMMps(),routine.GetLeftMMps(),routine.GetYawRadps());
     drive.Update(desired,counts,0.02,0.9); REQUIRE_ARENA(!drive.HasFault());
+    double output[3]; for (int i=0;i<3;++i) output[i]=drive.Output(i);
+    motor_output::PrepareAutonomousVector(output,0.9);
     for (int i=0;i<3;++i) {
-      const double duty=motor_output::WheelTitanPercent(i,drive.Output(i),0.9)/100.0;
+      const double duty=motor_output::WheelTitanPercent(i,output[i],0.9)/100.0;
       const double targetSpeed=-duty*localization_config::MAX_WHEEL_SPEED_MMPS;
       wheelSpeed[i]+=(lag==0?1:0.02/(lag+0.02))*(targetSpeed-wheelSpeed[i]);
       counts[i]-=wheelSpeed[i]*0.02/localization_config::ENCODER_MM_PER_COUNT;
@@ -709,7 +718,7 @@ void ClearancePlanningAndWallAssociation() {
   const auto west=EstimateFromOuterWall(map,{250,450,0},0,190,true);
   REQUIRE_ARENA(west.valid && west.axis==0 && Near(west.coordinateMM,250));
 }
-void SampleNavigationRanges(NavigationInput& in,const RobotPose& truth,int tick) {
+void SampleNavigationRanges(NavigationInput& in,const RobotPose& truth,int tick,double extraWallY=-1) {
   const double angle=robot_geometry::ArenaAngle(truth.headingRad),c=std::cos(angle),s=std::sin(angle);
   for (int i=0;i<4;++i) {
     const bool ir=i==0 || i==2;
@@ -724,6 +733,23 @@ void SampleNavigationRanges(NavigationInput& in,const RobotPose& truth,int tick)
     if (dx< -1e-8) range=std::min(range,-x/dx);
     if (dy>1e-8) range=std::min(range,(2000-y)/dy);
     if (dy< -1e-8) range=std::min(range,-y/dy);
+    if (i!=1) { // keep the explicitly confirmed rear corner wall view unobstructed
+      auto obstacles=DefaultNavigationMap().forbidden;
+      if (extraWallY>=0) obstacles.push_back({700,extraWallY,1300,extraWallY+20});
+      for (auto r:obstacles) {
+        double near=-inf,far=inf;
+        const double origin[2]={x,y},direction[2]={dx,dy},lo[2]={r.xmin,r.ymin},hi[2]={r.xmax,r.ymax};
+        bool hit=true;
+        for (int axis=0;axis<2;++axis) {
+          if (std::fabs(direction[axis])<1e-9) { if (origin[axis]<lo[axis] || origin[axis]>hi[axis]) hit=false; }
+          else {
+            const double a=(lo[axis]-origin[axis])/direction[axis],b=(hi[axis]-origin[axis])/direction[axis];
+            near=std::max(near,std::min(a,b)); far=std::min(far,std::max(a,b));
+          }
+        }
+        if (hit && near>=0 && far>=near) range=std::min(range,near);
+      }
+    }
     in.rangeMM[i]=range; in.stamp[i]=in.motion.now;
     in.valid[i]=range>=(ir?100:20) && range<=(ir?800:4000);
   }
@@ -760,7 +786,64 @@ void NavigationGuidesAllowMotionAndHeadingTogether() {
   REQUIRE_ARENA(nav.GetState()==GoalNavigationRoutine::State::Following && nav.WaypointIndex()==1);
   nav.Abort(); REQUIRE_ARENA(nav.Forward()==0 && nav.Left()==0 && nav.Yaw()==0);
 }
-void NavigationGoalAndCorrectionSimulation(double finalHeading,bool invalidSensors=false) {
+void FrontClearanceUsesMeasurementsAndMinimumSafeAngle() {
+  NavigationInput in; in.motion={{760,800,0},0,0.02,true,false,false,0};
+  const auto map=DefaultNavigationMap();
+  FrontClearanceControl guard;
+  const ArenaPoint preview={900,850};
+  const double chosen=guard.SelectHeading(in,map,preview,0,false);
+  REQUIRE_ARENA(chosen<robot_geometry::Radians(-10) && chosen>robot_geometry::Radians(-90));
+  auto expanded=map; expanded.forbidden.push_back({608.26,1160,1391.74,2000});
+  ClearancePlanner comfort(expanded,DefaultNavigationFootprint()),safety(map,DefaultNavigationFootprint());
+  REQUIRE_ARENA(comfort.SegmentFree({760,800},preview,chosen));
+  REQUIRE_ARENA(safety.RotationFree({760,800},0,chosen));
+  for (double angle=0;angle<std::fabs(chosen)-1e-9;angle+=navigation_config::HEADING_SEARCH_STEP_RAD)
+    for (double sign:{-1.0,1.0})
+      REQUIRE_ARENA(!comfort.SegmentFree({760,800},preview,sign*angle) ||
+          !safety.RotationFree({760,800},0,sign*angle));
+  REQUIRE_ARENA(!safety.MotionFree({1750,1600},{1750,1600},0,robot_geometry::PI/2));
+
+  // In an otherwise empty map, a fresh UNMAPPED sonar hit changes the result.
+  NavigationMap empty; in.motion.pose={1000,600,0};
+  in.valid[3]=true; in.stamp[3]=0; in.rangeMM[3]=400;
+  guard.Reset(); guard.Observe(in,empty);
+  const double measured=guard.SelectHeading(in,empty,{1000,800},0,false);
+  REQUIRE_ARENA(std::fabs(measured)>robot_geometry::Radians(10));
+  in.motion.now=0.2; in.stamp[3]=0.2; guard.Observe(in,empty); // second distinct echo confirms the hit
+  in.valid[3]=false; in.rangeMM[3]=-1; in.motion.now=1.2; guard.Observe(in,empty);
+  REQUIRE_ARENA(std::fabs(guard.SelectHeading(in,empty,{1000,800},measured,false))>robot_geometry::Radians(10));
+  in.motion.pose.y_MM=730; // full-speed advance can no longer stop with the required gap
+  in.forwardMMps=200;
+  double forward=300,left=0,yaw=-0.2;
+  guard.LimitMotion(in,empty,forward,left,yaw);
+  REQUIRE_ARENA(guard.Limited() && std::hypot(forward,left)<300);
+  in.forwardMMps=0;
+  forward=0; left=-150; yaw=-0.2;
+  guard.LimitMotion(in,empty,forward,left,yaw);
+  REQUIRE_ARENA(std::hypot(forward,left)>0 && yaw!=0); // lateral translation plus turning is allowed
+  forward=left=yaw=0; guard.LimitMotion(in,empty,forward,left,yaw);
+  REQUIRE_ARENA(forward==0 && left==0 && yaw==0); // no surprise motion when stopped
+  in.motion.pose.y_MM=600;
+  guard.Reset(); guard.Observe(in,empty);
+  REQUIRE_ARENA(guard.SelectHeading(in,empty,{1000,800},0,false)==0); // invalid is not an obstacle
+  in.valid[3]=true; in.rangeMM[3]=400; in.stamp[3]=-1;
+  guard.Observe(in,empty);
+  REQUIRE_ARENA(guard.SelectHeading(in,empty,{1000,800},0,false)==0); // stale is ignored
+  guard.Reset(); in.motion.now=0; in.stamp[3]=0; guard.Observe(in,empty);
+  REQUIRE_ARENA(std::fabs(guard.SelectHeading(in,empty,{1000,800},0,false))>0);
+  in.motion.now=1; in.valid[3]=false; guard.Observe(in,empty);
+  REQUIRE_ARENA(guard.SelectHeading(in,empty,{1000,800},0,false)==0); // isolated outlier does not become permanent
+
+  // Acquire north-facing, then rotate before receiving the echo. Reconstruct
+  // the hit with acquisition-time pose rather than projecting it west/east.
+  guard.Reset(); in.motion.now=0; in.motion.pose={1000,600,0}; in.valid[3]=false;
+  guard.Observe(in,empty);
+  in.motion.now=0.2; in.motion.pose={1050,600,robot_geometry::PI/2};
+  in.valid[3]=true; in.rangeMM[3]=400; in.stamp[3]=0;
+  guard.Observe(in,empty);
+  REQUIRE_ARENA(std::fabs(guard.SelectHeading(in,empty,{1000,800},0,false))>robot_geometry::Radians(10));
+}
+void NavigationGoalAndCorrectionSimulation(double finalHeading,bool invalidSensors=false,double extraWallY=-1,double motorLag=0.12) {
   GoalNavigationRoutine nav; nav.Enter();
   NavigationInput in; in.motion={{950,900,0},0,0.02,true,false,false,0};
   RobotPose physical={250,450,0};
@@ -773,9 +856,14 @@ void NavigationGoalAndCorrectionSimulation(double finalHeading,bool invalidSenso
   const double goalX=finalHeading==0?1600:1610; // center of the final rotation pocket
   REQUIRE_ARENA(nav.StartGoal({goalX,1600,finalHeading},in));
   WheelDriveController drive; ClearancePlanner planner(nav.Map(),DefaultNavigationFootprint());
+  auto physicalMap=nav.Map();
+  if (extraWallY>=0) physicalMap.forbidden.push_back({700,extraWallY,1300,extraWallY+20});
+  ClearancePlanner physicalClearance(physicalMap,DefaultNavigationFootprint());
   double counts[3]={},speeds[3]={},forward=0,left=0,yaw=0,biasX=0,biasY=0;
   bool injected=false,sawCorrection=false,sawObservation=false;
+  double maxTravelDeviation=0,peakRequest=0;
   unsigned planCount=0,passedGuides=0;
+  NavigationPlan lastPlan;
   for (int tick=30;tick<8000 && nav.GetState()!=GoalNavigationRoutine::State::Complete;++tick) {
     in.motion.now=tick*0.02;
     in.motion.pose={physical.x_MM+biasX,physical.y_MM+biasY,physical.headingRad};
@@ -784,14 +872,18 @@ void NavigationGoalAndCorrectionSimulation(double finalHeading,bool invalidSenso
       injected=true;
       if (!invalidSensors) { biasX=20; in.motion.pose.x_MM+=20; }
     }
-    SampleNavigationRanges(in,physical,tick);
+    SampleNavigationRanges(in,physical,tick,extraWallY);
     if (invalidSensors) for (auto& v:in.valid) v=false;
     const auto before=nav.GetState(); const auto oldGuide=nav.WaypointIndex();
     nav.Update(in);
+    peakRequest=std::max(peakRequest,std::hypot(nav.Forward(),nav.Left()));
+    if (nav.GetState()==GoalNavigationRoutine::State::Following)
+      maxTravelDeviation=std::max(maxTravelDeviation,std::fabs(physical.headingRad));
     if (before==GoalNavigationRoutine::State::Following && nav.GetState()==before &&
         nav.WaypointIndex()>oldGuide) {
       ++passedGuides;
-      REQUIRE_ARENA(std::hypot(nav.Forward(),nav.Left())>0);
+      REQUIRE_ARENA(std::hypot(nav.Forward(),nav.Left())>0 ||
+          nav.Status().find("limiting swept motion")!=std::string::npos); // only a collision guard may interrupt passing
     }
     if (nav.GetState()==GoalNavigationRoutine::State::Observing &&
         nav.Status()=="Stopped at destination; checking unobstructed outer-wall readings") {
@@ -806,19 +898,24 @@ void NavigationGoalAndCorrectionSimulation(double finalHeading,bool invalidSenso
     if (nav.NeedsPlan()) {
       ++planCount;
       REQUIRE_ARENA(nav.Forward()==0 && nav.Left()==0 && nav.Yaw()==0);
-      const auto plan=planner.Plan(nav.PlanStart(in),nav.Goal());
+      planner=ClearancePlanner(nav.Map(),DefaultNavigationFootprint());
+      const auto plan=planner.PlanAdaptive(nav.PlanStart(in),nav.Goal());
+      lastPlan=plan;
       nav.PlanningStarted(); nav.AcceptPlan(plan,in);
     }
     sawObservation=sawObservation || nav.GetState()==GoalNavigationRoutine::State::Observing;
     if (nav.GetState()==GoalNavigationRoutine::State::Fault)
-      throw std::runtime_error("Goal navigation: "+nav.Status()+" heading="+std::to_string(finalHeading)+" x="+std::to_string(physical.x_MM)+" y="+std::to_string(physical.y_MM));
+      throw std::runtime_error("Goal navigation: "+nav.Status()+" goalHeading="+std::to_string(finalHeading)+" x="+std::to_string(physical.x_MM)+
+          " y="+std::to_string(physical.y_MM)+" actualHeading="+std::to_string(physical.headingRad*180/robot_geometry::PI)+" extraWall="+std::to_string(extraWallY));
     double request[3];
     for (int i=0;i<3;++i) request[i]=drive_kinematics::WheelSpeedMMps(i,nav.Forward(),nav.Left(),nav.Yaw());
     drive.Update(request,counts,0.02,0.9); REQUIRE_ARENA(!drive.HasFault());
+    double output[3]; for (int i=0;i<3;++i) output[i]=drive.Output(i);
+    motor_output::PrepareAutonomousVector(output,0.9);
     for (int i=0;i<3;++i) {
-      const double electrical=motor_output::WheelTitanPercent(i,drive.Output(i),0.9)/100.0;
+      const double electrical=motor_output::WheelTitanPercent(i,output[i],0.9)/100.0;
       const double target=-electrical*localization_config::MAX_WHEEL_SPEED_MMPS;
-      speeds[i]+=0.02/(0.12+0.02)*(target-speeds[i]);
+      speeds[i]+=0.02/(motorLag+0.02)*(target-speeds[i]);
       counts[i]-=speeds[i]*0.02/localization_config::ENCODER_MM_PER_COUNT;
     }
     forward=(speeds[2]-speeds[0])/std::sqrt(3.0); left=(speeds[0]+speeds[2]-2*speeds[1])/3;
@@ -827,10 +924,30 @@ void NavigationGoalAndCorrectionSimulation(double finalHeading,bool invalidSenso
     physical.x_MM+=(std::cos(angle)*forward-std::sin(angle)*left)*0.02;
     physical.y_MM+=(std::sin(angle)*forward+std::cos(angle)*left)*0.02;
     physical.headingRad=robot_geometry::Wrap(physical.headingRad+yaw*0.02);
-    REQUIRE_ARENA(planner.SegmentFree({physical.x_MM,physical.y_MM},{physical.x_MM,physical.y_MM},physical.headingRad));
+    if (!physicalClearance.SegmentFree({physical.x_MM,physical.y_MM},{physical.x_MM,physical.y_MM},physical.headingRad))
+      throw std::runtime_error("Physical clearance: wall="+std::to_string(extraWallY)+" x="+std::to_string(physical.x_MM)+
+          " y="+std::to_string(physical.y_MM)+" heading="+std::to_string(physical.headingRad*180/robot_geometry::PI)+
+          " front="+std::to_string(in.rangeMM[3])+" valid="+std::to_string(in.valid[3])+" regions="+std::to_string(nav.Map().forbidden.size())+" "+nav.Status());
   }
-  REQUIRE_ARENA(nav.GetState()==GoalNavigationRoutine::State::Complete && sawObservation);
-  REQUIRE_ARENA(passedGuides>0 && planCount<=3); // continuous route, not repeated precision/replan stops
+  if (nav.GetState()!=GoalNavigationRoutine::State::Complete || !sawObservation)
+  {
+    std::string regions;
+    for (auto r:nav.Map().forbidden) regions+=" ["+std::to_string(r.xmin)+","+std::to_string(r.ymin)+","+std::to_string(r.xmax)+","+std::to_string(r.ymax)+"]";
+    regions+=" routeHeading="+std::to_string(lastPlan.travelHeadingRad*180/robot_geometry::PI);
+    for (auto p:lastPlan.points) regions+=" ("+std::to_string(p.x)+","+std::to_string(p.y)+")";
+    throw std::runtime_error("Goal did not finish: wall="+std::to_string(extraWallY)+" x="+std::to_string(physical.x_MM)+
+        " y="+std::to_string(physical.y_MM)+" heading="+std::to_string(physical.headingRad*180/robot_geometry::PI)+
+        " plans="+std::to_string(planCount)+" guide="+std::to_string(nav.WaypointIndex())+
+        " request="+std::to_string(nav.Forward())+","+std::to_string(nav.Left())+","+std::to_string(nav.Yaw())+" "+nav.Status()+regions);
+  }
+  if (passedGuides==0 || planCount>(extraWallY>=0?6:3))
+    throw std::runtime_error("Replanning budget: "+std::to_string(planCount)+" guides="+std::to_string(passedGuides)+
+        " wall="+std::to_string(extraWallY)+" lag="+std::to_string(motorLag));
+  REQUIRE_ARENA(peakRequest>220 && peakRequest<=navigation_config::SPEED_MMPS+1e-6);
+  if (finalHeading==0) {
+    REQUIRE_ARENA(maxTravelDeviation>robot_geometry::Radians(10));
+    REQUIRE_ARENA(maxTravelDeviation<robot_geometry::Radians(extraWallY<0?89:93)); // difficult new geometry may genuinely require a right angle
+  }
   REQUIRE_ARENA(invalidSensors || sawCorrection);
   REQUIRE_ARENA(std::hypot(physical.x_MM-goalX,physical.y_MM-1600)<=10);
   REQUIRE_ARENA(std::fabs(robot_geometry::Wrap(physical.headingRad-finalHeading))<=robot_geometry::Radians(1));
@@ -892,12 +1009,16 @@ void RunActiveChecks() {
   EncoderGyroOdometryChecks(); TitanOutputFloorPolarityAndQuantization();
   ClearancePlanningAndWallAssociation();
   NavigationGuidesAllowMotionAndHeadingTogether();
+  FrontClearanceUsesMeasurementsAndMinimumSafeAngle();
   NavigationStopAndBadReference();
   YawDirectionCheckAllowsDelayedReversalButRejectsSustainedOpposition();
   NavigationGoalAndCorrectionSimulation(0);
   NavigationGoalAndCorrectionSimulation(robot_geometry::PI/2);
   NavigationGoalAndCorrectionSimulation(-robot_geometry::PI/2);
   NavigationGoalAndCorrectionSimulation(0,true);
+  NavigationGoalAndCorrectionSimulation(0,false,1170); // sonar-only wall is 50 mm closer and 160 mm wider than the map block
+  NavigationGoalAndCorrectionSimulation(0,false,-1,0.18);
+  NavigationGoalAndCorrectionSimulation(0,false,1170,0.18);
   TapeRoutineChecks(); WaypointSettlingDoesNotExpireProgressWatchdog();
   for (double lag:{0.0,0.12,0.25}) for (double deadband:{0.0,70.0,100.0})
     for (bool near:{false,true}) WaypointWithCoastingAndMotorDeadband(lag,deadband,near);
@@ -907,7 +1028,7 @@ void RunActiveChecks() {
 }
 #ifdef ARENA_TEST_STANDALONE
 int main() {
-  try { RunActiveChecks(); std::cout<<"PASS: continuous guides/concurrent XY-yaw, safe corner shortcuts, 15% output floor/zero stops, clearance A*, destination wall observations, four motor-lag goal simulations, final 10 mm/1 deg, tape and teleop\n"; }
+  try { RunActiveChecks(); std::cout<<"PASS: minimum feasible sensor/map heading, timestamped/invalid sensing, remembered obstacles, swept concurrent XY-yaw, 15% floor, seven motor-lag goal simulations including uncharted wall, final 10 mm/1 deg, tape and teleop\n"; }
   catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }
 }
 #else

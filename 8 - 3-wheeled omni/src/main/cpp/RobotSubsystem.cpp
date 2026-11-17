@@ -107,7 +107,7 @@ NavigationInput RobotSubsystem::NavigationSample(double now,double dt) {
   in.stamp[0]=in.stamp[2]=lastSensorTime_;
   in.rangeMM[1]=sonarRanges_MM_[1]; in.rangeMM[3]=sonarRanges_MM_[0];
   in.valid[1]=sonarRangeValid_[1]; in.valid[3]=sonarRangeValid_[0];
-  in.stamp[1]=sonarReadTime_[1]; in.stamp[3]=sonarReadTime_[0];
+  in.stamp[1]=sonarAcquisitionTime_[1]; in.stamp[3]=sonarAcquisitionTime_[0];
   return in;
 }
 void RobotSubsystem::UpdateNavigation(double now,double dt,bool reference,bool go) {
@@ -150,13 +150,14 @@ void RobotSubsystem::UpdateNavigation(double now,double dt,bool reference,bool g
     planGeneration_=requestGeneration_;
     try {
       planFuture_=std::async(std::launch::async,[map,start,goal] {
-        return ClearancePlanner(map,DefaultNavigationFootprint()).Plan(start,goal);
+        return ClearancePlanner(map,DefaultNavigationFootprint()).PlanAdaptive(start,goal);
       });
       navigation_.PlanningStarted();
     } catch (const std::exception& error) { navigation_.Fail(std::string("Cannot start planner: ")+error.what()); }
   }
   const auto state=navigation_.GetState();
   const bool drive=state==GoalNavigationRoutine::State::Following ||
+      state==GoalNavigationRoutine::State::ClearanceTurn ||
       state==GoalNavigationRoutine::State::Observing || state==GoalNavigationRoutine::State::FinalHeading;
   hardware_.SetAutonomousDriveEnabled(drive);
   if (drive) {
@@ -243,6 +244,7 @@ void RobotSubsystem::UpdateSonarPoll(double now) {
     const int i=nextSonarIndex_;
     const double range=hardware_.GetSonarRangeMM(i);
     sonarReadTime_[i]=now;
+    sonarAcquisitionTime_[i]=sonarPingTime_; // pose belongs to the ping, not the later counter read
     sonarRangeValid_[i]=hardware_.IsSonarRangeValid(i) && std::isfinite(range) &&
         range>=localization_config::SONAR_MIN_RANGE_MM && range<=localization_config::SONAR_MAX_RANGE_MM;
     sonarRanges_MM_[i]=sonarRangeValid_[i]?range:-1;
@@ -258,7 +260,7 @@ void RobotSubsystem::InitializeMotionDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Motion");
   tab.AddString("Motion status",[this] {
     // Visible revision distinguishes this executable from stale robot/UI data.
-    const std::string revision="P8-r19 | ";
+    const std::string revision="P8-r21 | ";
     if (!routineNotice_.empty()) return revision+routineNotice_;
     if (frc::RobotState::IsAutonomous()) return revision+(navigationSelected_?navigation_.Status():tapeRoutine_.GetStatus());
     return revision+(hardware_.HasDriveFault()?
@@ -342,7 +344,7 @@ void RobotSubsystem::InitializeSensingDashboard() {
 void RobotSubsystem::InitializeNavigationDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Navigation");
   tab.AddString("Navigation status",[this] {
-    return std::string("P8-r19 | ")+(routineNotice_.empty()?navigation_.Status():routineNotice_);
+    return std::string("P8-r21 | ")+(routineNotice_.empty()?navigation_.Status():routineNotice_);
   }).WithPosition(0,0).WithSize(6,1);
   stopNavigation_=tab.Add("Stop",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
       .WithPosition(6,0).WithSize(2,1).GetEntry();

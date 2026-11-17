@@ -122,6 +122,21 @@ bool ClearancePlanner::SegmentFreeWithMargin(ArenaPoint a,ArenaPoint b,double he
 bool ClearancePlanner::SegmentFree(ArenaPoint a,ArenaPoint b,double heading) const {
   return SegmentFreeWithMargin(a,b,heading,clearance_);
 }
+double ClearancePlanner::ExtraClearanceMM(ArenaPoint point,double heading) const {
+  if (!ConfigurationValid() || !FinitePoint(point) || !std::isfinite(heading)) return 0;
+  return std::max(0.0,Clearance(point,heading)-clearance_);
+}
+bool ClearancePlanner::MotionFree(ArenaPoint a,ArenaPoint b,double from,double to) const {
+  if (!ConfigurationValid() || !std::isfinite(from) || !std::isfinite(to)) return false;
+  const double delta=robot_geometry::Wrap(to-from);
+  const int steps=std::max(1,static_cast<int>(std::ceil(std::fabs(delta)/robot_geometry::Radians(1))));
+  const double radius=std::hypot(std::max(footprint_.frontMM,footprint_.rearMM),
+      std::max(footprint_.leftMM,footprint_.rightMM));
+  const double padding=radius*std::fabs(delta)/(2*steps);
+  for (int i=0;i<=steps;++i)
+    if (!SegmentFreeWithMargin(a,b,from+delta*i/steps,clearance_+padding)) return false;
+  return true;
+}
 bool ClearancePlanner::RotationFree(ArenaPoint p,double from,double to) const {
   if (!ConfigurationValid() || !std::isfinite(from) || !std::isfinite(to)) return false;
   const double delta=robot_geometry::Wrap(to-from);
@@ -168,6 +183,7 @@ double ClearancePlanner::SegmentCost(ArenaPoint a,ArenaPoint b,double heading) c
 }
 NavigationPlan ClearancePlanner::Plan(RobotPose start,RobotPose goal) const {
   NavigationPlan result;
+  result.travelHeadingRad=start.headingRad;
   const auto fail=[&result](const char* message) { result.error=message; return result; };
   if (!ConfigurationValid() || !robot_geometry::Finite(start) || !robot_geometry::Finite(goal))
     return fail("Invalid map, footprint or goal");
@@ -231,6 +247,50 @@ NavigationPlan ClearancePlanner::Plan(RobotPose start,RobotPose goal) const {
     result.cost+=SegmentCost(a,b,start.headingRad);
     result.points.push_back(b); i=chosen;
   }
+  return result;
+}
+
+NavigationPlan ClearancePlanner::PlanAdaptive(RobotPose start,RobotPose goal) const {
+  auto result=Plan(start,goal);
+  if (result.Valid()) return result;
+  // Only a real planning failure invokes this search. It uses current geometry
+  // and observed obstacles, without any named crossing or preset turn pocket.
+  const double first=goal.x_MM>=start.x_MM?-1:1;
+  for (double delta=0;delta<=robot_geometry::PI/2+1e-9;delta+=robot_geometry::Radians(5))
+    for (double sign:{first,-first}) {
+      auto candidate=start; candidate.headingRad=navigation_config::PREFERRED_HEADING_RAD+sign*delta;
+      if (!RotationFree({start.x_MM,start.y_MM},start.headingRad,candidate.headingRad)) continue;
+      result=Plan(candidate,goal);
+      if (result.Valid()) return result;
+    }
+  // If no heading can both fit here and reach the goal, find a nearby place
+  // to finish the turn. These offsets are relative to the live pose, not fixed
+  // arena pockets. Every translation and complete rotation is checked.
+  const double grid=navigation_config::GRID_MM;
+  for (double angle=0;angle<=robot_geometry::PI/2+1e-9;angle+=robot_geometry::Radians(5))
+    for (double sign:{first,-first}) {
+      const double approach=navigation_config::PREFERRED_HEADING_RAD+sign*angle;
+      const ArenaPoint begin={start.x_MM,start.y_MM};
+      if (!RotationFree(begin,start.headingRad,approach)) continue;
+      for (double distance:{grid,2*grid,3*grid})
+        for (auto direction:{ArenaPoint{0,1},ArenaPoint{first<0?1.0:-1.0,0},ArenaPoint{0,-1},ArenaPoint{first<0?-1.0:1.0,0}}) {
+          const ArenaPoint room={begin.x+direction.x*distance,begin.y+direction.y*distance};
+          if (!SegmentFree(begin,room,approach)) continue;
+          for (double turn=0;turn<=robot_geometry::PI/2+1e-9;turn+=robot_geometry::Radians(5))
+            for (double side:{first,-first}) {
+              const double heading=navigation_config::PREFERRED_HEADING_RAD+side*turn;
+              if (!RotationFree(room,approach,heading)) continue;
+              auto tail=Plan({room.x,room.y,heading},goal);
+              if (!tail.Valid()) continue;
+              NavigationPlan joined; joined.travelHeadingRad=start.headingRad;
+              joined.points={begin,room};
+              joined.points.insert(joined.points.end(),tail.points.begin()+1,tail.points.end());
+              joined.turns={{0,approach},{1,heading}};
+              joined.lengthMM=distance+tail.lengthMM; joined.cost=distance+tail.cost;
+              return joined;
+            }
+        }
+    }
   return result;
 }
 
@@ -374,10 +434,11 @@ void TapeAlignmentRoutine::LimitTranslation(double oldForward,double oldLeft,dou
   if (delta>step) { forward_=oldForward+df*step/delta; left_=oldLeft+dl*step/delta; }
 }
 void WaypointDrive::Reset(ArenaPoint target,double now,double speed,double acceleration,
-                         double initialForward,double initialLeft) {
+                         double initialForward,double initialLeft,double tolerance) {
   *this=WaypointDrive{}; target_=target; phaseTime_=now;
   maxSpeed_=speed; acceleration_=acceleration;
   forward_=filteredForward_=initialForward; left_=filteredLeft_=initialLeft;
+  tolerance_=tolerance;
 }
 void WaypointDrive::LimitTranslation(double oldForward,double oldLeft,double acceleration,double dt) {
   const double df=forward_-oldForward,dl=left_-oldLeft,delta=std::hypot(df,dl),step=acceleration*dt;
@@ -391,6 +452,7 @@ void WaypointDrive::Update(const MotionInput& m,double measuredForward,double me
   filteredForward_+=velocityGain*(measuredForward-filteredForward_);
   filteredLeft_+=velocityGain*(measuredLeft-filteredLeft_);
   const auto target=target_;
+  const double captureRadius=0.7*tolerance_;
   const double dx=target.x-m.pose.x_MM,dy=target.y-m.pose.y_MM,distance=std::hypot(dx,dy);
   const double angle=robot_geometry::ArenaAngle(m.pose.headingRad);
   const double c=std::cos(angle),s=std::sin(angle);
@@ -402,13 +464,13 @@ void WaypointDrive::Update(const MotionInput& m,double measuredForward,double me
       (oldForward*forwardError+oldLeft*leftError)/distance)):0;
   const double stoppingDistance=toward*toward/(2*acceleration_)+toward*(tt::BRAKE_RESPONSE_S+m.dt);
   if (waypointPhase_==WaypointPhase::Travel &&
-      (distance<=tt::NEAR_TARGET_MM || stoppingDistance>=distance-tt::CAPTURE_RADIUS_MM)) {
+      (distance<=tt::NEAR_TARGET_MM || stoppingDistance>=distance-captureRadius)) {
     waypointPhase_=WaypointPhase::Brake; settleTime_=-1;
   }
   if (waypointPhase_==WaypointPhase::Correct) {
     const double along=dx*correctionX_+dy*correctionY_;
-    if (along<=tt::CAPTURE_RADIUS_MM || distance<=tt::CAPTURE_RADIUS_MM ||
-        (measuredToward>heading_control_config::STATIONARY_SPEED_MMPS && stoppingDistance>=along-tt::CAPTURE_RADIUS_MM) ||
+    if (along<=captureRadius || distance<=captureRadius ||
+        (measuredToward>heading_control_config::STATIONARY_SPEED_MMPS && stoppingDistance>=along-captureRadius) ||
         m.now-phaseTime_>=tt::CORRECTION_MAX_S) {
       waypointPhase_=WaypointPhase::Brake; settleTime_=-1;
     }
@@ -431,7 +493,7 @@ void WaypointDrive::Update(const MotionInput& m,double measuredForward,double me
       settleTime_=-1; return;
     }
     if (settleTime_<0) settleTime_=m.now;
-    if (distance<=tt::POSITION_TOLERANCE_MM) {
+    if (distance<=tolerance_) {
       // Heading gates completion only, never an outstanding XY correction.
       if (std::fabs(headingError)>heading_control_config::HEADING_TOLERANCE_RAD) {
         settleTime_=-1; return;
@@ -453,7 +515,7 @@ void WaypointDrive::Update(const MotionInput& m,double measuredForward,double me
     return;
   }
   const double brakingSpeed=std::sqrt(2*acceleration_*
-      std::max(0.0,distance-tt::CAPTURE_RADIUS_MM));
+      std::max(0.0,distance-captureRadius));
   const double speed=std::min(maxSpeed_,std::max(tt::MIN_APPROACH_MMPS,
       std::min(distance*tt::POSITION_KP,brakingSpeed)));
   forward_=forwardError*speed/distance; left_=leftError*speed/distance;

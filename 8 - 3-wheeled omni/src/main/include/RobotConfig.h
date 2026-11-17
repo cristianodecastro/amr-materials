@@ -116,10 +116,24 @@ static constexpr double MANIPULATOR_EXTENSION_MM=120.0;
 static constexpr double MIN_CLEARANCE_MM=40.0;
 static constexpr double POSITION_TOLERANCE_MM=10.0;
 static constexpr double GRID_MM=25.0;
-static constexpr double SPEED_MMPS=180.0,ACCEL_MMPS2=200.0;
+static constexpr double SPEED_MMPS=300.0,ACCEL_MMPS2=300.0;
+static constexpr double NEAR_OBSTACLE_SPEED_MMPS=220.0,FINAL_SPEED_MMPS=160.0;
+static constexpr double SLOW_CLEARANCE_MM=100.0;
 // Intermediate points are pass-through guides, not precision stops.
-static constexpr double LOOKAHEAD_MM=100.0,PASS_RADIUS_MM=50.0,CORNER_SPEED_MMPS=90.0;
-static constexpr double FINAL_APPROACH_MM=220.0,OBSERVATION_S=0.65;
+static constexpr double LOOKAHEAD_MM=140.0,PASS_RADIUS_MM=60.0,CORNER_SPEED_MMPS=120.0;
+static constexpr double FINAL_APPROACH_MM=280.0,OBSERVATION_S=0.65;
+// Local, sensor-assisted heading selection: prefer north, deviate only when
+// the preview footprint needs more front clearance. No preset crossing angle.
+static constexpr double PREFERRED_HEADING_RAD=0;
+static constexpr double FRONT_TRIGGER_GAP_MM=300,FRONT_TRAVEL_GAP_MM=100,FRONT_RETURN_HYSTERESIS_MM=20;
+static constexpr double HEADING_SEARCH_STEP_RAD=2*robot_geometry::PI/180;
+static constexpr double OBSTACLE_EVIDENCE_MAX_RANGE_MM=650,SONAR_HIT_UNCERTAINTY_MM=35;
+static constexpr double WALL_ASSOCIATION_RESIDUAL_MM=100,WALL_RANGE_ALLOWANCE_MM=10;
+static constexpr unsigned MAX_OBSTACLE_PATCHES=12;
+static constexpr double CLEARANCE_RECOVERY_SPEED_MMPS=120,RECOVERY_POSITION_TOLERANCE_MM=15;
+// Validate the next control interval plus a conservative braking tail.
+static constexpr double GUARD_HORIZON_S=localization_config::CONTROL_PERIOD_S,GUARD_STEP_S=0.02;
+static constexpr double GUARD_MOTOR_LAG_S=0.12,GUARD_BRAKE_LAG_S=0.18;
 static constexpr double TRAVEL_HEADING_DEADBAND_RAD=3*robot_geometry::PI/180;
 static constexpr double TIGHT_HEADING_DEADBAND_RAD=0.5*robot_geometry::PI/180;
 static constexpr double TRAVEL_HEADING_KP=1.2;
@@ -142,7 +156,7 @@ static constexpr double DRIVE_SPEED_MMPS=localization_config::TELEOP_SPEED_MMPS;
 static constexpr double DRIVE_ACCEL_MMPS2=localization_config::TELEOP_ACCELERATION_MMPS2;
 static constexpr double POSITION_TOLERANCE_MM=navigation_config::POSITION_TOLERANCE_MM;
 static constexpr double POSITION_KP=1.5,MIN_APPROACH_MMPS=120;
-static constexpr double CAPTURE_RADIUS_MM=7,NEAR_TARGET_MM=60;
+static constexpr double NEAR_TARGET_MM=60; // capture radius is 70% of the selected stopping tolerance
 static constexpr double BRAKE_ACCEL_MMPS2=DRIVE_ACCEL_MMPS2,BRAKE_RESPONSE_S=0.18,VELOCITY_FILTER_S=0.08;
 static constexpr double CORRECTION_MAX_S=0.50,CORRECTION_REST_S=0.18,WAYPOINT_SETTLE_S=0.30,DRIVE_TIMEOUT_S=35;
 static constexpr double SCAN_SPEED_MMPS=60,SCAN_ACCEL_MMPS2=80,CENTER_MIN_SPEED_MMPS=30,CENTER_KP_MMPS=100;

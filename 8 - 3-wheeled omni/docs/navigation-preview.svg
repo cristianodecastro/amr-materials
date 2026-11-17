@@ -1,19 +1,35 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1000" viewBox="-140 -160 2280 2510"><rect x="-140" y="-160" width="2280" height="2510" fill="white"/><style>text{font-family:Arial,sans-serif;fill:#17202b} .label{font-size:43px} .small{font-size:33px}</style>
-<text x="0" y="-70" font-size="54" font-weight="bold">Project 8 — example clearance route</text><rect x="0" y="0" width="2000" height="2000" fill="#fafcff" stroke="#17202b" stroke-width="10"/>
-<rect x='780' y='0' width='440' height='780' fill='#f9c8c7' stroke='#b9252e' stroke-width='6'/>
-<rect x='0' y='1780' width='2000' height='220' fill='#f9c8c7' stroke='#b9252e' stroke-width='6'/>
-<rect x='985' y='1400' width='30' height='600' fill='#f9c8c7' stroke='#b9252e' stroke-width='6'/>
-<rect x="700" y="800" width="600" height="600" fill="none" stroke="#959ba4" stroke-width="5" stroke-dasharray="20 14"/><text x="780" y="1180" class="small">Floor tape: traversable</text><text x="835" y="140" class="small">Keep-out</text>
-<polyline points='250,1500 825,1150 1250,1150 1400,1175 1525,1100 1600,900 1600,400' fill='none' stroke='#075dd1' stroke-width='12' stroke-linejoin='round'/>
-<circle cx='250' cy='1500' r='13' fill='#075dd1'/>
-<circle cx='825' cy='1150' r='13' fill='#075dd1'/>
-<circle cx='1250' cy='1150' r='13' fill='#075dd1'/>
-<circle cx='1400' cy='1175' r='13' fill='#075dd1'/>
-<circle cx='1525' cy='1100' r='13' fill='#075dd1'/>
-<circle cx='1600' cy='900' r='13' fill='#075dd1'/>
-<circle cx='1600' cy='400' r='13' fill='#075dd1'/>
-<rect x='78.26' y='1208.26' width='343.48' height='464.74' fill='#178042' fill-opacity='0.1' stroke='#178042' stroke-width='6'/>
-<rect x='38.26' y='1168.26' width='423.48' height='544.74' fill='none' stroke='#178042' stroke-width='3' stroke-dasharray='13 10'/>
-<rect x='1428.26' y='108.26' width='343.48' height='464.74' fill='#075dd1' fill-opacity='0.1' stroke='#075dd1' stroke-width='6'/>
-<rect x='1388.26' y='68.26' width='423.48' height='544.74' fill='none' stroke='#075dd1' stroke-width='3' stroke-dasharray='13 10'/>
-<text x="45" y="1790" class="label" fill="#178042">Start example (250,500,0°)</text><text x="1270" y="670" class="small">Goal (1600,1600,0°)</text><text x="0" y="2080" class="label">Origin (0,0) lower-left • +X east • +Y north</text><text x="0" y="2150" class="small">0° north • +90° west • −90° east • dimensions in mm</text><text x="0" y="2220" class="small">Solid outline: robot with manipulator. Dashed: 40 mm clearance.</text><text x="0" y="2290" class="small">Illustrative start only. Actual X/Y come from the corner wall reference.</text></svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1000" viewBox="-140 -160 2280 2510">
+  <rect x="-140" y="-160" width="2280" height="2510" fill="white" />
+  <style>text{font-family:Arial,sans-serif;fill:#17202b}.label{font-size:43px}.small{font-size:32px}</style>
+  <text x="0" y="-70" font-size="48" font-weight="bold">Project 8 - reactive heading simulation (r21)</text>
+  <rect x="0" y="0" width="2000" height="2000" fill="#fafcff" stroke="#17202b" stroke-width="10" />
+  <rect x="780" y="0" width="440" height="780" fill="#f9c8c7" stroke="#b9252e" stroke-width="6" />
+  <rect x="0" y="1780" width="2000" height="220" fill="#f9c8c7" stroke="#b9252e" stroke-width="6" />
+  <rect x="985" y="1400" width="30" height="600" fill="#f9c8c7" stroke="#b9252e" stroke-width="6" />
+  <rect x="700" y="800" width="600" height="600" fill="none" stroke="#959ba4" stroke-width="5" stroke-dasharray="20 14" />
+  <text x="820" y="1190" class="small">Floor tape</text>
+  <text x="830" y="140" class="small">Keep-out</text>
+  <polyline points="250,1550 264.031,1533.473 316.746,1477.835 388.674,1429.676 481.941,1364.331 577.969,1293.324 658.667,1235.386 739.847,1200.25 800.886,1168.653 842.826,1160.017 874.397,1163.686 910.065,1154.936 957.218,1125.747 1018.95,1109.072 1107.14,1113.93 1199.83,1118.975 1294.65,1119.728 1381.85,1081.391 1450.1,1022.104 1502.11,941.13 1534.61,855.06 1557.07,765.23 1575.36,671.88 1589.52,576.39 1600.33,480.4 1596.18,406.89 1589.73,383.21 1592.12,387.02 1604.65,406.44 1605.35,407.42 1605.39,407.47 1605.39,407.47 1605.39,407.47" fill="none" stroke="#075dd1" stroke-width="11" stroke-linejoin="round" />
+  <g transform="translate(250 1550) rotate(0)">
+    <rect x="-171.74" y="-291.74" width="343.48" height="464.74" fill="#178042" fill-opacity="0.12" stroke="#178042" stroke-width="6" />
+    <rect x="-211.74" y="-331.74" width="423.48" height="544.74" fill="none" stroke="#178042" stroke-width="3" stroke-dasharray="13 10" />
+    <path d="M0 70V-200l-20 30m20-30 20 30" fill="none" stroke="#178042" stroke-width="7" />
+  </g>
+  <g transform="translate(1018.95 1109.072) rotate(63.199)">
+    <rect x="-171.74" y="-291.74" width="343.48" height="464.74" fill="#178042" fill-opacity="0.12" stroke="#178042" stroke-width="6" />
+    <rect x="-211.74" y="-331.74" width="423.48" height="544.74" fill="none" stroke="#178042" stroke-width="3" stroke-dasharray="13 10" />
+    <path d="M0 70V-200l-20 30m20-30 20 30" fill="none" stroke="#178042" stroke-width="7" />
+  </g>
+  <g transform="translate(1600 400) rotate(0)">
+    <rect x="-171.74" y="-291.74" width="343.48" height="464.74" fill="#178042" fill-opacity="0.12" stroke="#178042" stroke-width="6" />
+    <rect x="-211.74" y="-331.74" width="423.48" height="544.74" fill="none" stroke="#178042" stroke-width="3" stroke-dasharray="13 10" />
+    <path d="M0 70V-200l-20 30m20-30 20 30" fill="none" stroke="#178042" stroke-width="7" />
+  </g>
+  <text x="735" y="1460" class="small">Snapshot heading: -63 deg</text>
+  <text x="45" y="1810" class="label">Start (250,450,0 deg)</text>
+  <text x="1240" y="760" class="small">Goal (1600,1600,0 deg)</text>
+  <text x="0" y="2080" class="label">Preferred heading: north (0 deg)</text>
+  <text x="0" y="2150" class="small">Angles are selected online from sensors and footprint clearance.</text>
+  <text x="0" y="2220" class="small">No fixed crossing angle or turn pocket. Dashed outlines: 40 mm margin.</text>
+  <text x="0" y="2290" class="small">Illustrative simulated trajectory; physical measurements change the result.</text>
+</svg>

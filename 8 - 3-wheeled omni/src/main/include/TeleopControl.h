@@ -30,6 +30,23 @@ inline double TitanSetArgument(int percent) {
   const double magnitude=std::nextafter(std::fabs(percent)/100.0,1.0);
   return percent<0?-magnitude:magnitude;
 }
+// Autonomous low-speed vectors must keep their wheel ratios where possible:
+// e.g. lateral travel needs 15/30/15, not three independent 15% floors. Bound
+// the common increase to 30% peak so a nearly cancelled wheel cannot boost a
+// larger command all the way to the electrical cap. Teleop does not call this.
+inline void PrepareAutonomousVector(double (&output)[3],double cap) {
+  double smallest=1,peak=0;
+  for (double x:output) {
+    if (!std::isfinite(x)) { for (auto& v:output) v=0; return; }
+    if (std::fabs(x)>0) smallest=std::min(smallest,std::fabs(x));
+    peak=std::max(peak,std::fabs(x));
+  }
+  if (peak==0 || !std::isfinite(cap) || cap<=0) return;
+  const double floor=wheel_drive_config::MIN_RUNNING_OUTPUT;
+  const double allowed=std::min(cap,std::max(peak,2*floor));
+  const double scale=std::max(1.0,std::min(floor/smallest,allowed/peak));
+  for (auto& x:output) x*=scale;
+}
 }
 
 namespace drive_kinematics {

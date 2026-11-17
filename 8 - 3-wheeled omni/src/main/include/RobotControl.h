@@ -159,5 +159,6 @@ class RobotSubsystem : public frc2::SubsystemBase {
   double sonarPingTime_=0,lastSonarPingTime_=0;
   double sonarRanges_MM_[localization_config::SONAR_COUNT]={-1,-1};
   double sonarReadTime_[localization_config::SONAR_COUNT]={-1,-1};
+  double sonarAcquisitionTime_[localization_config::SONAR_COUNT]={-1,-1};
   bool sonarRangeValid_[localization_config::SONAR_COUNT]={false,false};
 };
