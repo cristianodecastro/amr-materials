@@ -110,6 +110,7 @@ class GoalNavigationRoutine {
  private:
   void Stop() { forward_=left_=yaw_=0; }
   void DriveRoute(const NavigationInput& in,double previousYaw);
+  void AdvanceRoute(const NavigationInput& in);
   void CorrectFromWalls(NavigationInput& in);
   bool EnsureClearRoute(const NavigationInput& in);
   void ObserveObstacles(const NavigationInput& in);
@@ -123,6 +124,10 @@ class GoalNavigationRoutine {
   double forward_=0,left_=0,yaw_=0;
   std::vector<RobotPose> route_;
   unsigned leg_=0;
+  ArenaPoint legStart_={0,0};
+  // A late transit heading keeps correcting after XY passes the guide.
+  bool carryHeading_=false,clearanceHeading_=false;
+  double carriedHeading_=0,clearanceHeadingTarget_=0;
   double worldVX_=0,worldVY_=0;
   bool finalControllerReady_=false;
   struct WallReference { int axis=-1; double coordinate=0; };

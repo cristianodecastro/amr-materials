@@ -816,18 +816,41 @@ void IntermediatePoseToleranceChecks() {
   GoalNavigationRoutine nav(false); auto in=MvpReference(nav);
   REQUIRE_ARENA(nav.StartGoal({250,950,0},in,"250,700,-90"));
   in.motion.pose={250,700,0}; nav.Update(in);
-  REQUIRE_ARENA(nav.LegIndex()==0 && nav.Forward()==0 && nav.Left()==0 && nav.Yaw()<0);
-  in.motion.pose={250,700,robot_geometry::Radians(-79)}; nav.Update(in); REQUIRE_ARENA(nav.LegIndex()==0);
+  REQUIRE_ARENA(nav.LegIndex()==1 && std::hypot(nav.Forward(),nav.Left())>0 && nav.Yaw()<0); // keep translating with a late heading
+  nav.Abort(); in.motion.pose={250,450,0}; REQUIRE_ARENA(nav.StartGoal({250,950,0},in,"250,700,-90"));
   in.motion.pose={276,700,robot_geometry::Radians(-90)}; nav.Update(in); REQUIRE_ARENA(nav.LegIndex()==0);
   in.motion.pose={274,700,robot_geometry::Radians(-81)}; nav.Update(in); REQUIRE_ARENA(nav.LegIndex()==1);
+  nav.Abort(); in.motion.pose={250,450,0};
+  REQUIRE_ARENA(nav.StartGoal({250,950,0},in,"250,700,0"));
+  in.motion.pose={250,735,0}; nav.Update(in);
+  REQUIRE_ARENA(nav.LegIndex()==1 && nav.Forward()>0); // a sample can cross the passing circle without chasing the old point
   nav.Abort(); in.motion.pose={250,450,robot_geometry::Radians(179)};
   REQUIRE_ARENA(nav.StartGoal({250,950,0},in,"250,450,-179")); nav.Update(in); REQUIRE_ARENA(nav.LegIndex()==1);
   nav.Abort(); in.motion.pose={250,450,0};
   REQUIRE_ARENA(nav.StartGoal({250,950,0},in,"250,450,90;250,700"));
   nav.Update(in); REQUIRE_ARENA(nav.LegIndex()==0 && nav.Yaw()>0); // in-place intermediate heading
   in.motion.pose.headingRad=robot_geometry::PI/2; nav.Update(in); REQUIRE_ARENA(nav.LegIndex()==1);
-  in.motion.pose={250,700,0}; nav.Update(in); REQUIRE_ARENA(nav.LegIndex()==1 && nav.Yaw()>0); // inherited +90
-  in.motion.pose.headingRad=robot_geometry::PI/2; nav.Update(in); REQUIRE_ARENA(nav.LegIndex()==2);
+  in.motion.pose={250,700,0}; nav.Update(in); REQUIRE_ARENA(nav.LegIndex()==2 && nav.Yaw()>0); // inherited +90 stays a moving reference
+}
+void ContinuousTransitChecks() {
+  GoalNavigationRoutine nav(false); auto in=MvpReference(nav);
+  for (auto& valid:in.valid) valid=false;
+  REQUIRE_ARENA(nav.StartGoal({250,1200,0},in,"250,700,0;250,950,0"));
+  double oldForward=0,oldLeft=0; unsigned transitions=0;
+  for (int tick=1;tick<=110;++tick) {
+    in.motion.now=0.1+tick*0.02; in.motion.pose.y_MM=450+tick*5;
+    in.forwardMMps=250;
+    const auto oldLeg=nav.LegIndex(); nav.Update(in);
+    REQUIRE_ARENA(nav.GetState()==GoalNavigationRoutine::State::Driving);
+    const double change=std::hypot(nav.Forward()-oldForward,nav.Left()-oldLeft);
+    REQUIRE_ARENA(change<=navigation_config::ACCEL_MMPS2*0.02+1e-6);
+    if (nav.LegIndex()>oldLeg) {
+      ++transitions;
+      REQUIRE_ARENA(nav.Forward()>200 && nav.Forward()>=oldForward-6.000001);
+    }
+    oldForward=nav.Forward(); oldLeft=nav.Left();
+  }
+  REQUIRE_ARENA(transitions==2);
 }
 void TravelWallSupportChecks() {
   GoalNavigationRoutine nav(false); auto in=MvpReference(nav);
@@ -951,7 +974,7 @@ void RunActiveChecks() {
   ClockwiseRawCountsMatchOdometryAndWheelMonitor(); EncoderGyroOdometryChecks(); TitanOutputFloorPolarityAndQuantization();
   YawDirectionCheckAllowsDelayedReversalButRejectsSustainedOpposition();
   MvpStartReferenceAndStop();
-  FlexibleInitializationChecks(); IntermediatePoseToleranceChecks(); TravelWallSupportChecks(); SensorDetourChecks(); CourtDetourGeometryChecks();
+  FlexibleInitializationChecks(); IntermediatePoseToleranceChecks(); ContinuousTransitChecks(); TravelWallSupportChecks(); SensorDetourChecks(); CourtDetourGeometryChecks();
   MvpManualRouteInput();
   for (double lag:{0.12,0.18}) {
     MvpDirectGoal({250,1450,0},lag);
@@ -971,6 +994,10 @@ void RunActiveChecks() {
   MvpDirectGoal({250,1450,0},0.18,false,"",false,false,true);
   MvpDirectGoal({330,900,robot_geometry::PI/2},0.18,false,"",false,true); // clear-space turning detour
   MvpDirectGoal({500,1100,0},0.18,false,"330,700,90",false,true);
+  const auto& topRight=navigation_config::GOALS[3];
+  REQUIRE_ARENA(Near(topRight.xMM,1700) && Near(topRight.yMM,1700) && Near(topRight.headingDeg,90));
+  for (double lag:{0.12,0.18})
+    MvpDirectGoal({topRight.xMM,topRight.yMM,robot_geometry::Radians(topRight.headingDeg)},lag,false,topRight.intermediatePoses,false,true);
   TapeRoutineChecks(); WaypointSettlingDoesNotExpireProgressWatchdog();
   for (double lag:{0.0,0.12,0.25}) for (double deadband:{0.0,70.0,100.0})
     for (bool near:{false,true}) WaypointWithCoastingAndMotorDeadband(lag,deadband,near);
@@ -980,7 +1007,7 @@ void RunActiveChecks() {
 }
 #ifdef ARENA_TEST_STANDALONE
 int main() {
-  try { RunActiveChecks(); std::cout<<"PASS: intermediate poses/tolerances, optional XY and four-sensor initialization, live wall fusion/slip, timestamp compensation, sensor/court detours, gyro/encoders, 15% floor, tape and teleop\n"; }
+  try { RunActiveChecks(); std::cout<<"PASS: continuous transit/heading, top-right route, optional XY and four-sensor initialization, live wall fusion/slip, timestamp compensation, sensor/court detours, gyro/encoders, 15% floor, tape and teleop\n"; }
   catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }
 }
 #else

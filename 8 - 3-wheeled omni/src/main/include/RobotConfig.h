@@ -113,12 +113,13 @@ static constexpr double YAW_RESPONSE_SETTLE_S=0.30;
 // Minimum version: manually supplied intermediate poses and one final pose.
 namespace navigation_config {
 static constexpr double POSITION_TOLERANCE_MM=10;
-static constexpr double SPEED_MMPS=300,ACCEL_MMPS2=300;
+static constexpr double SPEED_MMPS=350,ACCEL_MMPS2=300;
 static constexpr double TRAVEL_HEADING_DEADBAND_RAD=3*robot_geometry::PI/180;
 static constexpr double TRAVEL_HEADING_KP=1.2;
 static constexpr double MISSION_TIMEOUT_S=60;
 static constexpr double INTERMEDIATE_POSITION_TOLERANCE_MM=25,MIN_PASS_SPEED_MMPS=120;
 static constexpr double INTERMEDIATE_HEADING_TOLERANCE_RAD=10*robot_geometry::PI/180;
+static constexpr double LOOKAHEAD_MM=100,CORNER_BLEND_MM=25;
 static constexpr unsigned MAX_INTERMEDIATE_POINTS=32;
 // Conservative wall association and complementary XY correction, Auto only.
 static constexpr double WALL_NORMAL_COS=0.9659258263; // within 15 degrees of normal
@@ -128,7 +129,7 @@ static constexpr double WALL_HISTORY_S=0.5;
 // Range guard uses the robot envelope, not distance from the sensing face.
 static constexpr double BODY_RADIUS_MM=159.74+12,FRONT_REACH_MM=BODY_RADIUS_MM+120;
 static constexpr double OBSTACLE_CLEARANCE_MM=30;
-static constexpr double DETOUR_GRID_MM=50,DETOUR_SPEED_MMPS=150;
+static constexpr double DETOUR_GRID_MM=50,DETOUR_SPEED_MMPS=200;
 static constexpr double CLEARANCE_BRAKE_HORIZON_S=0.25;
 static constexpr double SENSED_OBSTACLE_RADIUS_MM=100,OBSTACLE_OBSERVE_RANGE_MM=650;
 struct Block { double xmin,ymin,xmax,ymax; };
@@ -143,7 +144,8 @@ struct GoalPreset { const char* name; double xMM,yMM,headingDeg; const char* int
 static constexpr GoalPreset GOALS[]={
     {"Short north",250,700,0,""},
     {"North via 700",250,950,0,"250,700,0"},
-    {"Long north",250,1200,0,"250,700,0;250,950,0"}};
+    {"Long north",250,1200,0,"250,700,0;250,950,0"},
+    {"Top right",1700,1700,90,"650,850,0;1500,850,0;1700,1400,90"}};
 static constexpr double DEFAULT_GOAL_X_MM=GOALS[0].xMM,DEFAULT_GOAL_Y_MM=GOALS[0].yMM,DEFAULT_GOAL_HEADING_DEG=GOALS[0].headingDeg;
 }
 // Explicit-start corner reference and tape approach. Arena +X east, +Y north.

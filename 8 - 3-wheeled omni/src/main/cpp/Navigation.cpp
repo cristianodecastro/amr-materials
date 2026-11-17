@@ -110,6 +110,7 @@ bool GoalNavigationRoutine::StartGoal(RobotPose goal,const NavigationInput& in,c
     }
   }
   route.push_back(goal); route_=std::move(route); leg_=0; worldVX_=worldVY_=0;
+  legStart_={in.motion.pose.x_MM,in.motion.pose.y_MM}; carryHeading_=clearanceHeading_=false;
   detourActive_=false; preciseTurnLeg_=-1; obstacles_.ClearHits(); for (auto& stamp:observedStamp_) stamp=-1;
   finalControllerReady_=route_.size()==1;
   goal_=goal; goal_.headingRad=robot_geometry::Wrap(goal_.headingRad);
@@ -124,33 +125,52 @@ bool GoalNavigationRoutine::StartGoal(RobotPose goal,const NavigationInput& in,c
   status_=route_.size()==1?"Direct XY travel; holding starting heading":"Manual pose route started";
   return true;
 }
-void GoalNavigationRoutine::DriveRoute(const NavigationInput& in,double previousYaw) {
+void GoalNavigationRoutine::AdvanceRoute(const NavigationInput& in) {
   const auto& m=in.motion; const ArenaPoint center={m.pose.x_MM,m.pose.y_MM};
+  if (carryHeading_ && std::fabs(robot_geometry::Wrap(carriedHeading_-m.pose.headingRad))<=navigation_config::INTERMEDIATE_HEADING_TOLERANCE_RAD)
+    carryHeading_=false;
   while (leg_+1<route_.size()) {
     const auto p=route_[leg_];
-    const double headingTolerance=static_cast<int>(leg_)==preciseTurnLeg_?heading_control_config::HEADING_TOLERANCE_RAD:
-        navigation_config::INTERMEDIATE_HEADING_TOLERANCE_RAD;
-    if (std::hypot(p.x_MM-center.x,p.y_MM-center.y)>navigation_config::INTERMEDIATE_POSITION_TOLERANCE_MM ||
-        std::fabs(robot_geometry::Wrap(p.headingRad-m.pose.headingRad))>headingTolerance) break;
+    const double dx=p.x_MM-legStart_.x,dy=p.y_MM-legStart_.y,length=std::hypot(dx,dy);
+    const bool inPlace=length<1;
+    const double distance=std::hypot(p.x_MM-center.x,p.y_MM-center.y);
+    const bool crossed=!inPlace && (center.x-p.x_MM)*dx+(center.y-p.y_MM)*dy>=0 &&
+        std::fabs((center.x-p.x_MM)*dy-(center.y-p.y_MM)*dx)/length<=navigation_config::INTERMEDIATE_POSITION_TOLERANCE_MM;
+    if (distance>navigation_config::INTERMEDIATE_POSITION_TOLERANCE_MM && !crossed) break;
+    const bool tightTurn=static_cast<int>(leg_)==preciseTurnLeg_ &&
+        !obstacles_.SegmentClear(center,{route_[leg_+1].x_MM,route_[leg_+1].y_MM},m.pose.headingRad);
+    const double headingError=std::fabs(robot_geometry::Wrap(p.headingRad-m.pose.headingRad));
+    const double tolerance=tightTurn?heading_control_config::HEADING_TOLERANCE_RAD:navigation_config::INTERMEDIATE_HEADING_TOLERANCE_RAD;
+    if ((inPlace || tightTurn) && headingError>tolerance) break;
+    if (!carryHeading_ && headingError>navigation_config::INTERMEDIATE_HEADING_TOLERANCE_RAD) {
+      carryHeading_=true; carriedHeading_=p.headingRad;
+    }
     if (static_cast<int>(leg_)==preciseTurnLeg_) preciseTurnLeg_=-1;
-    travelHeading_=p.headingRad; ++leg_;
+    travelHeading_=p.headingRad; legStart_={p.x_MM,p.y_MM}; ++leg_;
     if (detourActive_ && leg_>=detourEnd_) detourActive_=false;
   }
+}
+void GoalNavigationRoutine::DriveRoute(const NavigationInput& in,double previousYaw) {
+  const auto& m=in.motion; const ArenaPoint center={m.pose.x_MM,m.pose.y_MM};
+  AdvanceRoute(in);
   remaining_=std::hypot(route_[leg_].x_MM-center.x,route_[leg_].y_MM-center.y);
   for (unsigned i=leg_+1;i<route_.size();++i)
     remaining_+=std::hypot(route_[i].x_MM-route_[i-1].x_MM,route_[i].y_MM-route_[i-1].y_MM);
   const double angle=robot_geometry::ArenaAngle(m.pose.headingRad),co=std::cos(angle),si=std::sin(angle);
   const bool intermediate=leg_+1<route_.size();
-  const double target=intermediate?route_[leg_].headingRad:travelHeading_;
+  const double target=clearanceHeading_?clearanceHeadingTarget_:
+      (carryHeading_?carriedHeading_:(intermediate?route_[leg_].headingRad:travelHeading_));
   const bool turnClear=obstacles_.TurnClear(center,m.pose.headingRad,target);
   if (intermediate && !turnClear && std::hypot(route_[leg_].x_MM-center.x,route_[leg_].y_MM-center.y)<=navigation_config::INTERMEDIATE_POSITION_TOLERANCE_MM) {
     if (PrepareTurnDetour(in,target)) DriveRoute(in,previousYaw);
     return;
   }
+  const bool tightTurn=intermediate && static_cast<int>(leg_)==preciseTurnLeg_ &&
+      !obstacles_.SegmentClear(center,{route_[leg_+1].x_MM,route_[leg_+1].y_MM},m.pose.headingRad);
+  const double deadband=clearanceHeading_ || tightTurn?heading_control_config::HEADING_TOLERANCE_RAD:
+      (intermediate?navigation_config::INTERMEDIATE_HEADING_TOLERANCE_RAD:navigation_config::TRAVEL_HEADING_DEADBAND_RAD);
   yaw_=heading_.Request(robot_geometry::Wrap(target-m.pose.headingRad),previousYaw,m.yawRateRadps,m.dt,
-      intermediate?(static_cast<int>(leg_)==preciseTurnLeg_?heading_control_config::HEADING_TOLERANCE_RAD:
-          navigation_config::INTERMEDIATE_HEADING_TOLERANCE_RAD):navigation_config::TRAVEL_HEADING_DEADBAND_RAD,
-      navigation_config::TRAVEL_HEADING_KP);
+      deadband,navigation_config::TRAVEL_HEADING_KP);
   if (!turnClear) yaw_=0; // continue translating to clear space before swinging the manipulator
   if (leg_+1==route_.size()) {
     if (!finalControllerReady_) {
@@ -170,9 +190,32 @@ void GoalNavigationRoutine::DriveRoute(const NavigationInput& in,double previous
   if (distance<=navigation_config::INTERMEDIATE_POSITION_TOLERANCE_MM) {
     worldVX_=worldVY_=0; status_="Intermediate "+std::to_string(leg_+1)+": setting heading"; return;
   }
-  const double speed=std::min(detourActive_?navigation_config::DETOUR_SPEED_MMPS:navigation_config::SPEED_MMPS,
-      std::max(navigation_config::MIN_PASS_SPEED_MMPS,1.5*distance));
-  const double wantedX=(p.x_MM-center.x)*speed/distance,wantedY=(p.y_MM-center.y)*speed/distance;
+  ArenaPoint carrot={p.x_MM,p.y_MM};
+  const auto next=route_[leg_+1]; const double ox=next.x_MM-p.x_MM,oy=next.y_MM-p.y_MM,outgoing=std::hypot(ox,oy);
+  const double cap=detourActive_?navigation_config::DETOUR_SPEED_MMPS:navigation_config::SPEED_MMPS;
+  double cornerSpeed=navigation_config::MIN_PASS_SPEED_MMPS;
+  if (outgoing>1) {
+    const double ix=p.x_MM-legStart_.x,iy=p.y_MM-legStart_.y,incoming=std::hypot(ix,iy);
+    const double cosine=incoming>1?std::max(-1.0,std::min(1.0,(ix*ox+iy*oy)/(incoming*outgoing))):1;
+    cornerSpeed=std::max(cornerSpeed,cap*std::sqrt((1+cosine)/2));
+    double blend=std::min(std::min(navigation_config::CORNER_BLEND_MM,navigation_config::INTERMEDIATE_POSITION_TOLERANCE_MM),std::min(outgoing/2,
+        std::max(0.0,navigation_config::LOOKAHEAD_MM-distance)));
+    // Blend only through geometry that is clear for the present footprint.
+    while (blend>1) {
+      const ArenaPoint candidate={p.x_MM+ox*blend/outgoing,p.y_MM+oy*blend/outgoing};
+      if (obstacles_.SegmentClear(center,candidate,m.pose.headingRad)) { carrot=candidate; break; }
+      blend/=2;
+    }
+  }
+  double speed=std::min(cap,std::sqrt(cornerSpeed*cornerSpeed+2*navigation_config::ACCEL_MMPS2*
+      std::max(0.0,distance-navigation_config::LOOKAHEAD_MM)));
+  // Anticipate final braking across the last transit pose, rather than handing
+  // the final controller a high-speed command only a few millimeters out.
+  speed=std::min(speed,std::max(navigation_config::MIN_PASS_SPEED_MMPS,
+      std::sqrt(2*navigation_config::ACCEL_MMPS2*std::max(0.0,remaining_-cap*navigation_config::CLEARANCE_BRAKE_HORIZON_S))));
+  if (std::hypot(carrot.x-center.x,carrot.y-center.y)<1) carrot={p.x_MM,p.y_MM};
+  const double carrotDistance=std::hypot(carrot.x-center.x,carrot.y-center.y);
+  const double wantedX=(carrot.x-center.x)*speed/carrotDistance,wantedY=(carrot.y-center.y)*speed/carrotDistance;
   const double change=std::hypot(wantedX-worldVX_,wantedY-worldVY_);
   const double gain=change>0?std::min(1.0,navigation_config::ACCEL_MMPS2*m.dt/change):1;
   worldVX_+=gain*(wantedX-worldVX_); worldVY_+=gain*(wantedY-worldVY_);
@@ -255,13 +298,17 @@ void GoalNavigationRoutine::ObserveObstacles(const NavigationInput& in) {
   }
 }
 bool GoalNavigationRoutine::EnsureClearRoute(const NavigationInput& in) {
+  clearanceHeading_=false;
   const ArenaPoint start={in.motion.pose.x_MM,in.motion.pose.y_MM};
   const auto target=route_[leg_];
   if (obstacles_.SegmentClear(start,{target.x_MM,target.y_MM},in.motion.pose.headingRad,navigation_config::OBSTACLE_CLEARANCE_MM,true)) return true;
   const double wantedHeading=leg_+1<route_.size()?target.headingRad:travelHeading_;
   if (obstacles_.SegmentClear(start,{target.x_MM,target.y_MM},wantedHeading) &&
-      obstacles_.TurnClear(start,in.motion.pose.headingRad,wantedHeading))
-    return PrepareTurnDetour(in,wantedHeading);
+      obstacles_.TurnClear(start,in.motion.pose.headingRad,wantedHeading)) {
+    // Rotate while translating when the outgoing orientation is safe. A small
+    // heading error must not create an extra stop-and-align waypoint.
+    clearanceHeading_=true; clearanceHeadingTarget_=wantedHeading; return true;
+  }
   // Repair only the current manual leg; preserve every subsequent requested pose.
   unsigned original=detourActive_?detourEnd_:leg_;
   const auto rejoin=route_[original]; std::vector<ArenaPoint> bypass;
@@ -279,6 +326,7 @@ bool GoalNavigationRoutine::EnsureClearRoute(const NavigationInput& in) {
   for (const auto& p:bypass) inserted.push_back({p.x,p.y,in.motion.pose.headingRad});
   if (preciseTurnLeg_>=static_cast<int>(leg_)) preciseTurnLeg_+=inserted.size();
   route_.insert(route_.begin()+leg_,inserted.begin(),inserted.end());
+  legStart_=start;
   detourActive_=true; detourEnd_=leg_+inserted.size(); finalControllerReady_=false;
   return true;
 }
@@ -308,6 +356,7 @@ bool GoalNavigationRoutine::PrepareTurnDetour(const NavigationInput& in,double h
   inserted.push_back({staging.x,staging.y,heading});
   // Keep all requested poses; return to the current target after the clear-space turn.
   route_.insert(route_.begin()+leg_,inserted.begin(),inserted.end());
+  legStart_=start; clearanceHeading_=false;
   preciseTurnLeg_=leg_+inserted.size()-1;
   detourActive_=true; detourEnd_=leg_+inserted.size(); finalControllerReady_=false;
   state_=State::Driving; settled_=-1; return true;
@@ -374,6 +423,7 @@ void GoalNavigationRoutine::Update(const NavigationInput& input) {
   if (!fault.empty()) { Fail(fault); return; }
   remaining_=std::hypot(goal_.x_MM-m.pose.x_MM,goal_.y_MM-m.pose.y_MM);
   if (state_==State::Driving) {
+    AdvanceRoute(in); // leave accepted guides before checking/replanning the next segment
     if (!EnsureClearRoute(in)) return;
     DriveRoute(in,previousYaw);
   } else if (state_==State::FinalHeading) {
