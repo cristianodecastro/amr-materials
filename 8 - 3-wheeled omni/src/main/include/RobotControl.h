@@ -141,7 +141,7 @@ class RobotSubsystem : public frc2::SubsystemBase {
   Hardware hardware_;
   Localization localization_{&hardware_};
   TapeAlignmentRoutine tapeRoutine_;
-  GoalNavigationRoutine navigation_{true,true}; // robot uses the background planner
+  GoalNavigationRoutine navigation_;
   bool navigationSelected_=false;
   nt::NetworkTableEntry initializePose_,initializeFromTab_,goToGoal_,stopNavigation_,goalX_,goalY_,goalHeading_;
   nt::NetworkTableEntry intermediatePoses_,initialX_,initialY_,initialHeading_,wallReferences_[4];

@@ -50,95 +50,81 @@ Sonars use FlexDIO 2/3 front and 0/1 rear (even trigger, odd echo). IR sensors u
 
 Basic teleoperated driving and on-demand photo capture are retained. The inactive project-7 arena mission/planner, simple tasks, colour classification/calibration, Cobra recapture/file persistence, lift, and servo code are removed. Build and vendor configuration remain unchanged.
 
-## Autonomous routes and sensor support (P8-r26 MVP)
+## Sensor-supported navigation (P8-r28 MVP)
 
-Navigation follows an editable sequence of intermediate **poses**, then the final pose. Encoders and the reset-relative gyro update motion every 20 ms. Suitable wall readings provide ongoing XY correction, and known barriers or new range detections can cause automatic bypass poses to be inserted. A transit guide blocked by confirmed obstacle evidence may be bypassed; the remaining requested order and original final goal are preserved.
+Navigation follows your editable intermediate poses and final goal. Encoder counts and reset-relative gyro heading remain the basic motion estimate. Valid range readings provide a small position offset to guide driving; they do not veto a route or generate recovery faults. The obstacle map, grid searches, automatic detours, staging/recovery controller and planning worker have been deleted.
 
-### Initialize the arena pose
+### Initialize
 
-1. Place the robot outside the red structures in `docs/court_barriers.png`. Know its heading and ensure that the sensors you select see the surfaces you identify, rather than a storage or delivery object in front of them.
-2. Select and enable Autonomous in Control Station. This alone does not start travel.
-3. Open **Initialization**. Enter a number or `-` in **Start X mm or -** and **Start Y mm or -**. A dash (or empty field) means that sensors must determine that coordinate. You may supply neither, one, or both coordinates. Enter **Start heading deg** explicitly: 0 north, +90 west, -90 east.
-4. Select reference sensors through their wall text fields. `-` disables that sensor for initialization. `X=0` identifies a vertical surface at arena X=0; `Y=2000` identifies a horizontal surface at arena Y=2000. Lowercase x/y also work. The coordinate is the surface's position in the arena, not its distance from the robot.
-5. Press **Initialize pose** on Initialization or Navigation. Settings are captured at that press. Supplied X/Y coordinates remain as entered during initialization. Unknown coordinates are calculated from valid, fresh selected measurements, sensor mounting offsets and the supplied heading. Multiple readings of the same axis are averaged with squared beam-axis projection weights. There is no covariance model.
-6. Check **Initialized**, **Initialized X/Y/heading**, and the source summary. If an unspecified axis cannot be determined, the robot remains stopped and identifies that axis; correct the selection/reading or supply that coordinate and press Initialize again. There is no stationary gate or reference timeout. Initialization does not start travel.
+1. Select and enable Autonomous in Control Station. This alone does not start driving.
+2. On **Initialization**, enter the known start X/Y in millimeters. Use `-` for either unknown coordinate, and enter the starting heading explicitly.
+3. In each sensor's wall field, use `X=coordinate` for a vertical wall, `Y=coordinate` for a horizontal wall, or `-` to exclude that sensor from initialization. These are global wall coordinates, not measured gaps.
+4. Press **Initialize pose**. Supplied coordinates stay as entered; valid selected readings determine the unspecified axes. If an axis cannot be determined, supply it or correct the reference selection. There is no stationary gate or reference timeout.
 
-For the usual lower-left, north-facing reference:
+The usual north-facing lower-left reference is X=`-`, Y=`-`, heading=`0`, left IR=`X=0`, rear sonar=`Y=0`, right/front=`-`. This gives X = left range + 60 mm, Y = rear range + 173 mm. Both coordinates may instead be supplied directly. Initialization establishes the gyro offset using its current reading; raw gyro yaw is not an absolute arena heading.
 
-| Field | Entry | Meaning |
+### Route and controls
+
+On **Navigation**, choose **Saved goal** or **Custom**, edit final X/Y/heading and enter zero or more **Intermediate poses** as `x,y,heading; x,y,heading`. Empty means a direct leg. Old `x,y` entries inherit the preceding heading. Up to 32 intermediate poses are supported. All distances are millimeters; headings are degrees.
+
+Heading zero is north (+Y); +90 is west, -90 east and +/-180 south. The **Top right** preset remains `(1700,1700,90)` with guides `650,850,0;1500,850,90;1700,1400,90`. Each saved goal keeps its own edits while switching selections until restart; durable defaults are in `navigation_config::GOALS` in `RobotConfig.h`.
+
+Press **Go to goal** to snapshot the selected route. Intermediates use a 25 mm passing radius/cross-track corridor and relaxed 10 degree heading guidance. A 100 mm lookahead, up to 25 mm corner blending and a continuous acceleration ramp smooth transitions. An explicitly requested in-place turn still rotates there. The final XY arrival is followed by the final heading and the normal **10 mm / 1 degree** stationary completion check.
+
+Every control update recalculates the remaining segment, lookahead direction, distance and velocity request from the latest sensor-assisted driving pose. A valid range discrepancy can therefore change the robot's path to the next fixed waypoint without stopping, resetting the route or changing the final goal. Final correction pulses also update their direction when the estimated position changes.
+
+During transit, heading correction starts only above **12 degrees** of error and releases near **6 degrees**, with a lower gain of **0.8**. This hysteresis avoids repeated small gyro corrections at one threshold. Inside the last **200 mm of route distance**, heading hold tightens to **3 degrees**, gain **1.2**. Planned large turns and translation remain simultaneous; final stopped heading retains the 1 degree tolerance. Sensor-based global XY correction is still committed only during the stopped final settle.
+
+Normal requested speed is **350 mm/s**, acceleration **300 mm/s^2**. The existing 15% nonzero motor-output floor remains. The route is defined by your intermediate poses: no automatic obstacle detour or collision-veto layer remains. Place the poses so the segments, corner blends and turns have room for the robot and manipulator.
+
+### Motion tuning in one header
+
+Edit **`src/main/include/RobotConfig.h`** for all motion tuning. The index at its top identifies each section. Angles intended for tuning are specified in degrees; their radian constants are derived automatically.
+
+| Section | Main settings |
+| --- | --- |
+| `navigation_config` | Translation speed/acceleration; 25 mm intermediate and 10 mm final tolerances; lookahead/corner blend; 12/6 degree transit hysteresis; transit gain; 200 mm final approach distance; approach heading gain/deadband; final settle duration; range blend/step limits |
+| `heading_control_config` | Final 1 degree tolerance; yaw speed/acceleration; rate damping; coasting prediction; heading recheck; stationary thresholds |
+| `position_control_config` | Shared final XY proportional gain; minimum approach speed; braking response; capture-radius ratio; velocity filter; correction/rest/settle times |
+| `wheel_drive_config` | PWM floor; bounded common output scaling; neutral thresholds; encoder speed, stall and direction thresholds |
+| `localization_config` | Wheel geometry/count conversion; sensor mounts; control/sample timing; Teleop speeds, acceleration and stick deadband |
+| `tape_test_config` | Tape approach targets, speed/acceleration, scan/centering settings and task limits |
+
+The shared final XY controller now reads `position_control_config`, so its tuning is no longer hidden among tape-only settings. Moving existing Teleop values into named constants preserves their previous defaults. No motion gain, speed limit or tolerance needs a source-file edit.
+
+### Sensor geometry and driving feedback
+
+This first version uses the four known outer arena walls plus the additional reference planes entered at initialization. It is sensor-assisted localization against known coordinates; it does not learn unknown obstacles as a SLAM system.
+
+Sensor mounts in the body frame (+X forward, +Y left) remain:
+
+| Sensor | Body offset (forward, left), mm | Beam angle from body-forward |
 | --- | --- | --- |
-| Start X / Start Y | `-` / `-` | Derive both coordinates |
-| Start heading | `0` | Front points north |
-| Left IR wall | `X=0` | X = left distance + 60 mm |
-| Rear sonar wall | `Y=0` | Y = rear distance + 173 mm |
-| Right IR / Front sonar wall | `-` / `-` | Not used to initialize |
+| Left IR | (0, 60) | +90 degrees |
+| Rear sonar | (-173, 0) | 180 degrees |
+| Right IR | (0, -60) | -90 degrees |
+| Front sonar | (171.6, 0) | 0 degrees |
 
-For example, X=`250`, Y=`-`, rear=`Y=0`, other sensors=`-` keeps initial X=250 and measures initial Y. Supplying both X/Y allows initialization without a range reading. Starting heading is still required: scalar ranges alone cannot establish all of X, Y and yaw. The gyro is aligned to this heading using its current reading as an offset, never as a raw arena angle.
+Every beam stays perpendicular to its robot side. For arena heading `h`, the Cartesian rotation is `h + 90 degrees`. Both the mount offset and beam direction are rotated with that angle. For a known plane X=Xw, the inferred center is `Xw - rotated_mount_x - range * beam_x`; Y uses the corresponding Y components. Multiple readings of one axis use squared beam-component weights.
 
-For any selected sensor, the solved axis is `wall coordinate - rotated mounting offset - measured range * beam-axis component`. Invalid, stale, nonfinite or out-of-range readings are ignored. Initialization also skips beams whose absolute axis component is below 0.5 and inferred centers outside the arena.
+A short pose history supplies the heading/position at acquisition time, including the sonar ping time. Oblique readings and readings during rotation can contribute; there is no near-normal-heading or low-yaw-rate requirement. Exactly parallel beams cannot observe the perpendicular axis.
 
-### Choose intermediate poses and run
+A reading must have a valid flag, finite in-range value and fresh timestamp. IR validity uses the existing final doubled distance (100-800 mm); sonar validity is 20-4000 mm. Cached readings are consumed once. A reading more than 100 mm from the predicted known-wall range is not associated with that wall and is silently skipped; a valid return from an unrelated object must not redefine the global position. None of these range checks stops motion.
 
-1. On **Navigation**, select **Saved goal** or **Custom**, then edit final X/Y/heading.
-2. In **Intermediate poses (x,y,deg; ...)**, enter poses in order, for example `250,700,0;500,900,-90`. Coordinates are mm and headings degrees. A blank list goes directly toward the final goal. The final goal is appended automatically. Up to 32 user intermediates, whitespace and a trailing semicolon are accepted.
-3. Old `x,y` entries still work: they inherit the preceding heading, or the heading at Go for the first entry. Explicit triples are recommended.
-4. Press **Go to goal**. The full list and final pose are captured once. Edits during a run apply to the next run.
-5. Ordinary intermediate poses are **pass-through guides**, not precision stops. They advance within **25 mm**, or after crossing the approach plane within a 25 mm cross-track corridor. Heading has a relaxed **10 degree** moving deadband; a late heading keeps correcting during translation after the guide is passed. It no longer holds XY motion at an ordinary intermediate. Only the final goal requires the complete 10 mm / 1 degree pose tolerance. Explicit in-place turn entries still finish their requested turn, and collision-critical alignment can require tighter orientation before entering a constrained passage.
-6. The final leg holds the preceding travel heading. Final heading is applied after final XY arrival, retaining **10 mm / 1 degree** completion tolerances and a stationary settling check. Live wall corrections continue through final approach and settling. A recent accepted wall residual above 5 mm postpones completion while it converges; final XY drift is corrected without replaying completed requested poses.
-7. **Stop**, Disable and disconnect stop motors. A new Autonomous session requires initialization again.
+While driving, the accepted sensor/encoder discrepancy updates a separate offset, blended by 25% and limited to 5 mm per new update per axis. The controller uses **encoder pose + range offset**. For example, at heading 0 a rear reading of 277 mm plus its 173 mm mount offset indicates center Y=450 mm. If encoder Y is 500 mm, driving feedback gradually incorporates the -50 mm difference. Encoder distance, wheel calibration, gyro reference and global odometry are not rewritten during travel.
 
-Each saved goal retains its own edited final pose and intermediate list while switching selections, until program restart. Durable defaults are in `navigation_config::GOALS` in `RobotConfig.h`: name, final X, final Y, final heading degrees, intermediate pose string. Add/remove entries there as needed. Initialization and route edits are separate snapshots.
+On Navigation, **Driving X/Y** shows the sensor-assisted pose used for control. Motion's X/Y remains the global odometry pose. **Travel wall support** indicates recent accepted readings for each axis. When readings are missing or invalid, the route continues from encoders/gyro and the last accepted driving offset; invalid values never become zero-distance corrections.
 
-The **Top right** preset ends at **(1700,1700,90 degrees)**. Its editable guides are `650,850,0;1500,850,90;1700,1400,90`, retaining the user's earlier 90 degree turn at the second guide. The 90 degree approach turns the front west before the final northward displacement, keeping its front projection away from the top wall. These are starting route values for the configured map, not a replacement for checking the actual barrier bounds.
+### Stopped goal update
 
-Intermediate tracking uses a **100 mm lookahead**, blends up to **25 mm** onto the next segment when that connection is clear, and preserves the velocity ramp across a waypoint change. Straight guides no longer cause a proportional slowdown toward 120 mm/s at each point. Corners reduce speed according to their direction change; final braking is anticipated across the last intermediate. Translation acceleration remains 300 mm/s^2. Heading corrections and XY motion remain simultaneous wherever the footprint allows it.
+After the normal goal pose/heading check and a 0.3-second stationary settle, only range estimates acquired during that settle and still supported by fresh valid sensor data may be committed to global XY odometry. There is no extra sensor-residual gate and no requirement that every sensor be available. If the resulting position is outside the 10 mm tolerance, the normal position controller makes the final correction. Otherwise the goal completes. Unavailable ranges are skipped, not treated as task failures.
 
-### Wall measurements during motion
+The same valid selected ranges may establish global X/Y during explicit initialization before travel. No covariance machinery, motor trims or empirical odometry scales are added.
 
-All four sensors are eligible to support travel, independently of which sensors initialized the pose. The four outer arena walls are known references. Additional surface coordinates entered at initialization are also retained; use long, known planar surfaces for those additional references. They are modeled as full planes, not bounded storage faces. After a turn, whichever sensor faces a known surface can supply that axis.
+### Remaining stops and validation
 
-For each new reading, the controller predicts the nearest positive ray/plane intersection. It accepts a correction only when the reading is valid/fresh, the beam is within **15 degrees of the wall normal**, gyro rate is at most **5 degrees/s**, and measured versus predicted range differs by at most **100 mm**. Large mismatches, including most returns from objects in front of the wall, do not change odometry. Readings are processed once per sensor timestamp; a cached value is not repeatedly fused at the 50 Hz control rate.
+The retained navigation protections are explicit Stop/Disable/disconnect, unavailable or invalid gyro/odometry/control data, and the existing hardware motor/encoder fault checks. Malformed/nonfinite settings are rejected before starting. There is no navigation task deadline, progress watchdog, scene-feasibility error, recovery failure or sensor-required travel gate.
 
-A 0.5-second pose history aligns a reading with the pose when it was acquired. Sonar timestamps now refer to the ping, rather than the later counter read. Accepted axis estimates are combined geometrically, blended by **25%**, and limited to **5 mm per control update per axis**. Corrections shift XY only; encoder baselines, gyro offset, wheel geometry, counts-per-revolution and motor outputs are not rescaled. **Travel wall support** reports whether recent wall corrections exist for each axis. Where wall support is unavailable, encoders and gyro continue; invalid measurements never become zero-distance corrections.
+The bounded late-sample handling remains: autonomous odometry preserves encoder travel through intervals up to 500 ms, while controller ramps use at most a 40 ms step. Larger/unusable feedback gaps remain control-data faults. Teleop timing and behavior, camera capture, project 7 and build/vendor configuration are unchanged. The compact **Loop / peak ms** tile remains; planner diagnostics are removed with the planner.
 
-These checks reduce false association but cannot prove that an echo came from the intended wall. A nearby object within the 100 mm acceptance band may still bias an estimate. Likewise, a 10 mm controller tolerance is not a guarantee of 10 mm physical accuracy from uncalibrated IR/ultrasonic measurements. Check the live distances against the arena before relying on that accuracy.
-
-### Automatic detours
-
-The fixed map uses the supplied 2000 x 2000 arena and previously specified region dimensions. The editable `navigation_config::COURT_BLOCKS` table contains:
-
-| Region | xmin | ymin | xmax | ymax |
-| --- | ---: | ---: | ---: | ---: |
-| Upper storage block | 780 | 1220 | 1220 | 2000 |
-| Bottom delivery band | 0 | 0 | 2000 | 220 |
-| Lower central divider | 985 | 0 | 1015 | 600 |
-
-Confirm these bounds against the physical court; the red sketch is not a precisely dimensioned outline. The central tape square and other tape markings remain traversable. Add rows for further fixed structures.
-
-The robot envelope is a **171.74 mm body radius** plus a full-body-width front projection reaching **291.74 mm** from center. Collision checks include that projection, arena boundaries, known blocks and a nominal **30 mm clearance**. Grid detour corners add another 25 mm for intermediate passing tolerance. A start inside the clearance buffer can move monotonically away from it; it is not rejected merely for lacking the full buffer.
-
-When a leg is obstructed, a bounded **50 mm grid A*** search calculates a bypass. If the coarse grid and 25 mm tracking buffer reject a passage, a **25 mm grid with 10 mm extra tracking padding** is tried. Robot dimensions and the 30 mm physical clearance are retained. At a narrowly placed guide, the passing radius and corner blend are reduced to the available clearance, down to 5 mm; crossing-plane advancement still avoids a precision stop. Normal bypasses run at **200 mm/s**. There is no routine wait for the obstacle to disappear or wall-reference pause at intermediate points.
-
-A failed fixed-heading search no longer immediately ends the task. Recovery tries the requested pose heading and other orientations, including clear nearby staging locations when the front projection cannot safely swing where the robot currently is. Where a short path prefix admits the complete turning sweep, the heading changes during translation. A guide now occupied by confirmed obstacle evidence can be bypassed in favor of a later guide; the final goal is preserved. Remaining temporary poses are replaced when necessary. If a complete connection is still unavailable, the controller can move to a clearer nearby pose with both map clearance and fresh sensor evidence, then retry. Recovery movement uses a **120 mm/s request**, subject to the unchanged 15% floor. It avoids immediately returning to the previous retreat origin.
-
-Fresh unexplained range returns within **650 mm** can add obstacle patches after **two consistent readings from the same sensor within 0.8 seconds**, with endpoints within 100 mm. A cached reading cannot confirm itself. An urgent return inside the estimated stopping clearance takes effect immediately. Known court structures and known-wall returns retain their existing geometry. For an otherwise unexplained return, the default assumed obstacle is **200 mm wide and 200 mm deep**, extending behind its detected near face. Change `SENSED_OBSTACLE_RADIUS_MM` to adjust this assumption. Adjacent observations add coverage of longer walls. Up to 24 confirmed patches are retained; **two fresh rays that pass fully through an old patch and at least 60 mm beyond it remove that disproved patch**. Long readings and known-wall readings also provide this free-space evidence. Unseen confirmed obstacles are not silently timed out. Patches are cleared at the next Go; fixed court blocks remain. Patches and provisional hit coordinates follow any estimator-frame XY correction.
-
-Turns check the manipulator sweep. When rotation lacks room, translation can continue without that turn until room exists; if needed, temporary staging poses move the robot to a clear location, turn, and return to the requested pose. Automatic staging turns use a tighter 1 degree tolerance **only if the outgoing segment is blocked at the current orientation**; otherwise they use the relaxed 10 degree tolerance. A small heading discrepancy no longer inserts an extra stop-and-align pose when it can be corrected during translation. A short coasting prediction removes only the commanded component that consumes clearance, preserving tangential/away motion and releasing turning power when necessary. It does not enter a wait-for-clearance state.
-
-Four narrow range beams cannot detect every obstacle edge or establish a long wall's complete extent. The fixed map supplies the known wall/storage/delivery geometry; live detections supplement it. If neither a full recovery route nor a sensor/map-verified movement exists, the controller reports **Recovery blocked** and stops rather than driving blindly. Disable, disconnect, hardware faults and Stop remain effective. A literal never-stop guarantee cannot hold for an enclosed or physically unreachable goal. Required sensor coverage, exact map bounds, obstacle-size assumptions and actual stopping behavior still need arena verification.
-
-### Limits and implementation
-
-**Control-loop timing and availability:** P8-r25 ran grid searches, finer-grid retries and heading/staging recovery inside the 20 ms robot callback. A callback taking more than 100 ms was rejected by both navigation and odometry. Rejected odometry left its encoder baseline unchanged, so the next normal frame could mistake accumulated travel for an impossible encoder speed. The combined error text incorrectly suggested an IMU or Control Station problem without naming the failing check.
-
-P8-r26 runs those searches on one lower-priority worker, using a copy of the route/map state. Hardware reads, encoder/gyro integration, current sensor evidence, heading feedback, motor writes and enable/disable gates remain on the robot thread. While a plan is pending, current measured world velocity and the active heading remain subject to live clearance control. A completed job supplies only a route; it never overwrites live odometry or sensor history and its segments are rechecked from the current pose. Changed obstacle evidence causes a stale failed result to be retried. Stop, Disable, reinitialization and new sessions cancel pending results; an old job cannot reactivate motion.
-
-Autonomous count odometry accepts bounded late samples up to **500 ms**, integrating all encoder increments and reset-relative gyro rotation using their actual interval. Controller ramp steps are capped at **40 ms**. After such a late sample, the autonomous wheel-speed monitor rebaselines its own count window rather than dividing old increments by a fictitious short interval. This does not reset position, discard odometry distance, clear a genuine existing drive fault, change Teleop timing or suppress real connection/IMU/encoder faults. Gaps beyond 500 ms still stop with an explicit timing message.
-
-The Motion tab's existing loop tile now shows **Loop / peak ms**, with the peak reset on entering Autonomous. Navigation status includes the last completed worker duration. A slow worker can therefore report hundreds of milliseconds while the robot loop remains near 20 ms. Fault messages distinguish a control-loop gap, IMU disconnect, IMU calibration, Control Station disconnect, nonfinite encoder/yaw/velocity data and implausible encoder speed. These timings allow the next physical run to distinguish planner delays from other blocking I/O or actual hardware/communications faults.
-
-Normal requested translation is **350 mm/s**, acceleration **300 mm/s^2**; bypasses use **200 mm/s** and recovery requests **120 mm/s**. Travel heading gain remains 1.2, normally with a 3 degree deadband on the final leg and 10 degrees on ordinary intermediates. The 15% electrical floor and bounded common scaling remain; no individual motor trim is introduced. Essential stops remain for invalid control data/IMU/odometry, a real drive/encoder fault, disconnect/Disable, exhausted verified recovery choices, and a 60-second task deadline. Teleop controls, Teleop pose observation, camera capture, project 7 and build/vendor configuration are unchanged.
-
-`Navigation.cpp` handles routes, initialization and live sensor support. `LocalNavigation.cpp` contains the small footprint/map/grid-detour implementation. Shared heading/position and tape control stay in `Autonomous.cpp`. Defaults, geometry, tolerances, sensor acceptance thresholds and obstacle assumptions are in `RobotConfig.h`. Initialization and Navigation each fit an 8-column, 5-row dashboard; Motion and Sensing keep their compact layouts.
-
-Validation includes **32 motion simulations** using encoder odometry, gyro feedback, the actual electrical floor and motor lag. Recovery cases start at **(632.8,580.8,-4.37 degrees)**, including a simulated confirmed obstacle blocking the first guide. Four new runs use the real background-planner path from **(547,828,34.9 degrees)** to the top-right goal, with and without intermediate guides, at two motor response times. Collision checks remain active. Additional regressions integrate curved travel across 120/180 ms delayed frames and subsequent normal frames, keep feedback updates running while a worker is deliberately blocked, verify cancellation/new-session isolation, preserve Teleop's timing behavior and genuine drive faults, and check specific health diagnostics. Existing obstacle evidence, wall fusion, continuous transit, tape and Teleop checks remain. The software failure chain is reproduced; the original robot's exact callback timings and failed sensor map were not recorded. The project has not been deployed or physically validated by this change.
+`Navigation.cpp` now contains route following, reference initialization and range support. `Autonomous.cpp` retains the shared heading/position and tape controllers. `LocalNavigation.cpp` and its planner/map classes are deleted. Existing component-check source covers beam/mount projections, invalid readings, stopped correction, control transitions and timing; motion-model simulation code has been removed. No simulations are run after the user's prohibition. Validation for this revision is compilation/build checks; physical behavior must be evaluated on the robot.

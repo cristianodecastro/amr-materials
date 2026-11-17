@@ -109,7 +109,8 @@ void Hardware::DriveWithContext(double forward,double left,double yawRadps,
   teleopWheelActive_=teleop;
   // Neutral is an immediate stop and the deliberate reset for a latched fault.
   if (std::isfinite(forward) && std::isfinite(left) && std::isfinite(yawRadps) &&
-      std::fabs(forward)<0.01 && std::fabs(left)<0.01 && std::fabs(yawRadps)<0.0001) {
+      std::fabs(forward)<wheel_drive_config::COMMAND_STOP_MMPS && std::fabs(left)<wheel_drive_config::COMMAND_STOP_MMPS &&
+      std::fabs(yawRadps)<wheel_drive_config::COMMAND_STOP_RADPS) {
     StopDrive(); return;
   }
   double desired[3],counts[3];

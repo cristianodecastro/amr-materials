@@ -20,7 +20,7 @@ double HeadingMotionControl::Request(double error,double oldYaw,double measuredY
   // discard the old turn ramp so it cannot push farther past the reference.
   if (std::fabs(error)<=deadband || coastingToward || request*error<=0) {
     // Allow a fresh heading sample before applying another correction.
-    if (std::fabs(oldYaw)>0.0001) holdRecheck_=at::HOLD_RECHECK_S;
+    if (std::fabs(oldYaw)>wheel_drive_config::COMMAND_STOP_RADPS) holdRecheck_=at::HOLD_RECHECK_S;
     return 0;
   }
   if (oldYaw*error<0) oldYaw=0;
@@ -29,7 +29,7 @@ double HeadingMotionControl::Request(double error,double oldYaw,double measuredY
 }
 std::string HeadingMotionControl::CheckFeedback(double previousRequest,double measuredYaw,double dt) {
   lastRequest_=previousRequest; lastMeasured_=measuredYaw;
-  if (std::fabs(previousRequest)<=0.0001) { direction_=0; opposed_=commandTime_=0; return {}; }
+  if (std::fabs(previousRequest)<=wheel_drive_config::COMMAND_STOP_RADPS) { direction_=0; opposed_=commandTime_=0; return {}; }
   const int requestedDirection=previousRequest<0?-1:1;
   if (requestedDirection!=direction_) opposed_=commandTime_=0;
   direction_=requestedDirection;
@@ -48,6 +48,7 @@ std::string HeadingMotionControl::CheckFeedback(double previousRequest,double me
 }
 
 namespace tt=tape_test_config;
+namespace pc=position_control_config;
 namespace {
 bool FreshSample(double now,double stamp,double maximumAge) {
   return std::isfinite(stamp) && stamp>=0 && now>=stamp && now-stamp<=maximumAge;
@@ -76,7 +77,7 @@ bool TapeAlignmentRoutine::PoseFromWalls(double leftGap,double rearGap,RobotPose
   const double leftRay=std::cos(theta+robot_geometry::Radians(left.beamAngleDeg));
   const double rearRay=std::sin(theta+robot_geometry::Radians(rear.beamAngleDeg));
   // These particular walls require left looking west and rear looking south.
-  if (leftRay> -0.98 || rearRay> -0.98) return false;
+  if (leftRay> -tt::REFERENCE_NORMAL_COMPONENT || rearRay> -tt::REFERENCE_NORMAL_COMPONENT) return false;
   pose={tt::LEFT_WALL_X_MM-(c*left.mountX_MM-s*left.mountY_MM)-leftRay*leftGap,
       tt::REAR_WALL_Y_MM-(s*rear.mountX_MM+c*rear.mountY_MM)-rearRay*rearGap,
       robot_geometry::Wrap(heading)};
@@ -155,11 +156,11 @@ void WaypointDrive::Update(const MotionInput& m,double measuredForward,double me
   const double oldForward=forward_,oldLeft=left_;
   forward_=left_=0;
   if (reached_) return;
-  const double velocityGain=m.dt/(tt::VELOCITY_FILTER_S+m.dt);
+  const double velocityGain=m.dt/(pc::VELOCITY_FILTER_S+m.dt);
   filteredForward_+=velocityGain*(measuredForward-filteredForward_);
   filteredLeft_+=velocityGain*(measuredLeft-filteredLeft_);
   const auto target=target_;
-  const double captureRadius=0.7*tt::POSITION_TOLERANCE_MM;
+  const double captureRadius=pc::CAPTURE_RADIUS_RATIO*pc::POSITION_TOLERANCE_MM;
   const double dx=target.x-m.pose.x_MM,dy=target.y-m.pose.y_MM,distance=std::hypot(dx,dy);
   const double angle=robot_geometry::ArenaAngle(m.pose.headingRad);
   const double c=std::cos(angle),s=std::sin(angle);
@@ -169,16 +170,16 @@ void WaypointDrive::Update(const MotionInput& m,double measuredForward,double me
   const double toward=distance>0?std::max(0.0,std::max(
       (filteredForward_*forwardError+filteredLeft_*leftError)/distance,
       (oldForward*forwardError+oldLeft*leftError)/distance)):0;
-  const double stoppingDistance=toward*toward/(2*acceleration_)+toward*(tt::BRAKE_RESPONSE_S+m.dt);
+  const double stoppingDistance=toward*toward/(2*acceleration_)+toward*(pc::BRAKE_RESPONSE_S+m.dt);
   if (waypointPhase_==WaypointPhase::Travel &&
-      (distance<=tt::NEAR_TARGET_MM || stoppingDistance>=distance-captureRadius)) {
+      (distance<=pc::NEAR_TARGET_MM || stoppingDistance>=distance-captureRadius)) {
     waypointPhase_=WaypointPhase::Brake; settleTime_=-1;
   }
   if (waypointPhase_==WaypointPhase::Correct) {
     const double along=dx*correctionX_+dy*correctionY_;
     if (along<=captureRadius || distance<=captureRadius ||
         (measuredToward>heading_control_config::STATIONARY_SPEED_MMPS && stoppingDistance>=along-captureRadius) ||
-        m.now-phaseTime_>=tt::CORRECTION_MAX_S) {
+        m.now-phaseTime_>=pc::CORRECTION_MAX_S) {
       waypointPhase_=WaypointPhase::Brake; settleTime_=-1;
     }
   }
@@ -187,7 +188,7 @@ void WaypointDrive::Update(const MotionInput& m,double measuredForward,double me
     // electrical minimum duty. No reversal is blended through a target.
     LimitTranslation(oldForward,oldLeft,acceleration_,m.dt);
     status_="Braking before waypoint; waiting for the chassis to settle";
-    if (std::hypot(forward_,left_)<0.01) {
+    if (std::hypot(forward_,left_)<wheel_drive_config::COMMAND_STOP_MMPS) {
       forward_=left_=0; waypointPhase_=WaypointPhase::Settle; settleTime_=-1;
     }
     return;
@@ -200,31 +201,34 @@ void WaypointDrive::Update(const MotionInput& m,double measuredForward,double me
       settleTime_=-1; return;
     }
     if (settleTime_<0) settleTime_=m.now;
-    if (distance<=tt::POSITION_TOLERANCE_MM) {
+    if (distance<=pc::POSITION_TOLERANCE_MM) {
       // Heading gates completion only, never an outstanding XY correction.
       if (std::fabs(headingError)>heading_control_config::HEADING_TOLERANCE_RAD) {
         settleTime_=-1; return;
       }
-      if (m.now-settleTime_>=tt::WAYPOINT_SETTLE_S) {
+      if (m.now-settleTime_>=pc::WAYPOINT_SETTLE_S) {
         reached_=true;
       }
       return;
     }
-    if (m.now-settleTime_<tt::CORRECTION_REST_S) return;
+    if (m.now-settleTime_<pc::CORRECTION_REST_S) return;
     waypointPhase_=WaypointPhase::Correct; phaseTime_=m.now; settleTime_=-1;
     correctionX_=dx/distance; correctionY_=dy/distance;
   }
   if (waypointPhase_==WaypointPhase::Correct) {
-    forward_=(c*correctionX_+s*correctionY_)*tt::MIN_APPROACH_MMPS;
-    left_=(-s*correctionX_+c*correctionY_)*tt::MIN_APPROACH_MMPS;
+    // Recalculate the correction direction from this frame's sensor-assisted
+    // pose, preserving the acceleration ramp rather than replaying an old ray.
+    correctionX_=dx/distance; correctionY_=dy/distance;
+    forward_=(c*correctionX_+s*correctionY_)*pc::MIN_APPROACH_MMPS;
+    left_=(-s*correctionX_+c*correctionY_)*pc::MIN_APPROACH_MMPS;
     LimitTranslation(oldForward,oldLeft,acceleration_,m.dt);
     status_="Bounded waypoint correction; stop and remeasure before reversing";
     return;
   }
   const double brakingSpeed=std::sqrt(2*acceleration_*
       std::max(0.0,distance-captureRadius));
-  const double speed=std::min(maxSpeed_,std::max(tt::MIN_APPROACH_MMPS,
-      std::min(distance*tt::POSITION_KP,brakingSpeed)));
+  const double speed=std::min(maxSpeed_,std::max(pc::MIN_APPROACH_MMPS,
+      std::min(distance*pc::POSITION_KP,brakingSpeed)));
   forward_=forwardError*speed/distance; left_=leftError*speed/distance;
   LimitTranslation(oldForward,oldLeft,acceleration_,m.dt);
   status_="driving to waypoint with heading hold and predictive braking";
@@ -308,7 +312,7 @@ void TapeAlignmentRoutine::Update(const TapeRoutineInput& in) {
   }
   if (std::hypot(m.pose.x_MM-progressPose_.x_MM,m.pose.y_MM-progressPose_.y_MM)>=tt::PROGRESS_MM) {
     progressPose_=m.pose; motionEffortTime_=0;
-  } else if (std::hypot(forward_,left_)>20) {
+  } else if (std::hypot(forward_,left_)>tt::PROGRESS_EFFORT_MMPS) {
     // Count only time actually requesting movement. Settling/braking pauses
     // must not make the next small correction fail immediately.
     motionEffortTime_+=m.dt;

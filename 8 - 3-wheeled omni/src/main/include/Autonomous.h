@@ -1,9 +1,9 @@
 #pragma once
 #include <string>
 #include <vector>
-#include <atomic>
-#include <functional>
-#include <memory>
+
+
+
 #include "RobotConfig.h"
 
 struct MotionInput {
@@ -63,52 +63,9 @@ struct PoseInitialization {
   double headingDeg=0;
   std::string wall[4]={"X=0","Y=0","-","-"};
 };
-// Fixed court rectangles plus small, persistent patches from range returns.
-// The optional false constructor is used by detached clear-floor unit tests.
-class LocalObstacleMap {
- public:
-  explicit LocalObstacleMap(bool court=true):court_(court) {}
-  bool UsesCourt() const { return court_; }
-  void SetCancellation(std::shared_ptr<std::atomic<bool>> cancelled) { cancelled_=std::move(cancelled); }
-  bool Cancelled() const { return cancelled_ && cancelled_->load(std::memory_order_relaxed); }
-  unsigned Revision() const { return revision_; }
-  void ClearHits() { ++revision_; hits_.clear(); for (auto& pending:pending_) pending.stamp=-1; for (auto& stamp:rayStamp_) stamp=-1; }
-  void AddHit(ArenaPoint hit,double beamRad);
-  void ObserveHit(ArenaPoint origin,ArenaPoint hit,double beam,double stamp,int sensor,bool urgent,bool allowObstacle=true);
-  void ShiftHits(ArenaPoint delta);
-  double Clearance(ArenaPoint center,double heading) const;
-  bool SegmentClear(ArenaPoint a,ArenaPoint b,double heading,double margin=navigation_config::OBSTACLE_CLEARANCE_MM,bool allowEscape=false) const;
-  bool TurnClear(ArenaPoint center,double from,double to,double margin=navigation_config::OBSTACLE_CLEARANCE_MM) const;
-  bool Detour(ArenaPoint start,ArenaPoint goal,double heading,std::vector<ArenaPoint>& points) const;
- private:
-  bool SearchGrid(ArenaPoint start,ArenaPoint goal,double heading,std::vector<ArenaPoint>& points,double step,double padding) const;
-  bool court_;
-  unsigned revision_=0;
-  std::shared_ptr<std::atomic<bool>> cancelled_;
-  struct Hit { navigation_config::Block bounds; unsigned clearVotes=0; };
-  struct Candidate { ArenaPoint hit={0,0}; double stamp=-1; };
-  std::vector<Hit> hits_;
-  Candidate pending_[4];
-  double rayStamp_[4]={-1,-1,-1,-1};
-};
-// One low-priority worker. Hardware, odometry and motor writes stay on the
-// robot loop; only a copied navigation/map state is searched here.
-class NavigationPlanWorker {
- public:
-  NavigationPlanWorker();
-  ~NavigationPlanWorker();
-  bool Submit(std::function<void()> work);
-  bool Busy() const;
-  bool Ready() const;
-  double ElapsedMS() const;
- private:
-  struct Impl;
-  std::unique_ptr<Impl> impl_;
-};
+// Editable pose route with optional range-based XY odometry support.
 class GoalNavigationRoutine {
  public:
-  explicit GoalNavigationRoutine(bool useCourtMap=true,bool backgroundPlanning=false):obstacles_(useCourtMap),backgroundPlanning_(backgroundPlanning) {}
-  ~GoalNavigationRoutine();
   enum class State { Unreferenced, Reference, ReferenceReady, Ready, Driving,
     FinalHeading, Complete, Aborted, Fault };
   void Enter();
@@ -129,77 +86,48 @@ class GoalNavigationRoutine {
   const std::string& InitializationStatus() const { return initializationStatus_; }
   const std::string& WallSupportStatus() const { return wallStatus_; }
   ArenaPoint PositionCorrection() const { return positionCorrection_; }
+  const RobotPose& ControlPose() const { return controlPose_; }
   double Forward() const { return forward_; }
   double Left() const { return left_; }
   double Yaw() const { return yaw_; }
-  double FeedbackRequest() const { return heading_.FeedbackRequest(); }
-  double FeedbackMeasured() const { return heading_.FeedbackMeasured(); }
   double RemainingMM() const { return remaining_; }
   unsigned IntermediateCount() const { return route_.empty()?0:route_.size()-1; }
   unsigned LegIndex() const { return leg_; }
-  bool IsPlanning() const { return backgroundPlanning_ && planner_ && (pendingPlan_ || planner_->Busy()); }
-  double LastPlanMS() const { return lastPlanMS_; }
  private:
   void Stop() { forward_=left_=yaw_=0; }
   void DriveRoute(const NavigationInput& in,double previousYaw);
   void AdvanceRoute(const NavigationInput& in);
-  double GuideRadius(unsigned index) const;
   void CorrectFromWalls(NavigationInput& in);
-  bool EnsureClearRoute(const NavigationInput& in);
-  void ObserveObstacles(const NavigationInput& in);
-  bool PrepareTurnDetour(const NavigationInput& in,double heading);
-  bool RecoverRoute(const NavigationInput& in,unsigned rejoinIndex);
-  void InstallRecovery(const NavigationInput& in,unsigned rejoinIndex,const std::vector<RobotPose>& points,int preciseTurn=-1);
-  void ConstrainMotion(const NavigationInput& in);
-  bool RequestPlan(const NavigationInput& in,bool turn,double heading=0);
-  bool PollPlan();
-  void ContinueWhilePlanning(const NavigationInput& in);
-  void CancelPlanning();
   RobotPose SamplePose(double stamp) const;
   State state_=State::Unreferenced;
   bool referenced_=false;
-  RobotPose goal_{0,0,0},requestedPose_{0,0,0};
-  double travelHeading_=0,started_=0,settled_=-1,remaining_=0;
+  RobotPose goal_{0,0,0},requestedPose_{0,0,0},controlPose_{0,0,0};
+  double travelHeading_=0,settled_=-1,remaining_=0;
   double forward_=0,left_=0,yaw_=0;
   std::vector<RobotPose> route_;
   unsigned leg_=0;
   ArenaPoint legStart_={0,0};
-  // A late transit heading keeps correcting after XY passes the guide.
-  bool carryHeading_=false,clearanceHeading_=false;
-  double carriedHeading_=0,clearanceHeadingTarget_=0;
-  double worldVX_=0,worldVY_=0;
+  bool carryHeading_=false;
+  bool transitHeadingActive_=false;
+  double transitHeadingTarget_=0;
+  double carriedHeading_=0,worldVX_=0,worldVY_=0;
   bool finalControllerReady_=false;
   struct WallReference { int axis=-1; double coordinate=0; };
   WallReference walls_[4];
-  LocalObstacleMap obstacles_;
-  bool detourActive_=false;
-  bool recoveryActive_=false,haveRetreatOrigin_=false;
-  ArenaPoint retreatOrigin_={0,0};
-  unsigned detourEnd_=0;
-  int preciseTurnLeg_=-1;
-  double observedStamp_[4]={-1,-1,-1,-1};
   struct PoseSample { double time; RobotPose pose; };
   std::vector<PoseSample> history_;
-  double consumedStamp_[4]={-1,-1,-1,-1};
-  double wallTime_[2]={-1,-1},wallResidual_[2]={0,0};
+  double consumedStamp_[4]={-1,-1,-1,-1},wallTime_[2]={-1,-1};
+  double rangeOffset_[2]={0,0},rangeTarget_[2]={0,0},rangeStamp_[2]={-1,-1};
+  unsigned rangeSources_[2]={0,0};
   ArenaPoint positionCorrection_={0,0};
-  bool wallCorrectionPending_=false;
-  std::string wallStatus_="Wall support uses the configured reference surfaces";
   bool initialKnown_[2]={false,false};
   double initialCoordinate_[2]={0,0},initialHeading_=0;
   WaypointDrive point_;
   HeadingMotionControl heading_;
   std::string status_="Set initialization, then Initialize pose";
   std::string initializationStatus_="X/Y: number or '-'. Sensor walls: X=value, Y=value or '-'.";
-  bool backgroundPlanning_=false;
-  std::shared_ptr<NavigationPlanWorker> planner_;
-  std::shared_ptr<GoalNavigationRoutine> pendingPlan_;
-  std::shared_ptr<std::atomic<bool>> cancelPlan_;
-  unsigned pendingMapRevision_=0;
-  ArenaPoint planningVelocity_={0,0};
-  double planningHeading_=0,lastPlanMS_=0;
+  std::string wallStatus_="Encoders + gyro; ranges support XY when usable";
 };
-
 enum class TapeApproach { FromLeft, FromRight };
 
 struct TapeRoutineInput {

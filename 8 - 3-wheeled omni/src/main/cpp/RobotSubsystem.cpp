@@ -248,7 +248,7 @@ void RobotSubsystem::InitializeMotionDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Motion");
   tab.AddString("Motion status",[this] {
     // Visible revision distinguishes this executable from stale robot/UI data.
-    const std::string revision="P8-r26 MVP | ";
+    const std::string revision="P8-r28 MVP | ";
     if (!routineNotice_.empty()) return revision+routineNotice_;
     if (frc::RobotState::IsAutonomous()) return revision+(navigationSelected_?navigation_.Status():tapeRoutine_.GetStatus());
     return revision+(hardware_.HasDriveFault()?
@@ -364,9 +364,7 @@ void RobotSubsystem::InitializePoseDashboard() {
 void RobotSubsystem::InitializeNavigationDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Navigation");
   tab.AddString("Navigation status",[this] {
-    const std::string plan=navigation_.LastPlanMS()>0?
-        " | last plan "+std::to_string(static_cast<int>(std::ceil(navigation_.LastPlanMS())))+" ms":"";
-    return std::string("P8-r26 MVP | ")+(routineNotice_.empty()?navigation_.Status():routineNotice_)+plan;
+    return std::string("P8-r28 MVP | ")+(routineNotice_.empty()?navigation_.Status():routineNotice_);
   }).WithPosition(0,0).WithSize(6,1);
   stopNavigation_=tab.Add("Stop",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
       .WithPosition(6,0).WithSize(2,1).GetEntry();
@@ -383,8 +381,10 @@ void RobotSubsystem::InitializeNavigationDashboard() {
       .WithPosition(3,2).WithSize(3,1).GetEntry();
   goalHeading_=tab.Add("Goal heading deg",navigation_config::DEFAULT_GOAL_HEADING_DEG)
       .WithPosition(6,2).WithSize(2,1).GetEntry();
-  tab.AddNumber("Robot X mm",[this] { return localization_.GetPose().x_MM; }).WithPosition(0,3).WithSize(3,1);
-  tab.AddNumber("Robot Y mm",[this] { return localization_.GetPose().y_MM; }).WithPosition(3,3).WithSize(3,1);
+  tab.AddNumber("Driving X mm",[this] { return navigation_.HasReference()?navigation_.ControlPose().x_MM:localization_.GetPose().x_MM; })
+      .WithPosition(0,3).WithSize(3,1);
+  tab.AddNumber("Driving Y mm",[this] { return navigation_.HasReference()?navigation_.ControlPose().y_MM:localization_.GetPose().y_MM; })
+      .WithPosition(3,3).WithSize(3,1);
   tab.AddNumber("Robot heading deg",[this] { return localization_.GetPose().headingRad*180/robot_geometry::PI; })
       .WithPosition(6,3).WithSize(2,1);
   for (const auto& preset:navigation_config::GOALS) {

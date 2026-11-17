@@ -43,7 +43,7 @@ inline void PrepareAutonomousVector(double (&output)[3],double cap) {
   }
   if (peak==0 || !std::isfinite(cap) || cap<=0) return;
   const double floor=wheel_drive_config::MIN_RUNNING_OUTPUT;
-  const double allowed=std::min(cap,std::max(peak,2*floor));
+  const double allowed=std::min(cap,std::max(peak,wheel_drive_config::VECTOR_PEAK_FLOOR_MULTIPLIER*floor));
   const double scale=std::max(1.0,std::min(floor/smallest,allowed/peak));
   for (auto& x:output) x*=scale;
 }
@@ -88,14 +88,14 @@ class EncoderGyroOdometry {
     healthy_=false;
     forwardSpeed_=leftSpeed_=0;
     if (!std::isfinite(dt) || dt<=0) return Reject("Invalid odometry interval");
-    if (dt>localization_config::AUTO_MAX_SAMPLE_GAP_S) return Reject("Odometry sample gap exceeds 500 ms");
+    if (dt>localization_config::AUTO_MAX_SAMPLE_GAP_S) return Reject("Odometry sample gap exceeds configured limit");
     if (!std::isfinite(yawDeg) || !std::isfinite(gyroRateDps)) return Reject("IMU yaw/rate sample is not finite");
     double wheel[3];
     for (int i=0;i<3;++i) {
       wheel[i]=(counts[i]-previous_[i])*localization_config::WHEEL_ENCODER_SIGN[i]*
           localization_config::ENCODER_MM_PER_COUNT;
       if (!std::isfinite(wheel[i])) return Reject("Encoder sample is not finite");
-      if (std::fabs(wheel[i])/dt>3*localization_config::MAX_WHEEL_SPEED_MMPS) return Reject("Encoder jump/out-of-range speed");
+      if (std::fabs(wheel[i])/dt>wheel_drive_config::MAX_PLAUSIBLE_SPEED_FACTOR*localization_config::MAX_WHEEL_SPEED_MMPS) return Reject("Encoder jump/out-of-range speed");
     }
     const double heading=robot_geometry::Wrap(robot_geometry::Radians(yawDeg)+offset_);
     const double turn=robot_geometry::Wrap(heading-pose_.headingRad);
@@ -150,7 +150,7 @@ class TeleopPoseTelemetry {
     for (int i=0;i<3;++i) {
       wheel[i]=(counts[i]-previous_[i])*localization_config::WHEEL_ENCODER_SIGN[i]*localization_config::ENCODER_MM_PER_COUNT;
       const double speed=std::fabs(wheel[i])/dt;
-      if (!std::isfinite(speed) || speed>3*localization_config::MAX_WHEEL_SPEED_MMPS) return false;
+      if (!std::isfinite(speed) || speed>wheel_drive_config::MAX_PLAUSIBLE_SPEED_FACTOR*localization_config::MAX_WHEEL_SPEED_MMPS) return false;
       maximum=std::max(maximum,speed);
     }
     double forward=0,left=0;
@@ -233,7 +233,7 @@ class TeleopDriveController {
       return;
     }
     if (!Finite(rawX) || !Finite(rawY) || !Finite(rawRightX) ||
-        Abs(rawX) > 1.01 || Abs(rawY) > 1.01 || Abs(rawRightX) > 1.01 ||
+        Abs(rawX) > localization_config::DRIVER_MAX_VALID_AXIS || Abs(rawY) > localization_config::DRIVER_MAX_VALID_AXIS || Abs(rawRightX) > localization_config::DRIVER_MAX_VALID_AXIS ||
         !Finite(dt) || dt < 0.0) {
       Stop("Invalid controller input or timing", true);
       return;
@@ -268,7 +268,7 @@ class TeleopDriveController {
     const double x=Abs(rawX)<=deadband?0:rawX;
     const double y=Abs(rawY)<=deadband?0:rawY;
     const double magnitude=std::hypot(x,y);
-    const double seconds = Clamp(dt, 0.0, 0.050);
+    const double seconds = Clamp(dt, 0.0, localization_config::TELEOP_MAX_CONTROL_STEP_S);
     if (magnitude <= deadband) {
       // Neutral translation stops immediately; right-stick rotation is independent.
       forward_MMps_ = 0.0;
@@ -382,7 +382,7 @@ class WheelDriveController {
       if (observe) {
         const double measured=(counts[i]-previousCounts_[i])*localization_config::WHEEL_ENCODER_SIGN[i]*
             localization_config::ENCODER_MM_PER_COUNT/sampleElapsed_;
-        if (!Finite(measured) || Abs(measured)>3*localization_config::MAX_WHEEL_SPEED_MMPS) {
+        if (!Finite(measured) || Abs(measured)>wheel_drive_config::MAX_PLAUSIBLE_SPEED_FACTOR*localization_config::MAX_WHEEL_SPEED_MMPS) {
           Fault("Encoder jump/out-of-range speed",i); return;
         }
         measured_[i]+=alpha*(measured-measured_[i]); previousCounts_[i]=counts[i];

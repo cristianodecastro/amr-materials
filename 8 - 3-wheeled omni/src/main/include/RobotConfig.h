@@ -2,6 +2,14 @@
 #include <cmath>
 #include "RobotTypes.h"
 
+// MOTION TUNING INDEX (all control values live in this header):
+// localization_config: geometry, Teleop limits, feedback timing, sensor mounts.
+// wheel_drive_config: PWM floor, output scaling and encoder fault thresholds.
+// heading_control_config: shared gyro controller and final heading tolerance.
+// navigation_config: transit/approach behavior, route smoothing and sensor blend.
+// position_control_config: shared final XY braking/settling/correction behavior.
+// tape_test_config: tape approach and scan settings.
+
 // On-demand USB still photos; no colour-processing or continuous capture.
 namespace camera_config {
 static constexpr int DEVICE=0,WIDTH=640,HEIGHT=480,FPS=15,PREVIEW_FPS=1;
@@ -15,6 +23,7 @@ static constexpr int DRIVER_JOYSTICK_PORT=0;
 static constexpr int DRIVER_LEFT_X_AXIS=0,DRIVER_LEFT_Y_AXIS=1,DRIVER_RIGHT_X_AXIS=2;
 static constexpr double DRIVER_LEFT_X_SIGN=1,DRIVER_LEFT_Y_SIGN=-1,DRIVER_RIGHT_X_SIGN=1;
 static constexpr double DRIVER_STICK_DEADBAND=0.12;
+static constexpr double DRIVER_MAX_VALID_AXIS=1.01,TELEOP_MAX_CONTROL_STEP_S=0.050;
 // Operator speed/acceleration limits, not individual motor corrections.
 static constexpr double TELEOP_ACCELERATION_MMPS2=400;
 static constexpr double TELEOP_MAX_MOTOR_OUTPUT=0.90;
@@ -75,6 +84,9 @@ namespace wheel_drive_config {
 // Installed drivetrain cannot reliably move below this electrical duty.
 // Applies to all nonzero drive commands in both modes; zero still means stop.
 static constexpr double MIN_RUNNING_OUTPUT=0.15;
+static constexpr double VECTOR_PEAK_FLOOR_MULTIPLIER=2;
+static constexpr double COMMAND_STOP_MMPS=0.01,COMMAND_STOP_RADPS=0.0001;
+static constexpr double MAX_PLAUSIBLE_SPEED_FACTOR=3;
 static constexpr double SPEED_FILTER_S=0.060,SPEED_WINDOW_S=0.060,MAX_SAMPLE_S=0.10;
 static constexpr double ZERO_SPEED_MMPS=0.5;
 static constexpr double STALL_REQUEST_MMPS=20,STALL_MEASURED_MMPS=3,STALL_OUTPUT=0.12,STALL_TIMEOUT_S=1;
@@ -99,51 +111,51 @@ static constexpr double COBRA_TAPE_V[4]={4.997559,4.997559,4.997559,4.997559};
 }
 
 namespace heading_control_config {
-static constexpr double HEADING_TOLERANCE_RAD=robot_geometry::PI/180;
+static constexpr double FINAL_HEADING_TOLERANCE_DEG=1;
+static constexpr double HEADING_TOLERANCE_RAD=FINAL_HEADING_TOLERANCE_DEG*robot_geometry::PI/180;
 static constexpr double STATIONARY_SPEED_MMPS=8,STATIONARY_YAW_DPS=0.5;
-static constexpr double HOLD_HEADING_DEADBAND_RAD=0.25*robot_geometry::PI/180;
+static constexpr double HOLD_HEADING_DEADBAND_DEG=0.25;
+static constexpr double HOLD_HEADING_DEADBAND_RAD=HOLD_HEADING_DEADBAND_DEG*robot_geometry::PI/180;
 static constexpr double HOLD_HEADING_KP=2.4,HOLD_YAW_RATE_DAMPING=0.65;
-static constexpr double HOLD_YAW_ACCEL_RADPS2=180*robot_geometry::PI/180;
+static constexpr double HOLD_YAW_ACCEL_DPS2=180;
+static constexpr double HOLD_YAW_ACCEL_RADPS2=HOLD_YAW_ACCEL_DPS2*robot_geometry::PI/180;
 static constexpr double HOLD_BRAKE_RESPONSE_S=0.18,HOLD_RECHECK_S=0.060;
-static constexpr double HOLD_RECHECK_WINDOW_RAD=2*robot_geometry::PI/180;
-static constexpr double HOLD_HEADING_MAX_YAW_RADPS=20*robot_geometry::PI/180;
-static constexpr double YAW_DIRECTION_ERROR_RAD=5*robot_geometry::PI/180;
-static constexpr double YAW_DIRECTION_CHECK_MIN_RADPS=0.1*robot_geometry::PI/180;
+static constexpr double HOLD_RECHECK_WINDOW_DEG=2,HOLD_HEADING_MAX_YAW_DPS=20;
+static constexpr double HOLD_RECHECK_WINDOW_RAD=HOLD_RECHECK_WINDOW_DEG*robot_geometry::PI/180;
+static constexpr double HOLD_HEADING_MAX_YAW_RADPS=HOLD_HEADING_MAX_YAW_DPS*robot_geometry::PI/180;
+static constexpr double YAW_DIRECTION_ERROR_DEG=5,YAW_DIRECTION_CHECK_MIN_DPS=0.1;
+static constexpr double YAW_DIRECTION_ERROR_RAD=YAW_DIRECTION_ERROR_DEG*robot_geometry::PI/180;
+static constexpr double YAW_DIRECTION_CHECK_MIN_RADPS=YAW_DIRECTION_CHECK_MIN_DPS*robot_geometry::PI/180;
 // Motor inertia and cached IMU samples can briefly oppose a NEW yaw request.
 static constexpr double YAW_RESPONSE_SETTLE_S=0.30;
 }
 
 // Minimum version: manually supplied intermediate poses and one final pose.
 namespace navigation_config {
+// FINAL POSE
 static constexpr double POSITION_TOLERANCE_MM=10;
+static constexpr double FINAL_SETTLE_S=0.30,FINAL_APPROACH_DISTANCE_MM=200;
+// TRANSLATION
 static constexpr double SPEED_MMPS=350,ACCEL_MMPS2=300;
-static constexpr double TRAVEL_HEADING_DEADBAND_RAD=3*robot_geometry::PI/180;
-static constexpr double TRAVEL_HEADING_KP=1.2;
-static constexpr double MISSION_TIMEOUT_S=60;
+// TRANSIT HEADING: hysteresis prevents repeated small corrections.
+static constexpr double TRANSIT_HEADING_START_DEG=12,TRANSIT_HEADING_RELEASE_DEG=6;
+static constexpr double TRANSIT_HEADING_KP=0.8;
+static constexpr double TRANSIT_HEADING_START_RAD=TRANSIT_HEADING_START_DEG*robot_geometry::PI/180;
+static constexpr double TRANSIT_HEADING_RELEASE_RAD=TRANSIT_HEADING_RELEASE_DEG*robot_geometry::PI/180;
+// NEAR FINAL GOAL: tighter hold; final stopped yaw uses heading_control_config.
+static constexpr double APPROACH_HEADING_DEADBAND_DEG=3,APPROACH_HEADING_KP=1.2;
+static constexpr double APPROACH_HEADING_DEADBAND_RAD=APPROACH_HEADING_DEADBAND_DEG*robot_geometry::PI/180;
+// INTERMEDIATE POSES / SMOOTHING
 static constexpr double INTERMEDIATE_POSITION_TOLERANCE_MM=25,MIN_PASS_SPEED_MMPS=120;
-static constexpr double INTERMEDIATE_HEADING_TOLERANCE_RAD=10*robot_geometry::PI/180;
+static constexpr double INTERMEDIATE_HEADING_TOLERANCE_DEG=10;
+static constexpr double INTERMEDIATE_HEADING_TOLERANCE_RAD=INTERMEDIATE_HEADING_TOLERANCE_DEG*robot_geometry::PI/180;
 static constexpr double LOOKAHEAD_MM=100,CORNER_BLEND_MM=25;
+static constexpr double MIN_SEGMENT_MM=1;
 static constexpr unsigned MAX_INTERMEDIATE_POINTS=32;
 // Conservative wall association and complementary XY correction, Auto only.
-static constexpr double WALL_NORMAL_COS=0.9659258263; // within 15 degrees of normal
 static constexpr double WALL_MAX_INNOVATION_MM=100,WALL_BLEND=0.25,WALL_MAX_STEP_MM=5;
-static constexpr double WALL_FINAL_RESIDUAL_MM=5,WALL_MAX_YAW_RATE_RADPS=5*robot_geometry::PI/180;
 static constexpr double WALL_HISTORY_S=0.5;
-// Range guard uses the robot envelope, not distance from the sensing face.
-static constexpr double BODY_RADIUS_MM=159.74+12,FRONT_REACH_MM=BODY_RADIUS_MM+120;
-static constexpr double OBSTACLE_CLEARANCE_MM=30;
-static constexpr double DETOUR_GRID_MM=50,DETOUR_SPEED_MMPS=200;
-static constexpr double CLEARANCE_BRAKE_HORIZON_S=0.25;
-static constexpr double SENSED_OBSTACLE_RADIUS_MM=100,OBSTACLE_OBSERVE_RANGE_MM=650;
-static constexpr double OBSTACLE_CONFIRM_WINDOW_S=0.8,OBSTACLE_MATCH_MM=100;
-static constexpr double OBSTACLE_FREE_RAY_MARGIN_MM=60,RECOVERY_SPEED_MMPS=120;
-static constexpr double RECOVERY_SEARCH_RADIUS_MM=400;
-struct Block { double xmin,ymin,xmax,ymax; };
-// Physical keep-out regions from court_barriers.png; tape square stays free.
-static constexpr Block COURT_BLOCKS[]={
-    {780,1220,1220,2000}, // upper storage block: 440 x 780
-    {0,0,2000,220},      // delivery band
-    {985,0,1015,600}};   // lower central divider: 30 x 600
+static constexpr double BRAKE_PREVIEW_S=0.25;
 // Each goal owns an ordered "x,y,headingDeg; ..." list. Empty means direct travel.
 // These short north-lane examples demonstrate zero, one and multiple points.
 struct GoalPreset { const char* name; double xMM,yMM,headingDeg; const char* intermediatePoses; };
@@ -154,6 +166,14 @@ static constexpr GoalPreset GOALS[]={
     {"Top right",1700,1700,90,"650,850,0;1500,850,90;1700,1400,90"}};
 static constexpr double DEFAULT_GOAL_X_MM=GOALS[0].xMM,DEFAULT_GOAL_Y_MM=GOALS[0].yMM,DEFAULT_GOAL_HEADING_DEG=GOALS[0].headingDeg;
 }
+// Shared final XY controller for Navigation and the tape approach.
+namespace position_control_config {
+static constexpr double POSITION_TOLERANCE_MM=navigation_config::POSITION_TOLERANCE_MM;
+static constexpr double POSITION_KP=1.5,MIN_APPROACH_MMPS=120;
+static constexpr double NEAR_TARGET_MM=60,CAPTURE_RADIUS_RATIO=0.7;
+static constexpr double BRAKE_RESPONSE_S=0.18,VELOCITY_FILTER_S=0.08;
+static constexpr double CORRECTION_MAX_S=0.50,CORRECTION_REST_S=0.18,WAYPOINT_SETTLE_S=0.30;
+}
 // Explicit-start corner reference and tape approach. Arena +X east, +Y north.
 namespace tape_test_config {
 static constexpr double START_HEADING_DEG=0; // north, under the new arena convention
@@ -161,14 +181,11 @@ static constexpr ArenaPoint TARGET_FROM_LEFT={220,500},TARGET_FROM_RIGHT={580,50
 static constexpr double LEFT_WALL_X_MM=0,REAR_WALL_Y_MM=0;
 static constexpr double DRIVE_SPEED_MMPS=localization_config::TELEOP_SPEED_MMPS;
 static constexpr double DRIVE_ACCEL_MMPS2=localization_config::TELEOP_ACCELERATION_MMPS2;
-static constexpr double POSITION_TOLERANCE_MM=navigation_config::POSITION_TOLERANCE_MM;
-static constexpr double POSITION_KP=1.5,MIN_APPROACH_MMPS=120;
-static constexpr double NEAR_TARGET_MM=60; // capture radius is 70% of the selected stopping tolerance
-static constexpr double BRAKE_ACCEL_MMPS2=DRIVE_ACCEL_MMPS2,BRAKE_RESPONSE_S=0.18,VELOCITY_FILTER_S=0.08;
-static constexpr double CORRECTION_MAX_S=0.50,CORRECTION_REST_S=0.18,WAYPOINT_SETTLE_S=0.30,DRIVE_TIMEOUT_S=35;
+static constexpr double DRIVE_TIMEOUT_S=35;
 static constexpr double SCAN_SPEED_MMPS=60,SCAN_ACCEL_MMPS2=80,CENTER_MIN_SPEED_MMPS=30,CENTER_KP_MMPS=100;
 static constexpr double SCAN_MAX_TRAVEL_MM=300,SCAN_TIMEOUT_S=20,TAPE_ACQUIRE_LEVEL=0.40;
 static constexpr double CENTER_BLACK_MIN=0.55,CENTER_LEVEL_TOLERANCE=0.10,CENTER_VOLTAGE_TOLERANCE_V=0.20;
 static constexpr double CENTER_OUTER_CONTRAST=0.20,TAPE_SETTLE_S=0.30,TAPE_LOST_S=0.40;
 static constexpr double NO_PROGRESS_TIMEOUT_S=2,PROGRESS_MM=2;
+static constexpr double PROGRESS_EFFORT_MMPS=20,REFERENCE_NORMAL_COMPONENT=0.98;
 }
