@@ -50,16 +50,40 @@ class WaypointDrive {
 struct NavigationInput {
   MotionInput motion;
   double forwardMMps=0,leftMMps=0;
-  double leftRangeMM=-1,rearRangeMM=-1,leftTime=-1,rearTime=-1;
-  bool leftValid=false,rearValid=false;
+  // left IR, rear sonar, right IR, front sonar (same order as sensor mounts).
+  double rangeMM[4]={-1,-1,-1,-1},stamp[4]={-1,-1,-1,-1};
+  bool valid[4]={false,false,false,false};
+};
+struct PoseInitialization {
+  std::string xMM="-",yMM="-";
+  double headingDeg=0;
+  std::string wall[4]={"X=0","Y=0","-","-"};
+};
+// Fixed court rectangles plus small, persistent patches from range returns.
+// The optional false constructor is used by detached clear-floor unit tests.
+class LocalObstacleMap {
+ public:
+  explicit LocalObstacleMap(bool court=true):court_(court) {}
+  bool UsesCourt() const { return court_; }
+  void ClearHits() { hits_.clear(); }
+  void AddHit(ArenaPoint hit,double beamRad);
+  void ShiftHits(ArenaPoint delta);
+  double Clearance(ArenaPoint center,double heading) const;
+  bool SegmentClear(ArenaPoint a,ArenaPoint b,double heading,double margin=navigation_config::OBSTACLE_CLEARANCE_MM,bool allowEscape=false) const;
+  bool TurnClear(ArenaPoint center,double from,double to,double margin=navigation_config::OBSTACLE_CLEARANCE_MM) const;
+  bool Detour(ArenaPoint start,ArenaPoint goal,double heading,std::vector<ArenaPoint>& points) const;
+ private:
+  bool court_;
+  std::vector<navigation_config::Block> hits_;
 };
 class GoalNavigationRoutine {
  public:
+  explicit GoalNavigationRoutine(bool useCourtMap=true):obstacles_(useCourtMap) {}
   enum class State { Unreferenced, Reference, ReferenceReady, Ready, Driving,
     FinalHeading, Complete, Aborted, Fault };
   void Enter();
-  void ReferenceCorner(double now);
-  bool StartGoal(RobotPose goal,const NavigationInput& in,const std::string& intermediateXY="");
+  bool InitializePose(const PoseInitialization& settings);
+  bool StartGoal(RobotPose goal,const NavigationInput& in,const std::string& intermediatePoses="");
   void Update(const NavigationInput& in);
   void Abort();
   void Fail(const std::string& message);
@@ -72,6 +96,9 @@ class GoalNavigationRoutine {
   void ConfirmReference();
   const RobotPose& Goal() const { return goal_; }
   const std::string& Status() const { return status_; }
+  const std::string& InitializationStatus() const { return initializationStatus_; }
+  const std::string& WallSupportStatus() const { return wallStatus_; }
+  ArenaPoint PositionCorrection() const { return positionCorrection_; }
   double Forward() const { return forward_; }
   double Left() const { return left_; }
   double Yaw() const { return yaw_; }
@@ -82,20 +109,42 @@ class GoalNavigationRoutine {
   unsigned LegIndex() const { return leg_; }
  private:
   void Stop() { forward_=left_=yaw_=0; }
-  void DriveRoute(const NavigationInput& in);
+  void DriveRoute(const NavigationInput& in,double previousYaw);
+  void CorrectFromWalls(NavigationInput& in);
+  bool EnsureClearRoute(const NavigationInput& in);
+  void ObserveObstacles(const NavigationInput& in);
+  bool PrepareTurnDetour(const NavigationInput& in,double heading);
+  void ConstrainMotion(const NavigationInput& in);
+  RobotPose SamplePose(double stamp) const;
   State state_=State::Unreferenced;
   bool referenced_=false;
   RobotPose goal_{0,0,0},requestedPose_{0,0,0};
   double travelHeading_=0,started_=0,settled_=-1,remaining_=0;
   double forward_=0,left_=0,yaw_=0;
-  std::vector<ArenaPoint> route_;
-  ArenaPoint legStart_={0,0};
+  std::vector<RobotPose> route_;
   unsigned leg_=0;
   double worldVX_=0,worldVY_=0;
   bool finalControllerReady_=false;
+  struct WallReference { int axis=-1; double coordinate=0; };
+  WallReference walls_[4];
+  LocalObstacleMap obstacles_;
+  bool detourActive_=false;
+  unsigned detourEnd_=0;
+  int preciseTurnLeg_=-1;
+  double observedStamp_[4]={-1,-1,-1,-1};
+  struct PoseSample { double time; RobotPose pose; };
+  std::vector<PoseSample> history_;
+  double consumedStamp_[4]={-1,-1,-1,-1};
+  double wallTime_[2]={-1,-1},wallResidual_[2]={0,0};
+  ArenaPoint positionCorrection_={0,0};
+  bool wallCorrectionPending_=false;
+  std::string wallStatus_="Wall support uses the configured reference surfaces";
+  bool initialKnown_[2]={false,false};
+  double initialCoordinate_[2]={0,0},initialHeading_=0;
   WaypointDrive point_;
   HeadingMotionControl heading_;
-  std::string status_="Place in clear lower-left corner facing north, then Reference corner";
+  std::string status_="Set initialization, then Initialize pose";
+  std::string initializationStatus_="X/Y: number or '-'. Sensor walls: X=value, Y=value or '-'.";
 };
 
 enum class TapeApproach { FromLeft, FromRight };

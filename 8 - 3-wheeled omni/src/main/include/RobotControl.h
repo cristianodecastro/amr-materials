@@ -103,6 +103,9 @@ class Localization {
   void Reset(double x_MM,double y_MM,double headingDeg);
   void UpdateOdometry(double dtSeconds);
   void SetAutonomousMode(bool autonomous);
+  void CorrectAutonomousPosition(ArenaPoint delta) {
+    if (autonomousMode_) odometry_.CorrectPosition(delta.x,delta.y);
+  }
   bool IsHealthy() const { return autonomousMode_?odometry_.Healthy():teleopTelemetry_.Healthy(); }
   const RobotPose& GetPose() const { return autonomousMode_?odometry_.Pose():teleopTelemetry_.Pose(); }
   double GetBodyVelocityX_MMps() const { return autonomousMode_?odometry_.ForwardSpeed():teleopTelemetry_.ForwardSpeed(); }
@@ -126,6 +129,7 @@ class RobotSubsystem : public frc2::SubsystemBase {
   void InitializeMotionDashboard();
   void InitializeSensingDashboard();
   void InitializeNavigationDashboard();
+  void InitializePoseDashboard();
   void UpdateGoalSelection();
   void UpdateTeleopDrive(double dt);
   void UpdateSonarPoll(double now);
@@ -138,10 +142,10 @@ class RobotSubsystem : public frc2::SubsystemBase {
   TapeAlignmentRoutine tapeRoutine_;
   GoalNavigationRoutine navigation_;
   bool navigationSelected_=false;
-  nt::NetworkTableEntry referenceCorner_,goToGoal_,stopNavigation_,goalX_,goalY_,goalHeading_;
-  nt::NetworkTableEntry intermediateXY_;
+  nt::NetworkTableEntry initializePose_,initializeFromTab_,goToGoal_,stopNavigation_,goalX_,goalY_,goalHeading_;
+  nt::NetworkTableEntry intermediatePoses_,initialX_,initialY_,initialHeading_,wallReferences_[4];
   frc::SendableChooser<int> goalChooser_;
-  struct GoalSettings { double xMM,yMM,headingDeg; std::string intermediateXY; };
+  struct GoalSettings { double xMM,yMM,headingDeg; std::string intermediatePoses; };
   std::vector<GoalSettings> goalSettings_;
   int selectedGoal_=-1;
   nt::NetworkTableEntry startTapeLeft_,startTapeRight_,stopTape_;

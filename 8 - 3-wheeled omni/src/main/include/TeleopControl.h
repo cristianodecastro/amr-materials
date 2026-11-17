@@ -109,6 +109,9 @@ class EncoderGyroOdometry {
     healthy_=robot_geometry::Finite(pose_);
     return healthy_;
   }
+  void CorrectPosition(double dx,double dy) {
+    if (std::isfinite(dx) && std::isfinite(dy)) { pose_.x_MM+=dx; pose_.y_MM+=dy; }
+  }
   const RobotPose& Pose() const { return pose_; }
   bool Healthy() const { return healthy_; }
   double ForwardSpeed() const { return forwardSpeed_; }

@@ -19,6 +19,7 @@ void RobotSubsystem::InitializeDashboard() {
   InitializeMotionDashboard();
   InitializeSensingDashboard();
   InitializeNavigationDashboard();
+  InitializePoseDashboard();
 }
 void RobotSubsystem::EnterAutonomous() {
   StopAll();
@@ -34,7 +35,8 @@ void RobotSubsystem::StopAll() {
   tapeRoutine_.Abort(); autonomousSession_=false;
   navigation_.Abort();
   startTapeLeft_.SetBoolean(false); startTapeRight_.SetBoolean(false); stopTape_.SetBoolean(false);
-  referenceCorner_.SetBoolean(false); goToGoal_.SetBoolean(false); stopNavigation_.SetBoolean(false);
+  initializePose_.SetBoolean(false); goToGoal_.SetBoolean(false); stopNavigation_.SetBoolean(false);
+  initializeFromTab_.SetBoolean(false);
   localization_.SetAutonomousMode(false);
 }
 void RobotSubsystem::Periodic() {
@@ -56,9 +58,9 @@ void RobotSubsystem::Periodic() {
   UpdateGoalSelection(); // editable settings for the next run; never changes an active route
   const bool startLeft=startTapeLeft_.GetBoolean(false),startRight=startTapeRight_.GetBoolean(false);
   const bool stop=stopTape_.GetBoolean(false);
-  const bool reference=referenceCorner_.GetBoolean(false),go=goToGoal_.GetBoolean(false);
+  const bool reference=initializePose_.GetBoolean(false) || initializeFromTab_.GetBoolean(false),go=goToGoal_.GetBoolean(false);
   const bool stopNav=stopNavigation_.GetBoolean(false);
-  if (reference) referenceCorner_.SetBoolean(false);
+  if (reference) { initializePose_.SetBoolean(false); initializeFromTab_.SetBoolean(false); }
   if (go) goToGoal_.SetBoolean(false);
   if (stopNav) stopNavigation_.SetBoolean(false);
   if (startLeft) startTapeLeft_.SetBoolean(false);
@@ -103,24 +105,34 @@ NavigationInput RobotSubsystem::NavigationSample(double now,double dt) {
       frc::DriverStation::GetInstance().IsDSAttached(),false,false,
       robot_geometry::Radians(hardware_.GetYawRateDegreesPerSecond())};
   in.forwardMMps=localization_.GetBodyVelocityX_MMps(); in.leftMMps=localization_.GetBodyVelocityY_MMps();
-  in.leftRangeMM=irReading_[0].distanceMM; in.leftValid=irReading_[0].valid; in.leftTime=lastSensorTime_;
-  in.rearRangeMM=sonarRanges_MM_[1]; in.rearValid=sonarRangeValid_[1]; in.rearTime=sonarReadTime_[1];
+  in.rangeMM[0]=irReading_[0].distanceMM; in.valid[0]=irReading_[0].valid; in.stamp[0]=lastSensorTime_;
+  in.rangeMM[2]=irReading_[1].distanceMM; in.valid[2]=irReading_[1].valid; in.stamp[2]=lastSensorTime_;
+  in.rangeMM[1]=sonarRanges_MM_[1]; in.valid[1]=sonarRangeValid_[1]; in.stamp[1]=sonarReadTime_[1];
+  in.rangeMM[3]=sonarRanges_MM_[0]; in.valid[3]=sonarRangeValid_[0]; in.stamp[3]=sonarReadTime_[0];
   return in;
 }
 void RobotSubsystem::UpdateNavigation(double now,double dt,bool reference,bool go) {
   auto in=NavigationSample(now,dt);
-  if (reference && go) routineNotice_="Reference corner and Go must be requested separately";
+  if (reference && go) routineNotice_="Initialize and Go must be requested separately";
   else if (reference) {
-    if (navigation_.IsRunning()) routineNotice_="Navigation running; Stop before taking a new corner reference";
-    else navigation_.ReferenceCorner(now);
+    if (navigation_.IsRunning() && navigation_.GetState()!=GoalNavigationRoutine::State::Reference)
+      routineNotice_="Navigation running; Stop before reinitializing";
+    else {
+      PoseInitialization settings;
+      settings.xMM=initialX_.GetString("-"); settings.yMM=initialY_.GetString("-");
+      settings.headingDeg=initialHeading_.GetDouble(0);
+      for (int i=0;i<4;++i) settings.wall[i]=wallReferences_[i].GetString("-");
+      navigation_.InitializePose(settings);
+    }
   } else if (go) {
     const RobotPose goal={goalX_.GetDouble(navigation_config::DEFAULT_GOAL_X_MM),
         goalY_.GetDouble(navigation_config::DEFAULT_GOAL_Y_MM),
         robot_geometry::Radians(goalHeading_.GetDouble(navigation_config::DEFAULT_GOAL_HEADING_DEG))};
-    navigation_.StartGoal(goal,in,intermediateXY_.GetString(""));
+    navigation_.StartGoal(goal,in,intermediatePoses_.GetString(""));
   }
   if (hardware_.HasDriveFault() && navigation_.IsRunning()) navigation_.Fail(hardware_.GetDriveStatus());
   navigation_.Update(in);
+  localization_.CorrectAutonomousPosition(navigation_.PositionCorrection());
   if (navigation_.NeedsPoseReset()) {
     const auto pose=navigation_.RequestedPose();
     localization_.Reset(pose.x_MM,pose.y_MM,pose.headingRad*180/robot_geometry::PI);
@@ -212,7 +224,8 @@ void RobotSubsystem::UpdateSonarPoll(double now) {
     if (now-sonarPingTime_<localization_config::SONAR_ECHO_SETTLE_S) return;
     const int i=nextSonarIndex_;
     const double range=hardware_.GetSonarRangeMM(i);
-    sonarReadTime_[i]=now;
+    // Range belongs to the ping pose, not the later counter-read pose.
+    sonarReadTime_[i]=sonarPingTime_;
     sonarRangeValid_[i]=hardware_.IsSonarRangeValid(i) && std::isfinite(range) &&
         range>=localization_config::SONAR_MIN_RANGE_MM && range<=localization_config::SONAR_MAX_RANGE_MM;
     sonarRanges_MM_[i]=sonarRangeValid_[i]?range:-1;
@@ -228,7 +241,7 @@ void RobotSubsystem::InitializeMotionDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Motion");
   tab.AddString("Motion status",[this] {
     // Visible revision distinguishes this executable from stale robot/UI data.
-    const std::string revision="P8-r22 MVP | ";
+    const std::string revision="P8-r23 MVP | ";
     if (!routineNotice_.empty()) return revision+routineNotice_;
     if (frc::RobotState::IsAutonomous()) return revision+(navigationSelected_?navigation_.Status():tapeRoutine_.GetStatus());
     return revision+(hardware_.HasDriveFault()?
@@ -309,14 +322,44 @@ void RobotSubsystem::InitializeSensingDashboard() {
   }).WithPosition(4,4).WithSize(4,1);
 }
 
+void RobotSubsystem::InitializePoseDashboard() {
+  auto& tab=frc::Shuffleboard::GetTab("Initialization");
+  tab.AddString("Initialization status",[this] {
+    return routineNotice_.empty()?navigation_.InitializationStatus():routineNotice_;
+  }).WithPosition(0,0).WithSize(8,1);
+  initialX_=tab.Add("Start X mm or -",wpi::Twine("-"))
+      .WithWidget(frc::BuiltInWidgets::kTextView).WithPosition(0,1).WithSize(2,1).GetEntry();
+  initialY_=tab.Add("Start Y mm or -",wpi::Twine("-"))
+      .WithWidget(frc::BuiltInWidgets::kTextView).WithPosition(2,1).WithSize(2,1).GetEntry();
+  initialHeading_=tab.Add("Start heading deg",0.0).WithPosition(4,1).WithSize(2,1).GetEntry();
+  initializeFromTab_=tab.Add("Initialize pose",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
+      .WithPosition(6,1).WithSize(2,1).GetEntry();
+  const PoseInitialization defaults;
+  const char* labels[]={"Left IR wall","Rear sonar wall","Right IR wall","Front sonar wall"};
+  for (int i=0;i<4;++i)
+    wallReferences_[i]=tab.Add(labels[i],wpi::Twine(defaults.wall[i]))
+        .WithWidget(frc::BuiltInWidgets::kTextView).WithPosition(2*i,2).WithSize(2,1).GetEntry();
+  tab.AddNumber("Initialized X mm",[this] { return navigation_.HasReference()?navigation_.RequestedPose().x_MM:-1; })
+      .WithPosition(0,3).WithSize(2,1);
+  tab.AddNumber("Initialized Y mm",[this] { return navigation_.HasReference()?navigation_.RequestedPose().y_MM:-1; })
+      .WithPosition(2,3).WithSize(2,1);
+  tab.AddNumber("Initialized heading deg",[this] {
+    return navigation_.HasReference()?navigation_.RequestedPose().headingRad*180/robot_geometry::PI:0;
+  }).WithPosition(4,3).WithSize(2,1);
+  tab.AddBoolean("Initialized",[this] { return navigation_.HasReference(); }).WithPosition(6,3).WithSize(2,1);
+  tab.AddString("Travel wall support",[this] { return navigation_.WallSupportStatus(); })
+      .WithPosition(0,4).WithSize(8,1);
+  initializeFromTab_.SetBoolean(false);
+}
+
 void RobotSubsystem::InitializeNavigationDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Navigation");
   tab.AddString("Navigation status",[this] {
-    return std::string("P8-r22 MVP | ")+(routineNotice_.empty()?navigation_.Status():routineNotice_);
+    return std::string("P8-r23 MVP | ")+(routineNotice_.empty()?navigation_.Status():routineNotice_);
   }).WithPosition(0,0).WithSize(6,1);
   stopNavigation_=tab.Add("Stop",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
       .WithPosition(6,0).WithSize(2,1).GetEntry();
-  referenceCorner_=tab.Add("Reference corner",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
+  initializePose_=tab.Add("Initialize pose",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
       .WithPosition(0,1).WithSize(2,1).GetEntry();
   goToGoal_=tab.Add("Go to goal",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
       .WithPosition(2,1).WithSize(2,1).GetEntry();
@@ -335,7 +378,7 @@ void RobotSubsystem::InitializeNavigationDashboard() {
       .WithPosition(6,3).WithSize(2,1);
   for (const auto& preset:navigation_config::GOALS) {
     const int index=static_cast<int>(goalSettings_.size());
-    goalSettings_.push_back({preset.xMM,preset.yMM,preset.headingDeg,preset.intermediateXY});
+    goalSettings_.push_back({preset.xMM,preset.yMM,preset.headingDeg,preset.intermediatePoses});
     if (index==0) goalChooser_.SetDefaultOption(preset.name,index);
     else goalChooser_.AddOption(preset.name,index);
   }
@@ -343,10 +386,10 @@ void RobotSubsystem::InitializeNavigationDashboard() {
   goalSettings_.push_back({navigation_config::DEFAULT_GOAL_X_MM,navigation_config::DEFAULT_GOAL_Y_MM,0,""});
   tab.Add("Saved goal",goalChooser_).WithWidget(frc::BuiltInWidgets::kComboBoxChooser)
       .WithPosition(0,4).WithSize(2,1);
-  intermediateXY_=tab.Add("Intermediate XY mm (x,y; x,y)",wpi::Twine(""))
+  intermediatePoses_=tab.Add("Intermediate poses (x,y,deg; ...)",wpi::Twine(""))
       .WithWidget(frc::BuiltInWidgets::kTextView).WithPosition(2,4).WithSize(6,1).GetEntry();
   UpdateGoalSelection();
-  referenceCorner_.SetBoolean(false); goToGoal_.SetBoolean(false); stopNavigation_.SetBoolean(false);
+  initializePose_.SetBoolean(false); goToGoal_.SetBoolean(false); stopNavigation_.SetBoolean(false);
 }
 
 void RobotSubsystem::UpdateGoalSelection() {
@@ -356,9 +399,9 @@ void RobotSubsystem::UpdateGoalSelection() {
   if (selectedGoal_>=0) {
     auto& old=goalSettings_[selectedGoal_];
     old={goalX_.GetDouble(old.xMM),goalY_.GetDouble(old.yMM),goalHeading_.GetDouble(old.headingDeg),
-        intermediateXY_.GetString(old.intermediateXY)};
+        intermediatePoses_.GetString(old.intermediatePoses)};
   }
   const auto& next=goalSettings_[selected];
   goalX_.SetDouble(next.xMM); goalY_.SetDouble(next.yMM); goalHeading_.SetDouble(next.headingDeg);
-  intermediateXY_.SetString(next.intermediateXY); selectedGoal_=selected;
+  intermediatePoses_.SetString(next.intermediatePoses); selectedGoal_=selected;
 }
