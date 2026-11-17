@@ -5,7 +5,6 @@
 // Shared units, geometry and sensor readings.
 struct RobotPose { double x_MM; double y_MM; double headingRad; };
 struct ArenaPoint { double x; double y; };
-struct ForbiddenRegion { double xmin,ymin,xmax,ymax; };
 
 namespace robot_geometry {
 static constexpr double PI = 3.14159265358979323846;

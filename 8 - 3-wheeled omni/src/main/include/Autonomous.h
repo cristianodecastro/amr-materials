@@ -1,61 +1,7 @@
 #pragma once
 #include <string>
 #include <vector>
-#include <limits>
 #include "RobotConfig.h"
-
-// Global planning is independent of motor IO. The real map and footprint must
-// be supplied explicitly; painted tape is not an obstacle. During XY travel
-// heading is held near start.headingRad, followed by a checked turn at the goal.
-struct NavigationMap {
-  double widthMM=2000,heightMM=2000;
-  std::vector<ForbiddenRegion> forbidden;
-};
-struct NavigationFootprint {
-  // Conservative body-frame rectangle, including every physical projection.
-  double frontMM=0,rearMM=0,leftMM=0,rightMM=0;
-};
-NavigationMap DefaultNavigationMap();
-NavigationFootprint DefaultNavigationFootprint();
-struct WallRangeEstimate {
-  bool valid=false;
-  int axis=-1; // 0 = arena X, 1 = arena Y
-  double coordinateMM=0;
-};
-// Pose is the estimate at acquisition time, not a later pose of a moving robot.
-// Keep-outs conservatively exclude beams which may hit storage/delivery items.
-WallRangeEstimate EstimateFromOuterWall(const NavigationMap& map,const RobotPose& acquiredPose,
-    int sensor,double rangeMM,bool valid);
-struct ClearanceTurn { unsigned pointIndex; double headingRad; };
-struct NavigationPlan {
-  std::vector<ArenaPoint> points;
-  std::vector<ClearanceTurn> turns; // only geometry-selected recovery transitions
-  double travelHeadingRad=0;
-  double lengthMM=0,cost=0;
-  std::string error;
-  bool Valid() const { return error.empty() && !points.empty(); }
-};
-class ClearancePlanner {
- public:
-  ClearancePlanner(NavigationMap map,NavigationFootprint footprint,
-                   double clearanceMM=navigation_config::MIN_CLEARANCE_MM,
-                   double gridMM=navigation_config::GRID_MM);
-  NavigationPlan Plan(RobotPose start,RobotPose goal) const;
-  NavigationPlan PlanAdaptive(RobotPose start,RobotPose goal) const;
-  bool SegmentFree(ArenaPoint a,ArenaPoint b,double headingRad) const;
-  bool RotationFree(ArenaPoint point,double fromRad,double toRad) const;
-  // Conservative sweep of every heading over the entire translation segment.
-  bool MotionFree(ArenaPoint a,ArenaPoint b,double fromRad,double toRad) const;
-  double ExtraClearanceMM(ArenaPoint point,double headingRad) const;
- private:
-  bool ConfigurationValid() const;
-  bool SegmentFreeWithMargin(ArenaPoint a,ArenaPoint b,double heading,double margin) const;
-  double Clearance(ArenaPoint point,double heading) const;
-  double SegmentCost(ArenaPoint a,ArenaPoint b,double heading) const;
-  NavigationMap map_;
-  NavigationFootprint footprint_;
-  double clearance_,grid_;
-};
 
 struct MotionInput {
   RobotPose pose;
@@ -79,11 +25,11 @@ class HeadingMotionControl {
   int direction_=0;
 };
 
-// Shared XY braking/settling controller for tape tests and planned routes.
+// Shared final-position controller for tape tests and direct pose tasks.
 class WaypointDrive {
  public:
   void Reset(ArenaPoint target,double now,double speed,double acceleration,
-      double initialForward=0,double initialLeft=0,double tolerance=tape_test_config::POSITION_TOLERANCE_MM);
+      double initialForward=0,double initialLeft=0);
   void Update(const MotionInput& motion,double measuredForward,double measuredLeft,double headingError);
   bool Reached() const { return reached_; }
   double Forward() const { return forward_; }
@@ -97,7 +43,6 @@ class WaypointDrive {
   double forward_=0,left_=0,phaseTime_=0,settleTime_=-1;
   double filteredForward_=0,filteredLeft_=0,correctionX_=0,correctionY_=0;
   double maxSpeed_=0,acceleration_=0;
-  double tolerance_=tape_test_config::POSITION_TOLERANCE_MM;
   bool reached_=false;
   std::string status_;
 };
@@ -105,100 +50,51 @@ class WaypointDrive {
 struct NavigationInput {
   MotionInput motion;
   double forwardMMps=0,leftMMps=0;
-  // Same order as RANGE_SENSOR_MOUNTS: left IR, rear sonar, right IR, front sonar.
-  double rangeMM[4]={-1,-1,-1,-1},stamp[4]={-1,-1,-1,-1};
-  bool valid[4]={false,false,false,false};
-};
-// Near-field clearance is separate from odometry: sonar adds obstacle evidence,
-// never a position reset. Occupied hits remain in arena coordinates while turning.
-class FrontClearanceControl {
- public:
-  void Reset();
-  void Observe(const NavigationInput& in,const NavigationMap& map,bool mapReadings=true);
-  void ReanchorPose(RobotPose pose,double now);
-  double SelectHeading(const NavigationInput& in,const NavigationMap& map,
-      ArenaPoint preview,double previousHeading,bool finalApproach);
-  void LimitMotion(const NavigationInput& in,const NavigationMap& map,
-      double& forward,double& left,double& yaw,
-      double headingTarget=std::numeric_limits<double>::quiet_NaN());
-  bool Limited() const { return limited_; }
-  bool Active() const { return active_; }
-  bool HeadingBlocked() const { return headingBlocked_; }
-  unsigned Revision() const { return revision_; }
-  NavigationMap ObservedMap(const NavigationMap& map) const;
- private:
-  struct TimedPose { double now; RobotPose pose; };
-  NavigationMap WithHits(const NavigationMap& map) const;
-  void ObserveSensor(const NavigationInput& in,const NavigationMap& map,int sensor);
-  std::vector<TimedPose> poses_;
-  std::vector<ForbiddenRegion> hits_;
-  ForbiddenRegion pending_={0,0,0,0};
-  double lastStamp_[4]={-1,-1,-1,-1},lastNow_=0,pendingStamp_=-1;
-  unsigned pendingCount_=0;
-  unsigned revision_=0;
-  bool active_=false,limited_=false,headingBlocked_=false;
+  double leftRangeMM=-1,rearRangeMM=-1,leftTime=-1,rearTime=-1;
+  bool leftValid=false,rearValid=false;
 };
 class GoalNavigationRoutine {
  public:
-  enum class State { Unreferenced, Reference, ReferenceReady, Ready, NeedPlan, Planning,
-    Following, ClearanceTurn, Observing, PositionReady, FinalHeading, Complete, Aborted, Fault };
+  enum class State { Unreferenced, Reference, ReferenceReady, Ready, Driving,
+    FinalHeading, Complete, Aborted, Fault };
   void Enter();
   void ReferenceCorner(double now);
-  bool StartGoal(RobotPose goal,const NavigationInput& in);
+  bool StartGoal(RobotPose goal,const NavigationInput& in,const std::string& intermediateXY="");
   void Update(const NavigationInput& in);
   void Abort();
   void Fail(const std::string& message);
   State GetState() const { return state_; }
-  bool IsRunning() const { return state_>=State::Reference && state_<=State::FinalHeading && state_!=State::Ready; }
+  bool IsRunning() const { return state_==State::Reference || state_==State::ReferenceReady ||
+      state_==State::Driving || state_==State::FinalHeading; }
   bool HasReference() const { return referenced_; }
-  bool NeedsPlan() const { return state_==State::NeedPlan; }
-  void PlanningStarted() { if (NeedsPlan()) state_=State::Planning; }
-  void AcceptPlan(NavigationPlan plan,const NavigationInput& in);
   bool NeedsPoseReset() const { return state_==State::ReferenceReady; }
-  bool NeedsPositionCorrection() const { return state_==State::PositionReady; }
   const RobotPose& RequestedPose() const { return requestedPose_; }
   void ConfirmReference();
-  void ConfirmPositionCorrection(const NavigationInput& in);
-  RobotPose PlanStart(const NavigationInput& in) const { return {in.motion.pose.x_MM,in.motion.pose.y_MM,travelHeading_}; }
   const RobotPose& Goal() const { return goal_; }
-  NavigationMap Map() const { return clearance_.ObservedMap(map_); }
   const std::string& Status() const { return status_; }
   double Forward() const { return forward_; }
   double Left() const { return left_; }
   double Yaw() const { return yaw_; }
   double FeedbackRequest() const { return heading_.FeedbackRequest(); }
   double FeedbackMeasured() const { return heading_.FeedbackMeasured(); }
-  double PathLengthMM() const { return pathLength_; }
-  unsigned WaypointCount() const { return path_.size(); }
-  unsigned WaypointIndex() const { return waypoint_; }
+  double RemainingMM() const { return remaining_; }
+  unsigned IntermediateCount() const { return route_.empty()?0:route_.size()-1; }
+  unsigned LegIndex() const { return leg_; }
  private:
   void Stop() { forward_=left_=yaw_=0; }
-  void ContinueAfterObservation(const NavigationInput& in);
-  void BeginObservation(double now);
-  void NeedNewPlan(const NavigationInput& in);
-  void FollowRoute(const NavigationInput& in);
-  double TravelHeadingDeadband(ArenaPoint center) const;
-  void BeginClearanceTurn(const NavigationInput& in);
-  NavigationMap map_=DefaultNavigationMap();
-  ClearancePlanner planner_{map_,DefaultNavigationFootprint()};
+  void DriveRoute(const NavigationInput& in);
   State state_=State::Unreferenced;
   bool referenced_=false;
-  RobotPose goal_{0,0,0},requestedPose_{0,0,0},progressPose_{0,0,0};
-  double travelHeading_=0,started_=0,phaseStarted_=0,settled_=-1,effort_=0,pathLength_=0;
+  RobotPose goal_{0,0,0},requestedPose_{0,0,0};
+  double travelHeading_=0,started_=0,settled_=-1,remaining_=0;
   double forward_=0,left_=0,yaw_=0;
-  double routeVX_=0,routeVY_=0;
-  bool preciseApproach_=false;
-  std::vector<ArenaPoint> path_;
-  unsigned waypoint_=0;
-  unsigned obstacleRevision_=0;
-  bool obstacleReplanPending_=false;
-  std::vector<::ClearanceTurn> turns_;
-  unsigned nextTurn_=0,legEnd_=0;
-  double lastStamp_[4]={-1,-1,-1,-1};
-  std::vector<double> observations_[2];
+  std::vector<ArenaPoint> route_;
+  ArenaPoint legStart_={0,0};
+  unsigned leg_=0;
+  double worldVX_=0,worldVY_=0;
+  bool finalControllerReady_=false;
   WaypointDrive point_;
   HeadingMotionControl heading_;
-  FrontClearanceControl clearance_;
   std::string status_="Place in clear lower-left corner facing north, then Reference corner";
 };
 

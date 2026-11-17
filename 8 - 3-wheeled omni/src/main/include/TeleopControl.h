@@ -110,11 +110,6 @@ class EncoderGyroOdometry {
     return healthy_;
   }
   const RobotPose& Pose() const { return pose_; }
-  bool CorrectPosition(double dx,double dy) {
-    if (!healthy_ || !std::isfinite(dx) || !std::isfinite(dy)) return false;
-    pose_.x_MM+=dx; pose_.y_MM+=dy;
-    return true; // preserve encoder baselines, velocity and relative gyro yaw
-  }
   bool Healthy() const { return healthy_; }
   double ForwardSpeed() const { return forwardSpeed_; }
   double LeftSpeed() const { return leftSpeed_; }

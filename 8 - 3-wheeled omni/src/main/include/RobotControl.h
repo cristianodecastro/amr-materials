@@ -1,14 +1,15 @@
 #pragma once
 
 #include <memory>
-#include <future>
 #include <string>
+#include <vector>
 
 #include <frc/AnalogInput.h>
 #include <frc/SPI.h>
 #include <frc/Ultrasonic.h>
 #include <frc/Timer.h>
 #include <frc/Joystick.h>
+#include <frc/smartdashboard/SendableChooser.h>
 #include <frc2/command/SubsystemBase.h>
 #include <networktables/NetworkTableEntry.h>
 #include <studica/TitanQuad.h>
@@ -102,7 +103,6 @@ class Localization {
   void Reset(double x_MM,double y_MM,double headingDeg);
   void UpdateOdometry(double dtSeconds);
   void SetAutonomousMode(bool autonomous);
-  bool CorrectPosition(double dx,double dy) { return autonomousMode_ && odometry_.CorrectPosition(dx,dy); }
   bool IsHealthy() const { return autonomousMode_?odometry_.Healthy():teleopTelemetry_.Healthy(); }
   const RobotPose& GetPose() const { return autonomousMode_?odometry_.Pose():teleopTelemetry_.Pose(); }
   double GetBodyVelocityX_MMps() const { return autonomousMode_?odometry_.ForwardSpeed():teleopTelemetry_.ForwardSpeed(); }
@@ -126,6 +126,7 @@ class RobotSubsystem : public frc2::SubsystemBase {
   void InitializeMotionDashboard();
   void InitializeSensingDashboard();
   void InitializeNavigationDashboard();
+  void UpdateGoalSelection();
   void UpdateTeleopDrive(double dt);
   void UpdateSonarPoll(double now);
   void UpdateTapeRoutine(double now,double dt,bool startLeft,bool startRight,bool stop);
@@ -136,10 +137,13 @@ class RobotSubsystem : public frc2::SubsystemBase {
   Localization localization_{&hardware_};
   TapeAlignmentRoutine tapeRoutine_;
   GoalNavigationRoutine navigation_;
-  std::future<NavigationPlan> planFuture_;
-  unsigned requestGeneration_=0,planGeneration_=0;
   bool navigationSelected_=false;
   nt::NetworkTableEntry referenceCorner_,goToGoal_,stopNavigation_,goalX_,goalY_,goalHeading_;
+  nt::NetworkTableEntry intermediateXY_;
+  frc::SendableChooser<int> goalChooser_;
+  struct GoalSettings { double xMM,yMM,headingDeg; std::string intermediateXY; };
+  std::vector<GoalSettings> goalSettings_;
+  int selectedGoal_=-1;
   nt::NetworkTableEntry startTapeLeft_,startTapeRight_,stopTape_;
   bool autonomousSession_=false;
   std::string routineNotice_;
@@ -159,6 +163,5 @@ class RobotSubsystem : public frc2::SubsystemBase {
   double sonarPingTime_=0,lastSonarPingTime_=0;
   double sonarRanges_MM_[localization_config::SONAR_COUNT]={-1,-1};
   double sonarReadTime_[localization_config::SONAR_COUNT]={-1,-1};
-  double sonarAcquisitionTime_[localization_config::SONAR_COUNT]={-1,-1};
   bool sonarRangeValid_[localization_config::SONAR_COUNT]={false,false};
 };

@@ -110,43 +110,24 @@ static constexpr double YAW_DIRECTION_CHECK_MIN_RADPS=0.1*robot_geometry::PI/180
 static constexpr double YAW_RESPONSE_SETTLE_S=0.30;
 }
 
+// Minimum version: manually supplied intermediate XY points and one final pose.
 namespace navigation_config {
-static constexpr double BODY_RADIUS_MM=159.74+12.0;
-static constexpr double MANIPULATOR_EXTENSION_MM=120.0;
-static constexpr double MIN_CLEARANCE_MM=40.0;
-static constexpr double POSITION_TOLERANCE_MM=10.0;
-static constexpr double GRID_MM=25.0;
-static constexpr double SPEED_MMPS=300.0,ACCEL_MMPS2=300.0;
-static constexpr double NEAR_OBSTACLE_SPEED_MMPS=220.0,FINAL_SPEED_MMPS=160.0;
-static constexpr double SLOW_CLEARANCE_MM=100.0;
-// Intermediate points are pass-through guides, not precision stops.
-static constexpr double LOOKAHEAD_MM=140.0,PASS_RADIUS_MM=60.0,CORNER_SPEED_MMPS=120.0;
-static constexpr double FINAL_APPROACH_MM=280.0,OBSERVATION_S=0.65;
-// Local, sensor-assisted heading selection: prefer north, deviate only when
-// the preview footprint needs more front clearance. No preset crossing angle.
-static constexpr double PREFERRED_HEADING_RAD=0;
-static constexpr double FRONT_TRIGGER_GAP_MM=300,FRONT_TRAVEL_GAP_MM=100,FRONT_RETURN_HYSTERESIS_MM=20;
-static constexpr double HEADING_SEARCH_STEP_RAD=2*robot_geometry::PI/180;
-static constexpr double OBSTACLE_EVIDENCE_MAX_RANGE_MM=650,SONAR_HIT_UNCERTAINTY_MM=35;
-static constexpr double WALL_ASSOCIATION_RESIDUAL_MM=100,WALL_RANGE_ALLOWANCE_MM=10;
-static constexpr unsigned MAX_OBSTACLE_PATCHES=12;
-static constexpr double CLEARANCE_RECOVERY_SPEED_MMPS=120,RECOVERY_POSITION_TOLERANCE_MM=15;
-// Validate the next control interval plus a conservative braking tail.
-static constexpr double GUARD_HORIZON_S=localization_config::CONTROL_PERIOD_S,GUARD_STEP_S=0.02;
-static constexpr double GUARD_MOTOR_LAG_S=0.12,GUARD_BRAKE_LAG_S=0.18;
+static constexpr double POSITION_TOLERANCE_MM=10;
+static constexpr double SPEED_MMPS=300,ACCEL_MMPS2=300;
 static constexpr double TRAVEL_HEADING_DEADBAND_RAD=3*robot_geometry::PI/180;
-static constexpr double TIGHT_HEADING_DEADBAND_RAD=0.5*robot_geometry::PI/180;
 static constexpr double TRAVEL_HEADING_KP=1.2;
-static constexpr double MISSION_TIMEOUT_S=180.0;
-static constexpr double DEFAULT_GOAL_X_MM=1600,DEFAULT_GOAL_Y_MM=1600,DEFAULT_GOAL_HEADING_DEG=0;
-// Physical keep-out regions, without robot clearance. Add rows as needed;
-// count is inferred automatically. Central square and other tape stay free.
-static constexpr ForbiddenRegion FORBIDDEN[]={
-    {780,1220,1220,2000}, // 440 x 780 upper block, centered at X=1000
-    {0,0,2000,220},     // bottom delivery band
-    {985,0,1015,600}};  // 30 x 600 lower central strip
+static constexpr double MISSION_TIMEOUT_S=60;
+static constexpr double PASS_RADIUS_MM=50,MIN_PASS_SPEED_MMPS=120;
+static constexpr unsigned MAX_INTERMEDIATE_POINTS=32;
+// Each goal owns its own ordered "x,y; x,y" list. Empty means direct travel.
+// These short north-lane examples demonstrate zero, one and multiple points.
+struct GoalPreset { const char* name; double xMM,yMM,headingDeg; const char* intermediateXY; };
+static constexpr GoalPreset GOALS[]={
+    {"Short north",250,700,0,""},
+    {"North via 700",250,950,0,"250,700"},
+    {"Long north",250,1200,0,"250,700;250,950"}};
+static constexpr double DEFAULT_GOAL_X_MM=GOALS[0].xMM,DEFAULT_GOAL_Y_MM=GOALS[0].yMM,DEFAULT_GOAL_HEADING_DEG=GOALS[0].headingDeg;
 }
-
 // Explicit-start corner reference and tape approach. Arena +X east, +Y north.
 namespace tape_test_config {
 static constexpr double START_HEADING_DEG=0; // north, under the new arena convention
