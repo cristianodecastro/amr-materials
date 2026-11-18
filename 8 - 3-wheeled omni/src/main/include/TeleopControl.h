@@ -133,6 +133,7 @@ class EncoderGyroOdometry {
 // Teleop steering never consumes it, and Autonomous never reads this state.
 class TeleopPoseTelemetry {
  public:
+  void SetPosition(double x,double y) { pose_.x_MM=x; pose_.y_MM=y; }
   void Reset(RobotPose pose,const double (&counts)[3],double yawDeg,double ax,double ay) {
     pose_=pose; offset_=robot_geometry::Wrap(pose.headingRad-robot_geometry::Radians(yawDeg));
     worldX_=worldY_=forwardSpeed_=leftSpeed_=0;

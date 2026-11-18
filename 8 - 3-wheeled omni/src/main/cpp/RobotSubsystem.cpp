@@ -19,7 +19,6 @@ void RobotSubsystem::InitializeDashboard() {
   InitializeMotionDashboard();
   InitializeSensingDashboard();
   InitializeNavigationDashboard();
-  InitializePoseDashboard();
   InitializeTapeDashboard();
 }
 void RobotSubsystem::EnterAutonomous() {
@@ -139,10 +138,10 @@ void RobotSubsystem::UpdateNavigation(double now,double dt,bool reference,bool g
     else {
       PoseInitialization settings;
       const bool named=selectedStartingArea_>=0 && selectedStartingArea_<navigation_config::GOAL_COUNT;
-      settings.xMM=named?"-":initialX_.GetString("-"); settings.yMM=named?"-":initialY_.GetString("-");
-      if (named) { initialX_.SetString("-"); initialY_.SetString("-"); }
-      settings.headingDeg=initialHeading_.GetDouble(0);
-      for (int i=0;i<4;++i) settings.wall[i]=wallReferences_[i].GetString("-");
+      settings.xMM=initialX_.GetString("-"); settings.yMM=initialY_.GetString("-");
+      settings.headingDeg=initialHeading_.GetString("-");
+      settings.useArea=named;
+      if (named) settings.areaPose={goalSettings_[selectedStartingArea_].xMM,goalSettings_[selectedStartingArea_].yMM,0};
       if (navigation_.InitializePose(settings))
         initializedSource_=selectedStartingArea_<navigation_config::GOAL_COUNT?selectedStartingArea_:-1;
     }
@@ -172,7 +171,7 @@ void RobotSubsystem::UpdateNavigation(double now,double dt,bool reference,bool g
   localization_.CorrectAutonomousPosition(navigation_.PositionCorrection());
   if (navigation_.NeedsPoseReset()) {
     const auto pose=navigation_.RequestedPose();
-    localization_.Reset(pose.x_MM,pose.y_MM,pose.headingRad*180/robot_geometry::PI);
+    localization_.ApplyReference(pose,navigation_.NeedsHeadingReset());
     navigation_.ConfirmReference(); in=NavigationSample(now,dt);
     UpdateGoalSelection();
   }
@@ -279,7 +278,7 @@ void RobotSubsystem::InitializeMotionDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Motion");
   tab.AddString("Motion status",[this] {
     // Visible revision distinguishes this executable from stale robot/UI data.
-    const std::string revision="P8-r34 MVP | ";
+    const std::string revision="P8-r35 MVP | ";
     if (hardware_.HasDriveFault()) return revision+hardware_.GetDriveStatus();
     if (frc::RobotState::IsAutonomous()) return revision+"Autonomous drive diagnostics";
     return revision+teleopDrive_.GetStatus();
@@ -350,49 +349,10 @@ void RobotSubsystem::InitializeSensingDashboard() {
   }).WithPosition(0,4).WithSize(8,1);
 }
 
-void RobotSubsystem::InitializePoseDashboard() {
-  auto& tab=frc::Shuffleboard::GetTab("Pose setup");
-  tab.AddString("Pose reference",[this] {
-    if (frc::RobotState::IsEnabled() && frc::RobotState::IsOperatorControl())
-      return std::string("Disable robot to initialize pose");
-    return navigation_.InitializationStatus();
-  }).WithPosition(0,0).WithSize(8,1);
-  for (int i=0;i<navigation_config::GOAL_COUNT;++i) {
-    if (i==navigation_config::START) startingAreaChooser_.SetDefaultOption(navigation_config::GOALS[i].name,i);
-    else startingAreaChooser_.AddOption(navigation_config::GOALS[i].name,i);
-  }
-  startingAreaChooser_.AddOption("Manual",navigation_config::GOAL_COUNT);
-  tab.Add("Starting area",startingAreaChooser_).WithWidget(frc::BuiltInWidgets::kComboBoxChooser)
-      .WithPosition(0,1).WithSize(2,1);
-  initialX_=tab.Add("Start X mm or -",wpi::Twine("-"))
-      .WithWidget(frc::BuiltInWidgets::kTextView).WithPosition(0,3).WithSize(2,1).GetEntry();
-  initialY_=tab.Add("Start Y mm or -",wpi::Twine("-"))
-      .WithWidget(frc::BuiltInWidgets::kTextView).WithPosition(2,3).WithSize(2,1).GetEntry();
-  initialHeading_=tab.Add("Start heading deg",localization_config::START_HEADING_DEG).WithPosition(2,1).WithSize(2,1).GetEntry();
-  initializePose_=tab.Add("Initialize pose",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
-      .WithPosition(4,1).WithSize(2,1).GetEntry();
-  tab.AddBoolean("Referenced",[this] { return navigation_.HasReference(); }).WithPosition(6,1).WithSize(1,1);
-  tab.AddBoolean("IMU ready",[this] { return hardware_.IsImuConnected() && !hardware_.IsImuCalibrating(); })
-      .WithPosition(7,1).WithSize(1,1);
-  tab.AddNumber("X mm",[this] { return localization_.GetPose().x_MM; }).WithPosition(0,2).WithSize(3,1);
-  tab.AddNumber("Y mm",[this] { return localization_.GetPose().y_MM; }).WithPosition(3,2).WithSize(3,1);
-  tab.AddNumber("Heading deg",[this] { return localization_.GetPose().headingRad*180/robot_geometry::PI; })
-      .WithPosition(6,2).WithSize(2,1);
-  tab.AddString("Reference instructions",[] { return std::string("Align heading. Named: sensed XY. Manual: number or '-'."); })
-      .WithPosition(4,3).WithSize(4,1);
-  const PoseInitialization defaults;
-  const char* labels[]={"Left IR wall","Rear sonar wall","Right IR wall","Front sonar wall"};
-  for (int i=0;i<4;++i)
-    wallReferences_[i]=tab.Add(labels[i],wpi::Twine(defaults.wall[i]))
-        .WithWidget(frc::BuiltInWidgets::kTextView).WithPosition(2*i,4).WithSize(2,1).GetEntry();
-  initializePose_.SetBoolean(false);
-  UpdateStartingAreaSelection();
-}
-
 void RobotSubsystem::InitializeTapeDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Tape test");
   tab.AddString("Tape status",[this] {
-    return std::string("P8-r34 MVP | ")+(!navigationSelected_ && !routineNotice_.empty()?routineNotice_:tapeRoutine_.GetStatus());
+    return std::string("P8-r35 MVP | ")+(!navigationSelected_ && !routineNotice_.empty()?routineNotice_:tapeRoutine_.GetStatus());
   }).WithPosition(0,0).WithSize(6,1);
   stopTape_=tab.Add("Stop tape",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
       .WithPosition(6,0).WithSize(2,1).GetEntry();
@@ -427,73 +387,72 @@ void RobotSubsystem::UpdateStartingAreaSelection() {
   if (selected<0 || selected>navigation_config::GOAL_COUNT || selected==selectedStartingArea_) return;
   navigation_.Enter(); initializedSource_=-1; selectedStartingArea_=selected;
   if (selected==navigation_config::GOAL_COUNT) return; // keep fields for manual editing
-  initialX_.SetString("-"); initialY_.SetString("-");
-  initialHeading_.SetDouble(goalSettings_[selected].headingDeg);
-  for (int sensor=0;sensor<4;++sensor) {
-    const auto wall=navigation_config::INITIAL_WALLS[selected][sensor];
-    wallReferences_[sensor].SetString(wall.axis<0?"-":std::string(wall.axis==0?"X=":"Y=")+std::to_string(wall.coordinate));
-  }
+  initialX_.SetString(std::to_string(navigation_config::STARTING_WALLS[selected][0]));
+  initialY_.SetString(std::to_string(navigation_config::STARTING_WALLS[selected][1]));
 }
 
 void RobotSubsystem::InitializeNavigationDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Navigation");
-  tab.AddString("Navigation status",[this] {
-    std::string status=std::string("P8-r34 MVP | ")+(navigationSelected_ && !routineNotice_.empty()?routineNotice_:navigation_.Status());
-    if (navigation_.HasReference()) {
-      status+=" | from ";
-      status+=selectedSource_<navigation_config::GOAL_COUNT?navigation_config::GOALS[selectedSource_].name:"Current pose";
-    }
+  tab.AddString("Navigation / reference status",[this] {
+    const bool reference=navigation_.GetState()==GoalNavigationRoutine::State::Reference || !navigation_.HasReference();
+    std::string status=std::string("P8-r35 MVP | ")+(navigationSelected_ && !routineNotice_.empty()?routineNotice_:
+        (reference?navigation_.InitializationStatus():navigation_.Status()));
+    if (navigation_.HasReference()) status+=" | from "+std::string(selectedSource_<navigation_config::GOAL_COUNT?
+        navigation_config::GOALS[selectedSource_].name:"Current pose");
     return status;
   }).WithPosition(0,0).WithSize(6,1);
   stopNavigation_=tab.Add("Stop",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
       .WithPosition(6,0).WithSize(2,1).GetEntry();
-  goToGoal_=tab.Add("Go to goal",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
-      .WithPosition(4,1).WithSize(2,1).GetEntry();
-  tab.AddBoolean("Referenced",[this] { return navigation_.HasReference(); }).WithPosition(6,1).WithSize(1,1);
-  tab.AddBoolean("Enabled",[] { return frc::RobotState::IsEnabled(); }).WithPosition(7,1).WithSize(1,1);
-  tab.AddString("From area",[this] {
-    return std::string(selectedSource_<navigation_config::GOAL_COUNT?navigation_config::GOALS[selectedSource_].name:"Current pose");
-  }).WithPosition(0,1).WithSize(2,1);
-  tab.AddNumber("Remaining mm",[this] { return navigation_.RemainingMM(); }).WithPosition(3,2).WithSize(1,1);
-  goalX_=tab.Add("Goal X mm",navigation_config::DEFAULT_GOAL_X_MM)
-      .WithPosition(0,2).WithSize(1,1).GetEntry();
-  goalY_=tab.Add("Goal Y mm",navigation_config::DEFAULT_GOAL_Y_MM)
-      .WithPosition(1,2).WithSize(1,1).GetEntry();
-  goalHeading_=tab.Add("Goal heading deg",navigation_config::DEFAULT_GOAL_HEADING_DEG)
-      .WithPosition(2,2).WithSize(1,1).GetEntry();
-  tab.AddString("Default guides",[this] {
-    if (selectedSource_>=navigation_config::GOAL_COUNT || selectedGoal_<0 || selectedGoal_>=navigation_config::GOAL_COUNT)
-      return std::string("Select named source/goal, or use an edited route");
-    const auto guides=GoalNavigationRoutine::DefaultIntermediates(selectedSource_,selectedGoal_);
-    return guides.empty()?std::string("Direct (no intermediate)"):guides;
-  }).WithPosition(4,2).WithSize(4,1);
-  tab.AddNumber("Driving X mm",[this] { return navigation_.HasReference()?navigation_.ControlPose().x_MM:localization_.GetPose().x_MM; })
-      .WithPosition(0,3).WithSize(2,1);
-  tab.AddNumber("Driving Y mm",[this] { return navigation_.HasReference()?navigation_.ControlPose().y_MM:localization_.GetPose().y_MM; })
-      .WithPosition(2,3).WithSize(2,1);
-  tab.AddNumber("Robot heading deg",[this] { return localization_.GetPose().headingRad*180/robot_geometry::PI; })
-      .WithPosition(4,3).WithSize(2,1);
-  useEditedRoute_=tab.Add("Use edited route",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
-      .WithPosition(6,3).WithSize(2,1).GetEntry();
-  for (const auto& preset:navigation_config::GOALS) {
-    const int index=static_cast<int>(goalSettings_.size());
+  for (int i=0;i<navigation_config::GOAL_COUNT;++i) {
+    const auto& preset=navigation_config::GOALS[i];
     goalSettings_.push_back({preset.xMM,preset.yMM,preset.headingDeg});
-    if (index==0) goalChooser_.SetDefaultOption(preset.name,index);
-    else goalChooser_.AddOption(preset.name,index);
+    if (i==0) goalChooser_.SetDefaultOption(preset.name,i); else goalChooser_.AddOption(preset.name,i);
+    if (i==navigation_config::START) startingAreaChooser_.SetDefaultOption(preset.name,i);
+    else startingAreaChooser_.AddOption(preset.name,i);
   }
-  goalChooser_.AddOption("Custom",static_cast<int>(goalSettings_.size()));
+  startingAreaChooser_.AddOption("Current pose",navigation_config::GOAL_COUNT);
+  goalChooser_.AddOption("Custom",navigation_config::GOAL_COUNT);
   goalSettings_.push_back({navigation_config::DEFAULT_GOAL_X_MM,navigation_config::DEFAULT_GOAL_Y_MM,navigation_config::DEFAULT_GOAL_HEADING_DEG});
   const int count=static_cast<int>(goalSettings_.size());
-  routeSettings_.assign(count*count,""); // extra row/column: Current pose / Custom
+  routeSettings_.assign(count*count,"");
   for (int source=0;source<navigation_config::GOAL_COUNT;++source)
     for (int goal=0;goal<navigation_config::GOAL_COUNT;++goal)
       routeSettings_[source*count+goal]=GoalNavigationRoutine::DefaultIntermediates(source,goal);
+
+  tab.Add("Starting area",startingAreaChooser_).WithWidget(frc::BuiltInWidgets::kComboBoxChooser)
+      .WithPosition(0,1).WithSize(2,1);
+  initialX_=tab.Add("Wall X mm or -",wpi::Twine("-"))
+      .WithWidget(frc::BuiltInWidgets::kTextView).WithPosition(2,1).WithSize(1,1).GetEntry();
+  initialY_=tab.Add("Wall Y mm or -",wpi::Twine("-"))
+      .WithWidget(frc::BuiltInWidgets::kTextView).WithPosition(3,1).WithSize(1,1).GetEntry();
+  initialHeading_=tab.Add("Start heading deg or -",wpi::Twine("-"))
+      .WithWidget(frc::BuiltInWidgets::kTextView).WithPosition(4,1).WithSize(1,1).GetEntry();
+  initializePose_=tab.Add("Initialize pose",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
+      .WithPosition(5,1).WithSize(2,1).GetEntry();
+  tab.AddBoolean("Referenced",[this] { return navigation_.HasReference(); }).WithPosition(7,1).WithSize(1,1);
+
   tab.Add("Saved goal",goalChooser_).WithWidget(frc::BuiltInWidgets::kComboBoxChooser)
-      .WithPosition(2,1).WithSize(2,1);
-  intermediatePoses_=tab.Add("Edited guides (x,y,deg; ...); enable Use edited route",wpi::Twine(""))
-      .WithWidget(frc::BuiltInWidgets::kTextView).WithPosition(0,4).WithSize(8,1).GetEntry();
-  UpdateGoalSelection();
-  goToGoal_.SetBoolean(false); stopNavigation_.SetBoolean(false);
+      .WithPosition(0,2).WithSize(2,1);
+  goalX_=tab.Add("Goal X mm",navigation_config::DEFAULT_GOAL_X_MM).WithPosition(2,2).WithSize(1,1).GetEntry();
+  goalY_=tab.Add("Goal Y mm",navigation_config::DEFAULT_GOAL_Y_MM).WithPosition(3,2).WithSize(1,1).GetEntry();
+  goalHeading_=tab.Add("Goal heading deg",navigation_config::DEFAULT_GOAL_HEADING_DEG).WithPosition(4,2).WithSize(1,1).GetEntry();
+  goToGoal_=tab.Add("Go to goal",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
+      .WithPosition(5,2).WithSize(2,1).GetEntry();
+  tab.AddBoolean("Enabled",[] { return frc::RobotState::IsEnabled(); }).WithPosition(7,2).WithSize(1,1);
+
+  tab.AddNumber("X mm",[this] { return navigation_.HasReference()?navigation_.ControlPose().x_MM:localization_.GetPose().x_MM; })
+      .WithPosition(0,3).WithSize(2,1);
+  tab.AddNumber("Y mm",[this] { return navigation_.HasReference()?navigation_.ControlPose().y_MM:localization_.GetPose().y_MM; })
+      .WithPosition(2,3).WithSize(2,1);
+  tab.AddNumber("Heading deg",[this] { return localization_.GetPose().headingRad*180/robot_geometry::PI; })
+      .WithPosition(4,3).WithSize(2,1);
+  tab.AddNumber("Remaining mm",[this] { return navigation_.RemainingMM(); }).WithPosition(6,3).WithSize(2,1);
+  intermediatePoses_=tab.Add("Guides x,y,deg; ... (enable override to edit)",wpi::Twine(""))
+      .WithWidget(frc::BuiltInWidgets::kTextView).WithPosition(0,4).WithSize(6,1).GetEntry();
+  useEditedRoute_=tab.Add("Use edited route",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
+      .WithPosition(6,4).WithSize(2,1).GetEntry();
+  UpdateStartingAreaSelection(); UpdateGoalSelection();
+  initializePose_.SetBoolean(false); goToGoal_.SetBoolean(false); stopNavigation_.SetBoolean(false);
 }
 
 void RobotSubsystem::UpdateGoalSelection() {

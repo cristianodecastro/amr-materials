@@ -101,6 +101,7 @@ class Localization {
  public:
   explicit Localization(Hardware* hardware);
   void Reset(double x_MM,double y_MM,double headingDeg);
+  void ApplyReference(RobotPose pose,bool resetHeading);
   void UpdateOdometry(double dtSeconds);
   void SetAutonomousMode(bool autonomous);
   void CorrectAutonomousPosition(ArenaPoint delta) {
@@ -130,7 +131,6 @@ class RobotSubsystem : public frc2::SubsystemBase {
   void InitializeMotionDashboard();
   void InitializeSensingDashboard();
   void InitializeNavigationDashboard();
-  void InitializePoseDashboard();
   void InitializeTapeDashboard();
   void UpdateStartingAreaSelection();
   void UpdateGoalSelection();
@@ -146,7 +146,7 @@ class RobotSubsystem : public frc2::SubsystemBase {
   GoalNavigationRoutine navigation_;
   bool navigationSelected_=false;
   nt::NetworkTableEntry initializePose_,goToGoal_,stopNavigation_,goalX_,goalY_,goalHeading_;
-  nt::NetworkTableEntry intermediatePoses_,useEditedRoute_,initialX_,initialY_,initialHeading_,wallReferences_[4];
+  nt::NetworkTableEntry intermediatePoses_,useEditedRoute_,initialX_,initialY_,initialHeading_;
   frc::SendableChooser<int> goalChooser_;
   frc::SendableChooser<int> startingAreaChooser_;
   int selectedStartingArea_=-1,initializedSource_=-1,activeGoal_=-1;

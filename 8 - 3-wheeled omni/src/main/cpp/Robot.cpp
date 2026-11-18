@@ -20,7 +20,7 @@ void Robot::RobotInit() {
   subsystem_.InitializeDashboard();
   camera_.Start();
   frc::Shuffleboard::Update();
-  frc::Shuffleboard::SelectTab("Pose setup");
+  frc::Shuffleboard::SelectTab("Navigation");
 }
 void Robot::RobotPeriodic() {
   frc2::CommandScheduler::GetInstance().Run();

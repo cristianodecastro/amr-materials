@@ -41,8 +41,7 @@ There are no individual motor trims, early-wheel holds or extra wheel-output ram
 - Enable Teleoperated mode in Studica Control Station and center both sticks to arm. Left stick translates, including diagonals; right stick left/right rotates CCW/CW. There is no gyro steering in Teleop.
 - Disabled, disconnected, and Test modes cannot drive the motors.
 - Motion tab: drive diagnostics only: status/revision, enabled/controller/IMU/odometry state, pose, loop time, and one aligned encoder/speed/PWM row per motor. No task-start controls.
-- Pose setup tab: starting area, heading, Initialize pose, reference status, measured pose, manual X/Y, and the four sensor-wall fields. No navigation or tape controls.
-- Navigation tab: source area, saved destination, Go/Stop, goal pose, driving pose, remaining distance, read-only default guides, and an explicit edited-route override.
+- Navigation tab: starting area, wall X/Y, start heading, Initialize, saved destination, goal pose, Go/Stop, current pose, remaining distance, and guides/override. All pose setup and goal controls live here once.
 - Tape test tab: left/right approaches and Stop, tape-task status, pose, CH0..CH3 voltages, scan distance, CH1-CH2 difference, and the two corner-reference readings.
 - Sensing tab: read-only front/rear sonar, left/right IR voltage and distance validity, and Cobra CH0..CH3 voltages/detection. No tape-task status or commands.
 - Camera tab: press **Take photo** for a fresh USB image. The camera opens only during the request, closes before PNG encoding, and the preview holds the last image (repeated at 1 fps without USB acquisition). Captures retain the 180-degree orientation correction and are saved under `/home/pi/SkillsChallenge/captures`. Copy them to `C:\Users\LENOVO\Pictures\CameraServer` on the PC. Photo capture works independently of drive mode and never enables motion.
@@ -53,35 +52,36 @@ Sonars use FlexDIO 2/3 front and 0/1 rear (even trigger, odd echo). IR sensors u
 
 Basic teleoperated driving and on-demand photo capture are retained. The inactive project-7 arena mission/planner, simple tasks, colour classification/calibration, Cobra recapture/file persistence, lift, and servo code are removed. Build and vendor configuration remain unchanged.
 
-## Sensor-supported navigation (P8-r34 MVP)
+## Sensor-supported navigation (P8-r35 MVP)
 
 Navigation follows your editable intermediate poses and final goal. Encoder counts and reset-relative gyro heading remain the basic motion estimate. Valid range readings provide a small position offset to guide driving; they do not veto a route or generate recovery faults. The obstacle map, grid searches, automatic detours, staging/recovery controller and planning worker have been deleted.
 
-### Initialize
+### Initialize and select a goal on Navigation
 
-1. Connect Control Station and keep the robot **Disabled**. Pose initialization is also available in enabled Autonomous, but never commands driving. Enabled Teleop rejects pose initialization.
-2. Place the robot near **any of the five named positions**, not necessarily Start. On **Pose setup**, select that **Starting area** independently of the destination. The selector loads its heading, sets X/Y to `-` (both must be measured), and fills the appropriate sensor-wall fields. Align the robot to the displayed heading before referencing: the selection supplies a known heading, not a sensor-derived absolute yaw.
-3. Ensure each enabled sensor has an unobstructed view of the wall named in its field. Storages/delivery objects are not wall references. Use `X=coordinate` for a vertical wall, `Y=coordinate` for a horizontal wall, or `-` to exclude that sensor. These are global wall coordinates, not measured gaps. If you change the heading, review which sensor sees which wall.
-4. Press **Initialize pose**. Valid, finite, fresh, in-range selected readings establish actual X/Y, accounting for rotated sensor offsets and beam directions. Named areas always measure both axes when the button is pressed, even if the numeric X/Y fields had been edited; select Manual to supply coordinates. Nominal named X/Y are never copied into odometry by this mode. If an axis cannot be determined, initialization waits stopped for a valid reference; it does not drive from an assumed coordinate. There is no stationary gate or reference timeout.
-5. Watch **Pose reference** for the sensed X/Y or the reason it is waiting. **Referenced** becomes true and Pose setup's **X/Y/Heading** tiles show the updated global pose. Then select and enable Autonomous, choose the separate **Saved goal** on **Navigation**, and press **Go to goal**. Enabling Autonomous preserves the completed reference; it does not reset it. The first route uses the selected starting area, even when the measured pose is more than 75 mm from its nominal coordinates.
+All initialization and goal controls share the **Navigation** tab, within an 8-column, 5-row grid. The old Pose setup/Initialization tabs and fixed per-sensor wall fields are removed. Motion contains drive diagnostics, Tape test contains tape tasks, Sensing contains raw sensor diagnostics, and Camera contains photos. Boot and entering Autonomous select Navigation; Teleop selects Motion. A saved Shuffleboard layout may retain obsolete tabs/widgets; close them or use a fresh layout after deployment.
 
-Each task has its own tab within an 8-column, 5-row grid. Pose setup owns initialization, Navigation owns goal transfers, and Tape test owns tape approaches. Motion and Sensing contain diagnostics only; Camera remains dedicated to photos. Controls are normally two cells wide, status and guide text have more space, and numeric motor rows use consistent columns. Boot selects Pose setup, entering Autonomous selects Navigation, and entering Teleop selects Motion. Old locally saved Shuffleboard tabs/widgets can remain after deployment; close obsolete tabs or reopen a fresh dashboard layout if needed.
+1. Connect Control Station and keep the robot **Disabled**. Initialization is also available in enabled Autonomous and never drives motors; enabled Teleop rejects it.
+2. Select the approximate **Starting area**, independently of Saved goal. This supplies default wall coordinates and a route source, never actual measured X/Y. It does not overwrite the heading field. **Current pose** uses existing odometry to determine the wall side when no named area applies.
+3. Enter **Wall X mm or -** and **Wall Y mm or -**. A number is the global coordinate of the wall being observed, NOT the desired robot-center coordinate. For example X=0 is the west wall, X=2000 the east wall, Y=0 the south wall, Y=2000 the north wall; Y=1200 can reference the horizontal wall from its south side. '-' preserves that robot-pose axis.
+4. Enter **Start heading deg or -**. A numeric value sets arena heading on the next normal control update using an offset against the latest gyro sample; this does not physically rotate the robot. '-' keeps the existing gyro-derived arena heading and its offset. Sampling period, IMU configuration and control-loop clock are unchanged; no gyro-zero operation or blocking wait is introduced.
+5. Press **Initialize pose**. Each requested wall axis independently selects a valid, fresh, in-range sensor whose rotated beam faces that wall. The sensor offset is rotated using the requested/current heading. The strongest normal component is used; a sensor cannot supply both independent axes. The starting area is only an approximate wall-side hint. Ensure the selected beam sees the actual wall, with no storage/delivery object obstructing it.
+6. Watch the combined status and current X/Y/Heading. Numeric heading and available axes apply immediately in that update even if another requested axis is waiting for a valid return. Invalid/stale readings never reset an axis. The robot remains stopped until requested wall references complete. Press Go only after Referenced is true and Autonomous is enabled.
 
-Default starting-area profiles (`navigation_config::INITIAL_WALLS`, sensor order left IR / rear sonar / right IR / front sonar) are:
+| Wall X | Wall Y | Heading | Initialization result |
+| --- | --- | --- | --- |
+| Number | - | - | Correct X from that wall; preserve Y and gyro frame |
+| - | Number | - | Correct Y from that wall; preserve X and gyro frame |
+| - | - | Number | Set heading only; preserve X/Y |
+| Number | Number | Number or - | Reference both axes using entered/current heading |
+| - | - | - | Leave all pose components unchanged |
 
-| Starting area | Heading | Enabled reference sensors |
-| --- | --- | --- |
-| Storage right | 90 | Rear sonar: X=2000; right IR: Y=2000 |
-| Storage left | -90 | Rear sonar: X=0; left IR: Y=2000 |
-| Delivery right | 90 | Rear sonar: X=2000; left IR: Y=0 |
-| Delivery left | 0 | Rear sonar: Y=0; left IR: X=0 |
-| Start | -90 | Rear sonar: X=0; front sonar: X=2000; left IR: horizontal wall Y=1200 |
+For **Delivery left physically facing -90 degrees**, use X=0, Y=0 and heading=-90 to reference the west wall with the **rear sonar** and south wall with the **right IR**. With rear range 127 mm and right IR range 340 mm, the center becomes X=127+173=300 mm and Y=340+60=400 mm. For Y-only referencing, use X='-', Y=0; X is retained exactly. For X-only, use X=0, Y='-'; Y is retained exactly. Heading '-' does not copy raw gyro yaw into the arena frame or re-zero its offset.
 
-Changing Starting area while idle clears the old reference and requires Initialize again. During travel, a changed selection is deferred until motion completes; it never resets an active route. Switching destinations alone does not change the starting-area selection or require reinitialization after each arrival. To physically relocate the robot near another area, select that area and initialize again; if it is the same selection, press Initialize again.
+At heading 0 (north), west X=0 selects left IR and south Y=0 selects rear sonar. At heading +90 (west), east X=2000 selects rear sonar and north Y=2000 selects right IR. Changing the heading therefore changes the selected sensors automatically, unlike the removed fixed profiles. `navigation_config::REFERENCE_MIN_COMPONENT` controls the minimum wall-normal beam component (default 0.70).
 
-**Manual** keeps the editable fields, allowing supplied X/Y values or `-` for unknown axes. Only explicitly supplied coordinates are taken as known. Valid selected readings determine the unspecified axes. Changing area does not change the saved goal coordinates or the active gyro until explicit initialization succeeds.
+The pose math for a selected axis is `center = wall_coordinate - rotated_sensor_offset - range * beam_component`. '-' means retain current odometry on that axis, even when physically relocating the robot; it does not infer a missing coordinate from the area's nominal pose. Reference both axes when both coordinates need to be established.
 
-The usual north-facing lower-left reference is X=`-`, Y=`-`, heading=`0`, left IR=`X=0`, rear sonar=`Y=0`, right/front=`-`. This gives X = left range + 60 mm, Y = rear range + 173 mm. Both coordinates may instead be supplied directly. Initialization establishes the gyro offset using its current reading; raw gyro yaw is not an absolute arena heading.
+A completed reference survives enabling Autonomous. Returning to Start is ordinary navigation and does not reset pose. Changing Starting area while idle clears the reference and loads that area's default wall coordinates; pressing Initialize again is required. Selecting destinations does not require repeated initialization after arrival. To reference another physical orientation, change the heading field explicitly before Initialize.
 
 ### Route and controls
 
@@ -110,7 +110,7 @@ For example, Storage left to Delivery right uses Intermediate left, Intermediate
 
 The named starting area remains the route source across Ready, Stop, Disable and enable. At a successful named arrival, the source becomes the destination captured when Go was pressed, even if the dashboard selection changed during travel. Manual/custom cases use the nearest named position within 75 mm only when no named source is known. **From area** shows this source. Unknown sources do not silently generate direct named transfers: select and initialize a starting area or explicitly use an edited route.
 
-At Go, default guides are built directly from `RobotConfig.h`, rather than trusting a possibly empty text widget. **Start to Storage right** therefore captures `1500,900,-90` before the final `1700,1700,90` pose. **Default guides** previews this independently of the editable draft. The former Ready-only source selection could fall back to Current pose after a state change and produce an empty/direct route; named source identity no longer depends on that state or the 75 mm fallback.
+At Go, default guides are built directly from `RobotConfig.h`, rather than trusting a possibly empty text widget. **Start to Storage right** therefore captures `1500,900,-90` before the final `1700,1700,90` pose. The guide field shows the route; enable Use edited route to override it. The former Ready-only source selection could fall back to Current pose after a state change and produce an empty/direct route; named source identity no longer depends on that state or the 75 mm fallback.
 
 Final X/Y/heading edits belong to the selected destination. Edited-guide drafts belong to the current source–destination pair. Both survive switching selections until the program restarts; durable defaults are in `navigation_config::GOALS` and `ROUTES` in `RobotConfig.h`. The override toggle resets off when the source/destination pair changes: enable it again to use that pair's draft. Changing a selection or editing a field during travel does not change the active captured route.
 
@@ -162,7 +162,7 @@ A reading must have a valid flag, finite in-range value and fresh timestamp. IR 
 
 While driving, the accepted sensor/encoder discrepancy updates a separate offset, blended by 25% and limited to 5 mm per new update per axis. The controller uses **encoder pose + range offset**. For example, at heading 0 a rear reading of 277 mm plus its 173 mm mount offset indicates center Y=450 mm. If encoder Y is 500 mm, driving feedback gradually incorporates the -50 mm difference. Encoder distance, wheel calibration, gyro reference and global odometry are not rewritten during travel.
 
-On Navigation, **Driving X/Y** shows the sensor-assisted pose used for control. Motion's X/Y remains the global odometry pose. When readings are missing or invalid, the route continues from encoders/gyro and the last accepted driving offset; invalid values never become zero-distance corrections.
+On Navigation, **X/Y** shows the sensor-assisted pose used for control after referencing, and the global pose during initialization. Motion's X/Y remains the global odometry pose. When readings are missing or invalid, the route continues from encoders/gyro and the last accepted driving offset; invalid values never become zero-distance corrections.
 
 ### Stopped goal update
 

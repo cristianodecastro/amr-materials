@@ -517,7 +517,8 @@ NavigationInput MvpReference(GoalNavigationRoutine& nav) {
   in.motion={{950,900,0},0.1,0.02,true,false,false,0};
   in.rangeMM[0]=190; in.rangeMM[1]=277; in.valid[0]=in.valid[1]=true;
   in.stamp[0]=in.stamp[1]=0.1;
-  REQUIRE_ARENA(nav.InitializePose(PoseInitialization{})); nav.Update(in);
+  PoseInitialization settings; settings.xMM="0"; settings.yMM="0"; settings.headingDeg="0";
+  REQUIRE_ARENA(nav.InitializePose(settings)); nav.Update(in);
   REQUIRE_ARENA(nav.NeedsPoseReset());
   in.motion.pose=nav.RequestedPose(); nav.ConfirmReference();
   REQUIRE_ARENA(Near(in.motion.pose.x_MM,250) && Near(in.motion.pose.y_MM,450));
@@ -526,7 +527,8 @@ NavigationInput MvpReference(GoalNavigationRoutine& nav) {
 void MvpStartReferenceAndStop() {
   GoalNavigationRoutine nav; NavigationInput in;
   REQUIRE_ARENA(!nav.StartGoal({250,700,0},in));
-  REQUIRE_ARENA(nav.InitializePose(PoseInitialization{})); in.motion={{0,0,0},0.1,0.02,true,false,false,0};
+  PoseInitialization settings; settings.xMM="0"; settings.yMM="0"; settings.headingDeg="0";
+  REQUIRE_ARENA(nav.InitializePose(settings)); in.motion={{0,0,0},0.1,0.02,true,false,false,0};
   for (int tick=0;tick<100;++tick) {in.motion.now+=0.02;nav.Update(in);}
   REQUIRE_ARENA(nav.GetState()==GoalNavigationRoutine::State::Reference && nav.Forward()==0);
   in=MvpReference(nav);
@@ -550,46 +552,56 @@ void MvpStartReferenceAndStop() {
 // Clear-floor tests of the real odometry, controller, electrical mapping and
 // motor lag. An operator, not this MVP, chooses obstacle-free arena segments.
 void FlexibleInitializationChecks() {
-  NavigationInput in; in.motion={{100,100,0},1,0.02,true,false,false,0};
+  NavigationInput in; in.motion={{333,444,0.3},1,0.02,true,false,false,0};
   GoalNavigationRoutine nav; PoseInitialization settings;
-  settings.xMM="500"; settings.yMM="700"; settings.headingDeg=-90;
-  for (auto& wall:settings.wall) wall="-";
+  settings.headingDeg="-90";
   REQUIRE_ARENA(nav.InitializePose(settings)); nav.Update(in);
-  REQUIRE_ARENA(nav.NeedsPoseReset() && Near(nav.RequestedPose().x_MM,500) && Near(nav.RequestedPose().y_MM,700));
-  REQUIRE_ARENA(Near(nav.RequestedPose().headingRad,-robot_geometry::PI/2)); nav.ConfirmReference();
-  settings=PoseInitialization{}; settings.xMM="500"; // only Y comes from the rear sonar
-  in.valid[1]=true; in.rangeMM[1]=527; in.stamp[1]=1;
-  REQUIRE_ARENA(nav.InitializePose(settings)); settings.xMM="20"; nav.Update(in); // snapshot
-  REQUIRE_ARENA(nav.NeedsPoseReset() && Near(nav.RequestedPose().x_MM,500) && Near(nav.RequestedPose().y_MM,700));
-  settings=PoseInitialization{}; settings.yMM="700"; settings.wall[0]="-"; settings.wall[2]="X=1100";
-  in.valid[2]=true; in.rangeMM[2]=540; in.stamp[2]=1;
+  REQUIRE_ARENA(nav.NeedsPoseReset() && nav.NeedsHeadingReset());
+  REQUIRE_ARENA(Near(nav.RequestedPose().x_MM,333) && Near(nav.RequestedPose().y_MM,444));
+  REQUIRE_ARENA(Near(nav.RequestedPose().headingRad,-robot_geometry::PI/2));
+  in.motion.pose=nav.RequestedPose(); nav.ConfirmReference();
+  // X-only uses the west-facing rear sonar at heading -90; Y stays EXACTLY 444.
+  settings=PoseInitialization{}; settings.xMM="0";
+  in.valid[1]=true; in.rangeMM[1]=127; in.stamp[1]=1;
   REQUIRE_ARENA(nav.InitializePose(settings)); nav.Update(in);
-  REQUIRE_ARENA(nav.NeedsPoseReset() && Near(nav.RequestedPose().x_MM,500) && Near(nav.RequestedPose().y_MM,700));
-  settings=PoseInitialization{}; settings.wall[2]="X=1100"; settings.wall[3]="Y=1200";
-  for (int i=0;i<4;++i) {in.valid[i]=true;in.stamp[i]=1;}
-  in.rangeMM[0]=430; in.rangeMM[1]=517; in.rangeMM[2]=530; in.rangeMM[3]=318.4;
+  REQUIRE_ARENA(nav.NeedsPoseReset() && !nav.NeedsHeadingReset());
+  REQUIRE_ARENA(Near(nav.RequestedPose().x_MM,300) && nav.RequestedPose().y_MM==444);
+  in.motion.pose=nav.RequestedPose(); nav.ConfirmReference();
+  // Symmetric Y-only: south-facing RIGHT IR, preserving X and the gyro frame.
+  settings=PoseInitialization{}; settings.yMM="0";
+  in.valid[2]=true; in.rangeMM[2]=340; in.stamp[2]=1;
   REQUIRE_ARENA(nav.InitializePose(settings)); nav.Update(in);
-  REQUIRE_ARENA(nav.NeedsPoseReset() && Near(nav.RequestedPose().x_MM,500) && Near(nav.RequestedPose().y_MM,700));
-  // Invalid/stale redundant readings never contaminate the remaining sources.
-  in.valid[0]=false; in.stamp[1]=0;
+  REQUIRE_ARENA(nav.NeedsPoseReset() && !nav.NeedsHeadingReset());
+  REQUIRE_ARENA(nav.RequestedPose().x_MM==300 && Near(nav.RequestedPose().y_MM,400));
+  REQUIRE_ARENA(nav.RequestedPose().headingRad==in.motion.pose.headingRad);
+  in.motion.pose=nav.RequestedPose(); nav.ConfirmReference();
+  // Changing a named area's default heading must select different sensors.
+  in.motion.pose={950,900,0}; settings.xMM="0"; settings.headingDeg="-90";
+  settings.useArea=true; settings.areaPose={300,400,0};
   REQUIRE_ARENA(nav.InitializePose(settings)); nav.Update(in);
-  REQUIRE_ARENA(nav.NeedsPoseReset() && Near(nav.RequestedPose().x_MM,510) && Near(nav.RequestedPose().y_MM,710));
-  // Heading +90 faces west: left points south, rear points east.
-  settings=PoseInitialization{}; settings.headingDeg=90; settings.wall[0]="Y=0"; settings.wall[1]="X=1000";
+  REQUIRE_ARENA(Near(nav.RequestedPose().x_MM,300) && Near(nav.RequestedPose().y_MM,400));
+  in.motion.pose=nav.RequestedPose(); nav.ConfirmReference();
+  // All dashes: no pose component changes, even with valid sensor returns.
+  settings=PoseInitialization{};
+  REQUIRE_ARENA(nav.InitializePose(settings)); nav.Update(in);
+  REQUIRE_ARENA(!nav.NeedsHeadingReset() && nav.RequestedPose().x_MM==300 && nav.RequestedPose().y_MM==400);
+  REQUIRE_ARENA(nav.RequestedPose().headingRad==in.motion.pose.headingRad); nav.ConfirmReference();
+  // A requested numeric heading applies even while the selected X reading is invalid.
+  settings.xMM="2000"; settings.headingDeg="90";
   for (auto& valid:in.valid) valid=false;
-  in.valid[0]=in.valid[1]=true; in.stamp[0]=in.stamp[1]=1; in.rangeMM[0]=640; in.rangeMM[1]=327;
   REQUIRE_ARENA(nav.InitializePose(settings)); nav.Update(in);
-  REQUIRE_ARENA(nav.NeedsPoseReset() && Near(nav.RequestedPose().x_MM,500) && Near(nav.RequestedPose().y_MM,700));
-  settings=PoseInitialization{}; settings.wall[0]="-"; // no X source: never guess zero
-  REQUIRE_ARENA(nav.InitializePose(settings)); nav.Update(in);
-  REQUIRE_ARENA(!nav.NeedsPoseReset() && nav.GetState()==GoalNavigationRoutine::State::Reference && nav.Forward()==0);
-  settings.wall[3]="X=0"; in.valid[3]=true; in.rangeMM[3]=300; in.stamp[3]=1; // parallel beam
-  REQUIRE_ARENA(nav.InitializePose(settings)); nav.Update(in); REQUIRE_ARENA(!nav.NeedsPoseReset());
+  REQUIRE_ARENA(nav.GetState()==GoalNavigationRoutine::State::Reference && nav.NeedsHeadingReset());
+  REQUIRE_ARENA(nav.NeedsPoseReset() && Near(nav.RequestedPose().headingRad,robot_geometry::PI/2));
+  REQUIRE_ARENA(nav.RequestedPose().x_MM==300 && nav.RequestedPose().y_MM==400);
+  in.motion.pose=nav.RequestedPose(); nav.ConfirmReference();
+  REQUIRE_ARENA(!nav.HasReference() && !nav.NeedsHeadingReset());
+  in.valid[1]=true; in.rangeMM[1]=1127; in.stamp[1]=1;
+  nav.Update(in);
+  REQUIRE_ARENA(nav.NeedsPoseReset() && !nav.NeedsHeadingReset());
+  REQUIRE_ARENA(Near(nav.RequestedPose().x_MM,700) && nav.RequestedPose().y_MM==400); nav.ConfirmReference();
   settings.xMM="bad"; REQUIRE_ARENA(!nav.InitializePose(settings));
-  settings.xMM="500"; settings.yMM="700"; settings.wall[3]="Z=0"; REQUIRE_ARENA(!nav.InitializePose(settings));
-  settings.wall[3]="Y=100 extra"; REQUIRE_ARENA(!nav.InitializePose(settings));
-  settings.wall[3]="-"; settings.xMM="2001"; REQUIRE_ARENA(!nav.InitializePose(settings));
-  REQUIRE_ARENA(!nav.HasReference() && !nav.IsRunning());
+  settings.xMM="2001"; REQUIRE_ARENA(!nav.InitializePose(settings));
+  settings.xMM="0"; settings.headingDeg="NaN"; REQUIRE_ARENA(!nav.InitializePose(settings));
 }
 void IntermediatePoseToleranceChecks() {
   GoalNavigationRoutine nav; auto in=MvpReference(nav);
@@ -718,7 +730,7 @@ void RangeCorrectionsUseEachBeamHeadingAndMount() {
     GoalNavigationRoutine nav; NavigationInput in;
     const double h=robot_geometry::Radians(degrees[row]);
     in.motion={{500,700,h},1,0.02,true,false,false,robot_geometry::Radians(20)};
-    PoseInitialization settings; settings.xMM="500"; settings.yMM="700"; settings.headingDeg=degrees[row];
+    PoseInitialization settings; settings.headingDeg=std::to_string(degrees[row]);
     REQUIRE_ARENA(nav.InitializePose(settings)); nav.Update(in); REQUIRE_ARENA(nav.NeedsPoseReset()); nav.ConfirmReference();
     in.motion.pose={530,660,h};
     for (int sensor=0;sensor<4;++sensor) { in.valid[sensor]=true; in.rangeMM[sensor]=ranges[row][sensor]; in.stamp[sensor]=1; }

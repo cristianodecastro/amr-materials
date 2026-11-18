@@ -79,39 +79,36 @@ std::string GoalNavigationRoutine::DefaultIntermediates(int source,int destinati
   }
   return poses.str();
 }
-void GoalNavigationRoutine::Abort() { Stop(); state_=State::Aborted; status_="Stopped"; }
-void GoalNavigationRoutine::Fail(const std::string& message) { Stop(); state_=State::Fault; status_=message; }
+void GoalNavigationRoutine::Abort() { Stop(); poseResetPending_=false; state_=State::Aborted; status_="Stopped"; }
+void GoalNavigationRoutine::Fail(const std::string& message) { Stop(); poseResetPending_=false; state_=State::Fault; status_=message; }
 bool GoalNavigationRoutine::InitializePose(const PoseInitialization& settings) {
   if (IsRunning() && state_!=State::Reference && state_!=State::ReferenceReady) return false;
   Stop(); positionCorrection_={0,0}; referenced_=false; state_=State::Unreferenced;
+  poseResetPending_=false; initialHeadingPending_=false;
   const auto reject=[this](const std::string& message) { status_=initializationStatus_=message; return false; };
-  bool known[2]; double coordinate[2]={}; WallReference references[4];
-  if (!OptionalCoordinate(settings.xMM,known[0],coordinate[0]) ||
-      !OptionalCoordinate(settings.yMM,known[1],coordinate[1]) || !std::isfinite(settings.headingDeg))
-    return reject("Start X/Y: number or '-'; heading must be a finite number");
-  for (int axis=0;axis<2;++axis) if (known[axis] &&
-      (coordinate[axis]<0 || coordinate[axis]>(axis==0?localization_config::ARENA_WIDTH_MM:localization_config::ARENA_HEIGHT_MM)))
-    return reject("Supplied start coordinate is outside the arena");
-  for (int i=0;i<4;++i) {
-    const auto text=Trim(settings.wall[i]);
-    if (text.empty() || text=="-") continue;
-    std::istringstream value(text); char axis,equals; double wall;
-    if (!(value>>axis>>equals>>wall) || equals!='=' || !std::isfinite(wall) ||
-        (axis!='X' && axis!='x' && axis!='Y' && axis!='y')) return reject("Sensor walls: X=coordinate, Y=coordinate or '-'");
-    value>>std::ws;
-    if (!value.eof()) return reject("Sensor walls: X=coordinate, Y=coordinate or '-'");
-    references[i]={axis=='X'||axis=='x'?0:1,wall};
+  bool axis[2],heading; double wall[2]={},degrees=0;
+  if (!OptionalCoordinate(settings.xMM,axis[0],wall[0]) || !OptionalCoordinate(settings.yMM,axis[1],wall[1]) ||
+      !OptionalCoordinate(settings.headingDeg,heading,degrees))
+    return reject("Wall X/Y and heading: finite number or '-'");
+  for (int i=0;i<2;++i) {
+    const double limit=i==0?localization_config::ARENA_WIDTH_MM:localization_config::ARENA_HEIGHT_MM;
+    if (axis[i] && (wall[i]<0 || wall[i]>limit)) return reject("Wall coordinate outside arena");
+    initialPending_[i]=initialRequested_[i]=axis[i]; initialWall_[i]=wall[i];
   }
-  for (int axis=0;axis<2;++axis) { initialKnown_[axis]=known[axis]; initialCoordinate_[axis]=coordinate[axis]; }
-  for (int i=0;i<4;++i) walls_[i]=references[i];
-  initialHeading_=robot_geometry::Wrap(robot_geometry::Radians(settings.headingDeg));
-  heading_.Reset(); state_=State::Reference; status_=initializationStatus_="Reading selected initialization references";
+  initialHeadingPending_=heading; initialHeading_=robot_geometry::Wrap(robot_geometry::Radians(degrees));
+  initialUseArea_=settings.useArea; initialArea_=settings.areaPose;
+  if (initialUseArea_ && !robot_geometry::Finite(initialArea_)) return reject("Starting area is not finite");
+  for (auto& wallReference:walls_) wallReference=WallReference{};
+  for (auto& offset:rangeOffset_) offset=0;
+  history_.clear(); heading_.Reset(); state_=State::Reference;
+  status_=initializationStatus_="Applying heading and selected wall references";
   return true;
 }
 void GoalNavigationRoutine::ConfirmReference() {
   if (!NeedsPoseReset()) return;
-  controlPose_=requestedPose_;
-  referenced_=true; state_=State::Ready; status_="Referenced; select a goal, edit its points, then Go";
+  controlPose_=requestedPose_; poseResetPending_=false; initialHeadingPending_=false;
+  if (state_!=State::ReferenceReady) return;
+  referenced_=true; state_=State::Ready; status_="Referenced; select goal, then Go";
 }
 bool GoalNavigationRoutine::StartGoal(RobotPose goal,const NavigationInput& in,const std::string& intermediatePoses) {
   if (IsRunning()) return false;
@@ -274,7 +271,11 @@ void GoalNavigationRoutine::CorrectFromWalls(NavigationInput& in) {
       const double distance=(coordinate-ray.origin[a])/ray.direction[a];
       if (distance>0 && distance<predicted) { predicted=distance; axis=a; }
     };
-    for (const auto& wall:walls_) consider(wall.axis,wall.coordinate);
+    for (const auto& wall:walls_) {
+      const bool horizontalFace=wall.axis==1 && arena_config::HORIZONTAL_WALL_REFERENCE_ENABLED &&
+          (wall.coordinate==arena_config::HORIZONTAL_WALL_SOUTH_Y_MM || wall.coordinate==arena_config::HORIZONTAL_WALL_NORTH_Y_MM);
+      if (!horizontalFace) consider(wall.axis,wall.coordinate); // known finite faces are checked below
+    }
     consider(0,0); consider(0,localization_config::ARENA_WIDTH_MM);
     consider(1,0); consider(1,localization_config::ARENA_HEIGHT_MM);
     if (arena_config::HORIZONTAL_WALL_REFERENCE_ENABLED) {
@@ -315,30 +316,44 @@ void GoalNavigationRoutine::Update(const NavigationInput& input) {
   if (!IsRunning()) return;
   if (state_==State::Reference) {
     if (!HealthyMotion(in)) { status_=initializationStatus_="Reference waiting: "+MotionIssue(in); return; }
-    double sums[2]={},weights[2]={};
-    for (int sensor=0;sensor<4;++sensor) {
-      const int axis=walls_[sensor].axis;
-      if (axis<0 || initialKnown_[axis]) continue;
-      if (!UsableRange(in,sensor)) continue;
-      const double range=in.rangeMM[sensor];
-      const auto ray=SensorRay({0,0,initialHeading_},sensor); // origin is the rotated mount offset
-      const double component=ray.direction[axis];
-      if (std::fabs(component)<1e-6) continue; // a parallel beam cannot observe this axis
-      const double estimate=walls_[sensor].coordinate-ray.origin[axis]-range*component;
-      const double limit=axis==0?localization_config::ARENA_WIDTH_MM:localization_config::ARENA_HEIGHT_MM;
-      if (!std::isfinite(estimate) || estimate<0 || estimate>limit) continue;
-      const double weight=component*component; // geometric weighting, no covariance model
-      sums[axis]+=weight*estimate; weights[axis]+=weight;
+    requestedPose_=m.pose;
+    if (initialHeadingPending_) requestedPose_.headingRad=initialHeading_;
+    poseResetPending_=initialHeadingPending_;
+    const double h=requestedPose_.headingRad;
+    const RobotPose seed=initialUseArea_?initialArea_:m.pose;
+    const double seedCoordinate[2]={seed.x_MM,seed.y_MM};
+    unsigned used=0;
+    for (int sensor=0;sensor<4;++sensor) if (walls_[sensor].axis>=0) used|=1u<<sensor;
+    for (int axis=0;axis<2;++axis) if (initialPending_[axis]) {
+      // Wall coordinate + approximate area identify its side. Actual heading
+      // rotates the mount and beam; the area's preset heading is never used.
+      const double side=initialWall_[axis]>=seedCoordinate[axis]?1:-1;
+      int chosen=-1; double strongest=0,estimate=0;
+      for (int sensor=0;sensor<4;++sensor) {
+        if ((used&(1u<<sensor)) || !UsableRange(in,sensor)) continue;
+        const auto ray=SensorRay({0,0,h},sensor);
+        const double component=side*ray.direction[axis];
+        if (component<navigation_config::REFERENCE_MIN_COMPONENT || component<=strongest) continue;
+        const double value=initialWall_[axis]-ray.origin[axis]-in.rangeMM[sensor]*ray.direction[axis];
+        const double limit=axis==0?localization_config::ARENA_WIDTH_MM:localization_config::ARENA_HEIGHT_MM;
+        if (!std::isfinite(value) || value<0 || value>limit) continue;
+        strongest=component; chosen=sensor; estimate=value;
+      }
+      if (chosen<0) continue;
+      used|=1u<<chosen; walls_[chosen]={axis,initialWall_[axis]};
+      if (axis==0) requestedPose_.x_MM=estimate; else requestedPose_.y_MM=estimate;
+      initialPending_[axis]=false; poseResetPending_=true;
     }
-    for (int axis=0;axis<2;++axis) if (!initialKnown_[axis] && weights[axis]==0) {
-      status_=initializationStatus_=std::string("Need start ")+(axis==0?"X":"Y")+" or a valid sensor reference for that axis"; return;
+    if (initialPending_[0] || initialPending_[1]) {
+      status_=initializationStatus_=std::string("Waiting for valid ")+(initialPending_[0]?"X":"")+
+          (initialPending_[0] && initialPending_[1]?"/":"")+(initialPending_[1]?"Y":"")+
+          " wall reading; heading/available axes applied";
+      return;
     }
-    requestedPose_={initialKnown_[0]?initialCoordinate_[0]:sums[0]/weights[0],
-        initialKnown_[1]?initialCoordinate_[1]:sums[1]/weights[1],initialHeading_};
     initializationStatus_="X="+std::to_string(static_cast<int>(std::round(requestedPose_.x_MM)))+
-        (initialKnown_[0]?" given":" sensed")+", Y="+std::to_string(static_cast<int>(std::round(requestedPose_.y_MM)))+
-        (initialKnown_[1]?" given":" sensed");
-    state_=State::ReferenceReady; status_="Starting pose ready"; return;
+        (initialRequested_[0]?" sensed":" kept")+", Y="+std::to_string(static_cast<int>(std::round(requestedPose_.y_MM)))+
+        (initialRequested_[1]?" sensed":" kept");
+    poseResetPending_=true; state_=State::ReferenceReady; status_="Pose reference ready"; return;
   }
   if (state_==State::ReferenceReady) return;
   const auto issue=MotionIssue(in);

@@ -16,6 +16,12 @@ void Localization::SetAutonomousMode(bool autonomous) {
   autonomousMode_=autonomous;
   Reset(pose.x_MM,pose.y_MM,pose.headingRad*180/robot_geometry::PI);
 }
+void Localization::ApplyReference(RobotPose pose,bool resetHeading) {
+  if (resetHeading) { Reset(pose.x_MM,pose.y_MM,pose.headingRad*180/robot_geometry::PI); return; }
+  // Preserve yaw offset, encoder baselines and feedback timing for heading '-'.
+  odometry_.CorrectPosition(pose.x_MM-odometry_.Pose().x_MM,pose.y_MM-odometry_.Pose().y_MM);
+  teleopTelemetry_.SetPosition(pose.x_MM,pose.y_MM);
+}
 void Localization::UpdateOdometry(double dtSeconds) {
   double counts[3];
   for (int i=0;i<3;++i) counts[i]=hardware_->GetWheelEncoderRaw(i);

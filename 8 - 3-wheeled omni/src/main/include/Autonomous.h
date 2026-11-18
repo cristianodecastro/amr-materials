@@ -59,9 +59,11 @@ struct NavigationInput {
   std::string healthIssue;
 };
 struct PoseInitialization {
+  // Numeric X/Y are WALL coordinates; '-' preserves that pose coordinate.
   std::string xMM="-",yMM="-";
-  double headingDeg=0;
-  std::string wall[4]={"X=0","Y=0","-","-"};
+  std::string headingDeg="-";
+  bool useArea=false;
+  RobotPose areaPose={0,0,0}; // approximate region, for choosing wall-facing rays only
 };
 // Editable pose route with optional range-based XY odometry support.
 class GoalNavigationRoutine {
@@ -79,7 +81,8 @@ class GoalNavigationRoutine {
   bool IsRunning() const { return state_==State::Reference || state_==State::ReferenceReady ||
       state_==State::Driving || state_==State::FinalHeading; }
   bool HasReference() const { return referenced_; }
-  bool NeedsPoseReset() const { return state_==State::ReferenceReady; }
+  bool NeedsPoseReset() const { return poseResetPending_; }
+  bool NeedsHeadingReset() const { return initialHeadingPending_; }
   const RobotPose& RequestedPose() const { return requestedPose_; }
   void ConfirmReference();
   const RobotPose& Goal() const { return goal_; }
@@ -121,12 +124,14 @@ class GoalNavigationRoutine {
   double rangeOffset_[2]={0,0},rangeTarget_[2]={0,0},rangeStamp_[2]={-1,-1};
   unsigned rangeSources_[2]={0,0};
   ArenaPoint positionCorrection_={0,0};
-  bool initialKnown_[2]={false,false};
-  double initialCoordinate_[2]={0,0},initialHeading_=0;
+  bool initialPending_[2]={false,false},initialRequested_[2]={false,false};
+  double initialWall_[2]={0,0},initialHeading_=0;
+  bool initialHeadingPending_=false,poseResetPending_=false,initialUseArea_=false;
+  RobotPose initialArea_={0,0,0};
   WaypointDrive point_;
   HeadingMotionControl heading_;
   std::string status_="Set initialization, then Initialize pose";
-  std::string initializationStatus_="X/Y: number or '-'. Sensor walls: X=value, Y=value or '-'.";
+  std::string initializationStatus_="Set wall X/Y or '-' and heading or '-', then Initialize pose";
   std::string wallStatus_="Encoders + gyro; ranges support XY when usable";
 };
 enum class TapeApproach { FromLeft, FromRight };
