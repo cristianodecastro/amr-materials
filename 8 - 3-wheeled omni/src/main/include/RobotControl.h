@@ -131,6 +131,7 @@ class RobotSubsystem : public frc2::SubsystemBase {
   void InitializeSensingDashboard();
   void InitializeNavigationDashboard();
   void InitializePoseDashboard();
+  void UpdateStartingAreaSelection();
   void UpdateGoalSelection();
   void UpdateTeleopDrive(double dt);
   void UpdateSonarPoll(double now);
@@ -146,6 +147,8 @@ class RobotSubsystem : public frc2::SubsystemBase {
   nt::NetworkTableEntry initializePose_,initializeFromTab_,goToGoal_,stopNavigation_,goalX_,goalY_,goalHeading_;
   nt::NetworkTableEntry intermediatePoses_,initialX_,initialY_,initialHeading_,wallReferences_[4];
   frc::SendableChooser<int> goalChooser_;
+  frc::SendableChooser<int> startingAreaChooser_;
+  int selectedStartingArea_=-1,initializedSource_=-1;
   struct GoalSettings { double xMM,yMM,headingDeg; };
   std::vector<GoalSettings> goalSettings_;
   std::vector<std::string> routeSettings_;

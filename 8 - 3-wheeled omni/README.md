@@ -50,16 +50,31 @@ Sonars use FlexDIO 2/3 front and 0/1 rear (even trigger, odd echo). IR sensors u
 
 Basic teleoperated driving and on-demand photo capture are retained. The inactive project-7 arena mission/planner, simple tasks, colour classification/calibration, Cobra recapture/file persistence, lift, and servo code are removed. Build and vendor configuration remain unchanged.
 
-## Sensor-supported navigation (P8-r31 MVP)
+## Sensor-supported navigation (P8-r32 MVP)
 
 Navigation follows your editable intermediate poses and final goal. Encoder counts and reset-relative gyro heading remain the basic motion estimate. Valid range readings provide a small position offset to guide driving; they do not veto a route or generate recovery faults. The obstacle map, grid searches, automatic detours, staging/recovery controller and planning worker have been deleted.
 
 ### Initialize
 
 1. Select and enable Autonomous in Control Station. This alone does not start driving.
-2. On **Initialization**, enter the known start X/Y in millimeters. The fields default to the named **Start** pose `(950,900,-90)`; use these only when physically placed there. Use `-` for either unknown coordinate, and enter the starting heading explicitly.
-3. In each sensor's wall field, use `X=coordinate` for a vertical wall, `Y=coordinate` for a horizontal wall, or `-` to exclude that sensor from initialization. These are global wall coordinates, not measured gaps.
-4. Press **Initialize pose**. Supplied coordinates stay as entered; valid selected readings determine the unspecified axes. If an axis cannot be determined, supply it or correct the reference selection. There is no stationary gate or reference timeout.
+2. Place the robot near **any of the five named positions**, not necessarily Start. On **Initialization**, select that **Starting area** independently of the destination. The selector loads its heading, sets X/Y to `-` (both must be measured), and fills the appropriate sensor-wall fields. Align the robot to the displayed heading before referencing: the selection supplies a known heading, not a sensor-derived absolute yaw.
+3. Ensure each enabled sensor has an unobstructed view of the wall named in its field. Storages/delivery objects are not wall references. Use `X=coordinate` for a vertical wall, `Y=coordinate` for a horizontal wall, or `-` to exclude that sensor. These are global wall coordinates, not measured gaps. If you change the heading, review which sensor sees which wall.
+4. Press **Initialize pose**. Valid, finite, fresh, in-range selected readings establish actual X/Y, accounting for rotated sensor offsets and beam directions. Nominal named X/Y are never copied into odometry by this mode. If an axis cannot be determined, initialization waits stopped for a valid reference; it does not drive from an assumed coordinate. There is no stationary gate or reference timeout.
+5. Wait for **Initialized/Referenced**, then on **Navigation** choose the separate **Saved goal** and press **Go to goal**. The first route uses the selected starting area, even when the measured pose is more than 75 mm from its nominal coordinates.
+
+Default starting-area profiles (`navigation_config::INITIAL_WALLS`, sensor order left IR / rear sonar / right IR / front sonar) are:
+
+| Starting area | Heading | Enabled reference sensors |
+| --- | --- | --- |
+| Storage right | 90 | Rear sonar: X=2000; right IR: Y=2000 |
+| Storage left | -90 | Rear sonar: X=0; left IR: Y=2000 |
+| Delivery right | 90 | Rear sonar: X=2000; left IR: Y=0 |
+| Delivery left | 0 | Rear sonar: Y=0; left IR: X=0 |
+| Start | -90 | Rear sonar: X=0; front sonar: X=2000; left IR: horizontal wall Y=1200 |
+
+Changing Starting area while idle clears the old reference and requires Initialize again. During travel, a changed selection is deferred until motion completes; it never resets an active route. Switching destinations alone does not change the starting-area selection or require reinitialization after each arrival. To physically relocate the robot near another area, select that area and initialize again; if it is the same selection, press Initialize again.
+
+**Manual** keeps the editable fields, allowing supplied X/Y values or `-` for unknown axes. Only explicitly supplied coordinates are taken as known. Valid selected readings determine the unspecified axes. Changing area does not change the saved goal coordinates or the active gyro until explicit initialization succeeds.
 
 The usual north-facing lower-left reference is X=`-`, Y=`-`, heading=`0`, left IR=`X=0`, rear sonar=`Y=0`, right/front=`-`. This gives X = left range + 60 mm, Y = rear range + 173 mm. Both coordinates may instead be supplied directly. Initialization establishes the gyro offset using its current reading; raw gyro yaw is not an absolute arena heading.
 
@@ -88,7 +103,7 @@ Two shared intermediate poses are defined once in `navigation_config::INTERMEDIA
 
 For example, Storage left to Delivery right uses Intermediate left, Intermediate right, then Delivery right. Storage left to Delivery left is direct. Delivery right to Start uses Intermediate right, then Start. All intermediate headings are -90 degrees. These remain pass-through poses with relaxed tolerances and simultaneous rotation/translation, without mandatory in-place turns. The dashboard still permits editing, adding or removing intermediate poses per transfer. Physical clearance must be evaluated on the robot.
 
-When stopped, the dashboard identifies the nearest named pose within 75 mm and automatically loads that source-to-destination list; **Navigation status** shows `from <source>`. The source stays fixed during travel. If no named source matches, it shows **Current pose** and uses a separate, initially empty guide list. Review/edit that list before Go when starting elsewhere. Custom destinations also have separate guide lists.
+After named-area initialization, the dashboard uses that area as the first route source. After arrival, it identifies the nearest named pose within 75 mm and loads the next source-to-destination list; **Navigation status** shows `from <source>`. The source stays fixed during travel. For manual initialization with no nearby named source, it shows **Current pose** and uses a separate, initially empty guide list. Review/edit that list before Go when starting elsewhere. Custom destinations also have separate guide lists.
 
 Final X/Y/heading edits belong to the selected destination. Intermediate-list edits belong to the current source–destination pair. Both survive switching selections until the program restarts; durable defaults are in `navigation_config::GOALS` and `ROUTES` in `RobotConfig.h`. Changing a selection or editing a field during travel does not change the active captured route.
 

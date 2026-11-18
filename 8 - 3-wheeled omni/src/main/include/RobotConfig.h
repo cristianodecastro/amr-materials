@@ -184,6 +184,17 @@ static constexpr GoalPreset GOALS[GOAL_COUNT]={
     {"Storage right",1700,1700,90}, {"Storage left",300,1700,-90},
     {"Delivery right",1700,400,90}, {"Delivery left",300,400,-0},
     {"Start",localization_config::START_X_MM,localization_config::START_Y_MM,localization_config::START_HEADING_DEG}};
+// Starting-area references, in GOALS order. Sensor order: left IR, rear sonar,
+// right IR, front sonar. Axis -1 excludes a sensor; 0=X wall, 1=Y wall.
+// Place NEAR the selected pose, aligned to its heading, with clear wall views.
+// Neither nominal X nor nominal Y is used as an actual measured coordinate.
+struct InitialWall { int axis; double coordinate; };
+static constexpr InitialWall INITIAL_WALLS[GOAL_COUNT][4]={
+    {{-1,0},{0,2000},{1,2000},{-1,0}}, // Storage right: rear east, right north
+    {{1,2000},{0,0},{-1,0},{-1,0}},    // Storage left: left north, rear west
+    {{1,0},{0,2000},{-1,0},{-1,0}},    // Delivery right: left south, rear east
+    {{0,0},{1,0},{-1,0},{-1,0}},       // Delivery left: left west, rear south
+    {{1,arena_config::HORIZONTAL_WALL_SOUTH_Y_MM},{0,0},{-1,0},{0,2000}}}; // Start
 enum GuideId { NO_GUIDE=-1,LEFT_GUIDE,RIGHT_GUIDE };
 static constexpr GoalPreset INTERMEDIATES[2]={
     {"Intermediate left",500,900,-90}, {"Intermediate right",1500,900,-90}};

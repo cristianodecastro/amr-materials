@@ -57,6 +57,7 @@ void RobotSubsystem::Periodic() {
     cobraCheck_.Update(line_,now);
   }
   UpdateSonarPoll(now);
+  UpdateStartingAreaSelection();
   UpdateGoalSelection(); // editable settings for the next run; never changes an active route
   const bool startLeft=startTapeLeft_.GetBoolean(false),startRight=startTapeRight_.GetBoolean(false);
   const bool stop=stopTape_.GetBoolean(false);
@@ -129,7 +130,8 @@ void RobotSubsystem::UpdateNavigation(double now,double dt,bool reference,bool g
       settings.xMM=initialX_.GetString("-"); settings.yMM=initialY_.GetString("-");
       settings.headingDeg=initialHeading_.GetDouble(0);
       for (int i=0;i<4;++i) settings.wall[i]=wallReferences_[i].GetString("-");
-      navigation_.InitializePose(settings);
+      if (navigation_.InitializePose(settings))
+        initializedSource_=selectedStartingArea_<navigation_config::GOAL_COUNT?selectedStartingArea_:-1;
     }
   } else if (go) {
     const RobotPose goal={goalX_.GetDouble(navigation_config::DEFAULT_GOAL_X_MM),
@@ -248,7 +250,7 @@ void RobotSubsystem::InitializeMotionDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Motion");
   tab.AddString("Motion status",[this] {
     // Visible revision distinguishes this executable from stale robot/UI data.
-    const std::string revision="P8-r31 MVP | ";
+    const std::string revision="P8-r32 MVP | ";
     if (!routineNotice_.empty()) return revision+routineNotice_;
     if (frc::RobotState::IsAutonomous()) return revision+(navigationSelected_?navigation_.Status():tapeRoutine_.GetStatus());
     return revision+(hardware_.HasDriveFault()?
@@ -336,10 +338,17 @@ void RobotSubsystem::InitializePoseDashboard() {
   tab.AddString("Initialization status",[this] {
     return routineNotice_.empty()?navigation_.InitializationStatus():routineNotice_;
   }).WithPosition(0,0).WithSize(8,1);
-  initialX_=tab.Add("Start X mm or -",wpi::Twine(std::to_string(localization_config::START_X_MM)))
-      .WithWidget(frc::BuiltInWidgets::kTextView).WithPosition(0,1).WithSize(2,1).GetEntry();
-  initialY_=tab.Add("Start Y mm or -",wpi::Twine(std::to_string(localization_config::START_Y_MM)))
-      .WithWidget(frc::BuiltInWidgets::kTextView).WithPosition(2,1).WithSize(2,1).GetEntry();
+  for (int i=0;i<navigation_config::GOAL_COUNT;++i) {
+    if (i==navigation_config::START) startingAreaChooser_.SetDefaultOption(navigation_config::GOALS[i].name,i);
+    else startingAreaChooser_.AddOption(navigation_config::GOALS[i].name,i);
+  }
+  startingAreaChooser_.AddOption("Manual",navigation_config::GOAL_COUNT);
+  tab.Add("Starting area",startingAreaChooser_).WithWidget(frc::BuiltInWidgets::kComboBoxChooser)
+      .WithPosition(0,1).WithSize(2,1);
+  initialX_=tab.Add("Start X mm or -",wpi::Twine("-"))
+      .WithWidget(frc::BuiltInWidgets::kTextView).WithPosition(2,1).WithSize(1,1).GetEntry();
+  initialY_=tab.Add("Start Y mm or -",wpi::Twine("-"))
+      .WithWidget(frc::BuiltInWidgets::kTextView).WithPosition(3,1).WithSize(1,1).GetEntry();
   initialHeading_=tab.Add("Start heading deg",localization_config::START_HEADING_DEG).WithPosition(4,1).WithSize(2,1).GetEntry();
   initializeFromTab_=tab.Add("Initialize pose",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
       .WithPosition(6,1).WithSize(2,1).GetEntry();
@@ -359,12 +368,29 @@ void RobotSubsystem::InitializePoseDashboard() {
   tab.AddString("Travel wall support",[this] { return navigation_.WallSupportStatus(); })
       .WithPosition(0,4).WithSize(8,1);
   initializeFromTab_.SetBoolean(false);
+  UpdateStartingAreaSelection();
+}
+
+void RobotSubsystem::UpdateStartingAreaSelection() {
+  // Freeze selection during driving. A waiting reference can be replaced with
+  // another area; Initialize must then be pressed for the newly loaded fields.
+  if (navigation_.IsRunning() && navigation_.GetState()!=GoalNavigationRoutine::State::Reference) return;
+  const int selected=startingAreaChooser_.GetSelected();
+  if (selected<0 || selected>navigation_config::GOAL_COUNT || selected==selectedStartingArea_) return;
+  navigation_.Enter(); initializedSource_=-1; selectedStartingArea_=selected;
+  if (selected==navigation_config::GOAL_COUNT) return; // keep fields for manual editing
+  initialX_.SetString("-"); initialY_.SetString("-");
+  initialHeading_.SetDouble(goalSettings_[selected].headingDeg);
+  for (int sensor=0;sensor<4;++sensor) {
+    const auto wall=navigation_config::INITIAL_WALLS[selected][sensor];
+    wallReferences_[sensor].SetString(wall.axis<0?"-":std::string(wall.axis==0?"X=":"Y=")+std::to_string(wall.coordinate));
+  }
 }
 
 void RobotSubsystem::InitializeNavigationDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Navigation");
   tab.AddString("Navigation status",[this] {
-    std::string status=std::string("P8-r31 MVP | ")+(routineNotice_.empty()?navigation_.Status():routineNotice_);
+    std::string status=std::string("P8-r32 MVP | ")+(routineNotice_.empty()?navigation_.Status():routineNotice_);
     if (navigation_.HasReference()) {
       status+=" | from ";
       status+=selectedSource_<navigation_config::GOAL_COUNT?navigation_config::GOALS[selectedSource_].name:"Current pose";
@@ -434,10 +460,14 @@ void RobotSubsystem::UpdateGoalSelection() {
     if (navigation_.HasReference()) {
       const auto pose=navigation_.GetState()==GoalNavigationRoutine::State::Complete?
           navigation_.ControlPose():localization_.GetPose();
-      double nearest=navigation_config::SOURCE_MATCH_RADIUS_MM;
-      for (int i=0;i<navigation_config::GOAL_COUNT;++i) {
-        const double distance=std::hypot(pose.x_MM-goalSettings_[i].xMM,pose.y_MM-goalSettings_[i].yMM);
-        if (distance<=nearest) { nearest=distance; source=i; }
+      if (navigation_.GetState()==GoalNavigationRoutine::State::Ready && initializedSource_>=0)
+        source=initializedSource_; // near a named area, not necessarily within 75 mm
+      else {
+        double nearest=navigation_config::SOURCE_MATCH_RADIUS_MM;
+        for (int i=0;i<navigation_config::GOAL_COUNT;++i) {
+          const double distance=std::hypot(pose.x_MM-goalSettings_[i].xMM,pose.y_MM-goalSettings_[i].yMM);
+          if (distance<=nearest) { nearest=distance; source=i; }
+        }
       }
     }
   }
