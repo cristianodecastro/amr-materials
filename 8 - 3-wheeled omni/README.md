@@ -50,17 +50,19 @@ Sonars use FlexDIO 2/3 front and 0/1 rear (even trigger, odd echo). IR sensors u
 
 Basic teleoperated driving and on-demand photo capture are retained. The inactive project-7 arena mission/planner, simple tasks, colour classification/calibration, Cobra recapture/file persistence, lift, and servo code are removed. Build and vendor configuration remain unchanged.
 
-## Sensor-supported navigation (P8-r32 MVP)
+## Sensor-supported navigation (P8-r33 MVP)
 
 Navigation follows your editable intermediate poses and final goal. Encoder counts and reset-relative gyro heading remain the basic motion estimate. Valid range readings provide a small position offset to guide driving; they do not veto a route or generate recovery faults. The obstacle map, grid searches, automatic detours, staging/recovery controller and planning worker have been deleted.
 
 ### Initialize
 
-1. Select and enable Autonomous in Control Station. This alone does not start driving.
-2. Place the robot near **any of the five named positions**, not necessarily Start. On **Initialization**, select that **Starting area** independently of the destination. The selector loads its heading, sets X/Y to `-` (both must be measured), and fills the appropriate sensor-wall fields. Align the robot to the displayed heading before referencing: the selection supplies a known heading, not a sensor-derived absolute yaw.
+1. Connect Control Station and keep the robot **Disabled**. Pose initialization is also available in enabled Autonomous, but never commands driving. Enabled Teleop rejects pose initialization.
+2. Place the robot near **any of the five named positions**, not necessarily Start. On **Motion**, select that **Starting area** independently of the destination. The selector loads its heading, sets X/Y to `-` (both must be measured), and fills the appropriate sensor-wall fields. Align the robot to the displayed heading before referencing: the selection supplies a known heading, not a sensor-derived absolute yaw.
 3. Ensure each enabled sensor has an unobstructed view of the wall named in its field. Storages/delivery objects are not wall references. Use `X=coordinate` for a vertical wall, `Y=coordinate` for a horizontal wall, or `-` to exclude that sensor. These are global wall coordinates, not measured gaps. If you change the heading, review which sensor sees which wall.
-4. Press **Initialize pose**. Valid, finite, fresh, in-range selected readings establish actual X/Y, accounting for rotated sensor offsets and beam directions. Nominal named X/Y are never copied into odometry by this mode. If an axis cannot be determined, initialization waits stopped for a valid reference; it does not drive from an assumed coordinate. There is no stationary gate or reference timeout.
-5. Wait for **Initialized/Referenced**, then on **Navigation** choose the separate **Saved goal** and press **Go to goal**. The first route uses the selected starting area, even when the measured pose is more than 75 mm from its nominal coordinates.
+4. Press **Initialize pose**. Valid, finite, fresh, in-range selected readings establish actual X/Y, accounting for rotated sensor offsets and beam directions. Named areas always measure both axes when the button is pressed, even if the numeric X/Y fields had been edited; select Manual to supply coordinates. Nominal named X/Y are never copied into odometry by this mode. If an axis cannot be determined, initialization waits stopped for a valid reference; it does not drive from an assumed coordinate. There is no stationary gate or reference timeout.
+5. Watch **Pose reference** for the sensed X/Y or the reason it is waiting. **Referenced** becomes true and Motion's existing **X/Y/Heading** tiles show the updated global pose. Then select and enable Autonomous, choose the separate **Saved goal** on **Navigation**, and press **Go to goal**. Enabling Autonomous preserves the completed reference; it does not reset it. The first route uses the selected starting area, even when the measured pose is more than 75 mm from its nominal coordinates.
+
+Motion now contains initialization in an 8-column, 5-row grid; the separate Initialization tab and duplicate navigation Initialize button are removed. Motor counts/speeds/PWM and initialization fields use single-cell tiles, while global pose, starting-area selection and status fields have more width. Duplicate initialized-pose displays are removed; use the existing global X/Y/Heading tiles. A saved desktop Shuffleboard layout can retain an obsolete Initialization tab; close that local tab after deploying the new program.
 
 Default starting-area profiles (`navigation_config::INITIAL_WALLS`, sensor order left IR / rear sonar / right IR / front sonar) are:
 
@@ -155,7 +157,7 @@ A reading must have a valid flag, finite in-range value and fresh timestamp. IR 
 
 While driving, the accepted sensor/encoder discrepancy updates a separate offset, blended by 25% and limited to 5 mm per new update per axis. The controller uses **encoder pose + range offset**. For example, at heading 0 a rear reading of 277 mm plus its 173 mm mount offset indicates center Y=450 mm. If encoder Y is 500 mm, driving feedback gradually incorporates the -50 mm difference. Encoder distance, wheel calibration, gyro reference and global odometry are not rewritten during travel.
 
-On Navigation, **Driving X/Y** shows the sensor-assisted pose used for control. Motion's X/Y remains the global odometry pose. **Travel wall support** indicates recent accepted readings for each axis. When readings are missing or invalid, the route continues from encoders/gyro and the last accepted driving offset; invalid values never become zero-distance corrections.
+On Navigation, **Driving X/Y** shows the sensor-assisted pose used for control. Motion's X/Y remains the global odometry pose. When readings are missing or invalid, the route continues from encoders/gyro and the last accepted driving offset; invalid values never become zero-distance corrections.
 
 ### Stopped goal update
 
@@ -167,6 +169,6 @@ The same valid selected ranges may establish global X/Y during explicit initiali
 
 The retained navigation protections are explicit Stop/Disable/disconnect, unavailable or invalid gyro/odometry/control data, and the existing hardware motor/encoder fault checks. Malformed/nonfinite settings are rejected before starting. There is no navigation task deadline, progress watchdog, scene-feasibility error, recovery failure or sensor-required travel gate.
 
-The bounded late-sample handling remains: autonomous odometry preserves encoder travel through intervals up to 500 ms, while controller ramps use at most a 40 ms step. Larger/unusable feedback gaps remain control-data faults. Teleop timing and behavior, camera capture, project 7 and build/vendor configuration are unchanged. The compact **Loop / peak ms** tile remains; planner diagnostics are removed with the planner.
+The bounded late-sample handling remains: autonomous odometry preserves encoder travel through intervals up to 500 ms, while controller ramps use at most a 40 ms step. Larger/unusable feedback gaps remain control-data faults during travel. Sensor initialization can recover an old odometry health fault by resetting it, while retaining IMU/Control Station/clock checks. Old drive faults do not prevent a sensor-only reference; they remain checked before driving. Teleop driving behavior, camera capture, project 7 and build/vendor configuration are unchanged. The Loop/peak timing and duplicate pose/support tiles are omitted from Motion to fit initialization controls.
 
 `Navigation.cpp` now contains route following, reference initialization and range support. `Autonomous.cpp` retains the shared heading/position and tape controllers. `LocalNavigation.cpp` and its planner/map classes are deleted. Existing component-check source covers beam/mount projections, invalid readings, stopped correction, control transitions and timing; motion-model simulation code has been removed. No simulations are run after the user's prohibition. Validation for this revision is compilation/build checks; physical behavior must be evaluated on the robot.

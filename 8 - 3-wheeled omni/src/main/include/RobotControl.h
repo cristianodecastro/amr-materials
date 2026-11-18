@@ -136,7 +136,7 @@ class RobotSubsystem : public frc2::SubsystemBase {
   void UpdateTeleopDrive(double dt);
   void UpdateSonarPoll(double now);
   void UpdateTapeRoutine(double now,double dt,bool startLeft,bool startRight,bool stop);
-  NavigationInput NavigationSample(double now,double dt);
+  NavigationInput NavigationSample(double now,double dt,bool referenceOnly=false);
   void UpdateNavigation(double now,double dt,bool reference,bool go);
 
   Hardware hardware_;
@@ -144,7 +144,7 @@ class RobotSubsystem : public frc2::SubsystemBase {
   TapeAlignmentRoutine tapeRoutine_;
   GoalNavigationRoutine navigation_;
   bool navigationSelected_=false;
-  nt::NetworkTableEntry initializePose_,initializeFromTab_,goToGoal_,stopNavigation_,goalX_,goalY_,goalHeading_;
+  nt::NetworkTableEntry initializePose_,goToGoal_,stopNavigation_,goalX_,goalY_,goalHeading_;
   nt::NetworkTableEntry intermediatePoses_,initialX_,initialY_,initialHeading_,wallReferences_[4];
   frc::SendableChooser<int> goalChooser_;
   frc::SendableChooser<int> startingAreaChooser_;

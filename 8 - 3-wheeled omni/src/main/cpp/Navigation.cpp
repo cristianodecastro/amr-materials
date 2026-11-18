@@ -314,8 +314,8 @@ void GoalNavigationRoutine::Update(const NavigationInput& input) {
   if (m.stopRequested) { Abort(); return; }
   if (!IsRunning()) return;
   if (state_==State::Reference) {
-    if (!HealthyMotion(in)) { status_=initializationStatus_="Waiting for IMU/odometry"; return; }
-    double sums[2]={},weights[2]={}; unsigned count[2]={};
+    if (!HealthyMotion(in)) { status_=initializationStatus_="Reference waiting: "+MotionIssue(in); return; }
+    double sums[2]={},weights[2]={};
     for (int sensor=0;sensor<4;++sensor) {
       const int axis=walls_[sensor].axis;
       if (axis<0 || initialKnown_[axis]) continue;
@@ -328,15 +328,16 @@ void GoalNavigationRoutine::Update(const NavigationInput& input) {
       const double limit=axis==0?localization_config::ARENA_WIDTH_MM:localization_config::ARENA_HEIGHT_MM;
       if (!std::isfinite(estimate) || estimate<0 || estimate>limit) continue;
       const double weight=component*component; // geometric weighting, no covariance model
-      sums[axis]+=weight*estimate; weights[axis]+=weight; ++count[axis];
+      sums[axis]+=weight*estimate; weights[axis]+=weight;
     }
     for (int axis=0;axis<2;++axis) if (!initialKnown_[axis] && weights[axis]==0) {
       status_=initializationStatus_=std::string("Need start ")+(axis==0?"X":"Y")+" or a valid sensor reference for that axis"; return;
     }
     requestedPose_={initialKnown_[0]?initialCoordinate_[0]:sums[0]/weights[0],
         initialKnown_[1]?initialCoordinate_[1]:sums[1]/weights[1],initialHeading_};
-    initializationStatus_=std::string("X: ")+(initialKnown_[0]?"given":std::to_string(count[0])+" sensor(s)")+
-        "; Y: "+(initialKnown_[1]?"given":std::to_string(count[1])+" sensor(s)");
+    initializationStatus_="X="+std::to_string(static_cast<int>(std::round(requestedPose_.x_MM)))+
+        (initialKnown_[0]?" given":" sensed")+", Y="+std::to_string(static_cast<int>(std::round(requestedPose_.y_MM)))+
+        (initialKnown_[1]?" given":" sensed");
     state_=State::ReferenceReady; status_="Starting pose ready"; return;
   }
   if (state_==State::ReferenceReady) return;

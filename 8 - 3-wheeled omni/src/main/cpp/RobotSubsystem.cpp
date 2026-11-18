@@ -22,10 +22,12 @@ void RobotSubsystem::InitializeDashboard() {
   InitializePoseDashboard();
 }
 void RobotSubsystem::EnterAutonomous() {
+  const bool keepReference=navigation_.HasReference();
   StopAll();
   localization_.SetAutonomousMode(true);
   tapeRoutine_.Enter(); autonomousSession_=true; routineNotice_.clear();
-  navigation_.Enter(); navigationSelected_=false;
+  if (!keepReference) navigation_.Enter();
+  navigationSelected_=keepReference;
   peakControlDt_=0;
 }
 void RobotSubsystem::StopAll() {
@@ -34,10 +36,9 @@ void RobotSubsystem::StopAll() {
 
   teleopDrive_.Update(false,false,0,0,0,localization_config::CONTROL_PERIOD_S);
   tapeRoutine_.Abort(); autonomousSession_=false;
-  navigation_.Abort();
+  if (navigation_.IsRunning()) navigation_.Abort();
   startTapeLeft_.SetBoolean(false); startTapeRight_.SetBoolean(false); stopTape_.SetBoolean(false);
   initializePose_.SetBoolean(false); goToGoal_.SetBoolean(false); stopNavigation_.SetBoolean(false);
-  initializeFromTab_.SetBoolean(false);
   localization_.SetAutonomousMode(false);
 }
 void RobotSubsystem::Periodic() {
@@ -61,9 +62,9 @@ void RobotSubsystem::Periodic() {
   UpdateGoalSelection(); // editable settings for the next run; never changes an active route
   const bool startLeft=startTapeLeft_.GetBoolean(false),startRight=startTapeRight_.GetBoolean(false);
   const bool stop=stopTape_.GetBoolean(false);
-  const bool reference=initializePose_.GetBoolean(false) || initializeFromTab_.GetBoolean(false),go=goToGoal_.GetBoolean(false);
+  const bool reference=initializePose_.GetBoolean(false),go=goToGoal_.GetBoolean(false);
   const bool stopNav=stopNavigation_.GetBoolean(false);
-  if (reference) { initializePose_.SetBoolean(false); initializeFromTab_.SetBoolean(false); }
+  if (reference) initializePose_.SetBoolean(false);
   if (go) goToGoal_.SetBoolean(false);
   if (stopNav) stopNavigation_.SetBoolean(false);
   if (startLeft) startTapeLeft_.SetBoolean(false);
@@ -96,15 +97,22 @@ void RobotSubsystem::Periodic() {
     else UpdateTapeRoutine(now,dt,false,false,false);
   } else {
     if (autonomousSession_) StopAll();
-    if (startLeft || startRight || reference || go) routineNotice_="Select and enable Autonomous, then press the requested task again";
+    if (stop || stopNav) { navigation_.Abort(); routineNotice_.clear(); }
+    else if (!enabled && (reference || (navigationSelected_ && navigation_.GetState()==GoalNavigationRoutine::State::Reference))) {
+      // Referencing only resets the measured pose; no drive state is started.
+      navigationSelected_=true; routineNotice_.clear(); UpdateNavigation(now,dt,reference,false);
+    } else if (reference) routineNotice_="Disable robot or select enabled Autonomous to initialize pose";
+    if (startLeft || startRight || go) routineNotice_="Select and enable Autonomous, then press the requested task again";
     UpdateTeleopDrive(dt);
   }
 }
 
-NavigationInput RobotSubsystem::NavigationSample(double now,double dt) {
+NavigationInput RobotSubsystem::NavigationSample(double now,double dt,bool referenceOnly) {
   NavigationInput in;
   const bool station=frc::DriverStation::GetInstance().IsDSAttached(),imu=hardware_.IsImuConnected();
-  const bool calibrating=hardware_.IsImuCalibrating(),odometry=localization_.IsHealthy();
+  // A sensor reset can recover old odometry faults; it still requires live IMU,
+  // Control Station and valid clock/range samples. Travel requires full odometry.
+  const bool calibrating=hardware_.IsImuCalibrating(),odometry=referenceOnly || localization_.IsHealthy();
   in.motion={localization_.GetPose(),now,dt,
       imu && !calibrating && odometry && station,false,false,
       robot_geometry::Radians(hardware_.GetYawRateDegreesPerSecond())};
@@ -120,14 +128,18 @@ NavigationInput RobotSubsystem::NavigationSample(double now,double dt) {
   return in;
 }
 void RobotSubsystem::UpdateNavigation(double now,double dt,bool reference,bool go) {
-  auto in=NavigationSample(now,dt);
+  const bool referenceOnly=navigation_.GetState()==GoalNavigationRoutine::State::Reference ||
+      (reference && !go && !navigation_.IsRunning());
+  auto in=NavigationSample(now,dt,referenceOnly);
   if (reference && go) routineNotice_="Initialize and Go must be requested separately";
   else if (reference) {
     if (navigation_.IsRunning() && navigation_.GetState()!=GoalNavigationRoutine::State::Reference)
       routineNotice_="Navigation running; Stop before reinitializing";
     else {
       PoseInitialization settings;
-      settings.xMM=initialX_.GetString("-"); settings.yMM=initialY_.GetString("-");
+      const bool named=selectedStartingArea_>=0 && selectedStartingArea_<navigation_config::GOAL_COUNT;
+      settings.xMM=named?"-":initialX_.GetString("-"); settings.yMM=named?"-":initialY_.GetString("-");
+      if (named) { initialX_.SetString("-"); initialY_.SetString("-"); }
       settings.headingDeg=initialHeading_.GetDouble(0);
       for (int i=0;i<4;++i) settings.wall[i]=wallReferences_[i].GetString("-");
       if (navigation_.InitializePose(settings))
@@ -139,7 +151,8 @@ void RobotSubsystem::UpdateNavigation(double now,double dt,bool reference,bool g
         robot_geometry::Radians(goalHeading_.GetDouble(navigation_config::DEFAULT_GOAL_HEADING_DEG))};
     navigation_.StartGoal(goal,in,intermediatePoses_.GetString(""));
   }
-  if (hardware_.HasDriveFault() && navigation_.IsRunning()) navigation_.Fail(hardware_.GetDriveStatus());
+  if (hardware_.HasDriveFault() && (navigation_.GetState()==GoalNavigationRoutine::State::Driving ||
+      navigation_.GetState()==GoalNavigationRoutine::State::FinalHeading)) navigation_.Fail(hardware_.GetDriveStatus());
   navigation_.Update(in);
   localization_.CorrectAutonomousPosition(navigation_.PositionCorrection());
   if (navigation_.NeedsPoseReset()) {
@@ -244,13 +257,13 @@ void RobotSubsystem::UpdateSonarPoll(double now) {
     hardware_.PingSonar(nextSonarIndex_); sonarPingTime_=now; sonarAwaitingEcho_=true;
   }
 }
-// Compact grids: Motion 8x4, Sensing 8x5.
+// Compact grids: Motion (including initialization) 8x5, Sensing 8x5.
 // Short labels and small numeric/boolean tiles fit the laptop without scrolling.
 void RobotSubsystem::InitializeMotionDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Motion");
   tab.AddString("Motion status",[this] {
     // Visible revision distinguishes this executable from stale robot/UI data.
-    const std::string revision="P8-r32 MVP | ";
+    const std::string revision="P8-r33 MVP | ";
     if (!routineNotice_.empty()) return revision+routineNotice_;
     if (frc::RobotState::IsAutonomous()) return revision+(navigationSelected_?navigation_.Status():tapeRoutine_.GetStatus());
     return revision+(hardware_.HasDriveFault()?
@@ -258,33 +271,30 @@ void RobotSubsystem::InitializeMotionDashboard() {
   }).WithPosition(0,0).WithSize(4,1);
   tab.AddBoolean("Enabled",[] { return frc::RobotState::IsEnabled(); }).WithPosition(4,0).WithSize(1,1);
   tab.AddBoolean("Controller",[this] { return driverConnected_; }).WithPosition(5,0).WithSize(1,1);
-  stopTape_=tab.Add("Stop tape",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
-      .WithPosition(6,0).WithSize(1,1).GetEntry();
+  tab.AddBoolean("Referenced",[this] { return navigation_.HasReference(); }).WithPosition(6,0).WithSize(1,1);
   tab.AddBoolean("IMU ready",[this] { return hardware_.IsImuConnected() && !hardware_.IsImuCalibrating(); })
       .WithPosition(7,0).WithSize(1,1);
   tab.AddNumber("X (mm)",[this] { return localization_.GetPose().x_MM; }).WithPosition(0,1).WithSize(2,1);
   tab.AddNumber("Y (mm)",[this] { return localization_.GetPose().y_MM; }).WithPosition(2,1).WithSize(2,1);
   tab.AddNumber("Heading N=0 deg",[this] { return localization_.GetPose().headingRad*180/robot_geometry::PI; })
       .WithPosition(4,1).WithSize(2,1);
-  tab.AddString("Loop / peak ms",[this] {
-    return std::to_string(static_cast<int>(controlDt_*1000))+" / "+std::to_string(static_cast<int>(peakControlDt_*1000));
-  }).WithPosition(6,1).WithSize(2,1);
   for (int i=0;i<localization_config::WHEEL_COUNT;++i) {
-    const int x=i==1?4:0,y=i==2?3:2;
+    const int x=i==1?3:0,y=i==2?3:2;
     const std::string port="M"+std::to_string(localization_config::WHEEL_TITAN_PORT[i]);
-    const std::string wheel=std::string(localization_config::WHEEL_NAME[i])+" "+port;
-    tab.AddNumber(wheel+" counts",[this,i] { return hardware_.GetWheelEncoderRaw(i); })
-        .WithPosition(x,y).WithSize(2,1);
+    tab.AddNumber(port+" counts",[this,i] { return hardware_.GetWheelEncoderRaw(i); })
+        .WithPosition(x,y).WithSize(1,1);
     tab.AddNumber(port+" mm/s",[this,i] { return hardware_.GetWheelMeasuredMMps(i); })
-        .WithPosition(x+2,y).WithSize(1,1);
+        .WithPosition(x+1,y).WithSize(1,1);
     // Signed WHOLE percentage actually encoded for Titan, not a speed setpoint.
     tab.AddNumber(port+" PWM %",[this,i] { return std::round(hardware_.GetWheelCommand(i)*100); })
-        .WithPosition(x+3,y).WithSize(1,1);
+        .WithPosition(x+2,y).WithSize(1,1);
   }
   startTapeLeft_=tab.Add("Tape from left",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
-      .WithPosition(4,3).WithSize(2,1).GetEntry();
+      .WithPosition(6,2).WithSize(1,1).GetEntry();
   startTapeRight_=tab.Add("Tape from right",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
-      .WithPosition(6,3).WithSize(2,1).GetEntry();
+      .WithPosition(7,2).WithSize(1,1).GetEntry();
+  stopTape_=tab.Add("Stop tape",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
+      .WithPosition(7,3).WithSize(1,1).GetEntry();
   startTapeLeft_.SetBoolean(false); startTapeRight_.SetBoolean(false); stopTape_.SetBoolean(false);
 }
 void RobotSubsystem::InitializeSensingDashboard() {
@@ -334,40 +344,30 @@ void RobotSubsystem::InitializeSensingDashboard() {
 }
 
 void RobotSubsystem::InitializePoseDashboard() {
-  auto& tab=frc::Shuffleboard::GetTab("Initialization");
-  tab.AddString("Initialization status",[this] {
+  auto& tab=frc::Shuffleboard::GetTab("Motion");
+  tab.AddString("Pose reference",[this] {
     return routineNotice_.empty()?navigation_.InitializationStatus():routineNotice_;
-  }).WithPosition(0,0).WithSize(8,1);
+  }).WithPosition(4,4).WithSize(4,1);
   for (int i=0;i<navigation_config::GOAL_COUNT;++i) {
     if (i==navigation_config::START) startingAreaChooser_.SetDefaultOption(navigation_config::GOALS[i].name,i);
     else startingAreaChooser_.AddOption(navigation_config::GOALS[i].name,i);
   }
   startingAreaChooser_.AddOption("Manual",navigation_config::GOAL_COUNT);
   tab.Add("Starting area",startingAreaChooser_).WithWidget(frc::BuiltInWidgets::kComboBoxChooser)
-      .WithPosition(0,1).WithSize(2,1);
+      .WithPosition(6,1).WithSize(2,1);
   initialX_=tab.Add("Start X mm or -",wpi::Twine("-"))
-      .WithWidget(frc::BuiltInWidgets::kTextView).WithPosition(2,1).WithSize(1,1).GetEntry();
+      .WithWidget(frc::BuiltInWidgets::kTextView).WithPosition(4,3).WithSize(1,1).GetEntry();
   initialY_=tab.Add("Start Y mm or -",wpi::Twine("-"))
-      .WithWidget(frc::BuiltInWidgets::kTextView).WithPosition(3,1).WithSize(1,1).GetEntry();
-  initialHeading_=tab.Add("Start heading deg",localization_config::START_HEADING_DEG).WithPosition(4,1).WithSize(2,1).GetEntry();
-  initializeFromTab_=tab.Add("Initialize pose",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
-      .WithPosition(6,1).WithSize(2,1).GetEntry();
+      .WithWidget(frc::BuiltInWidgets::kTextView).WithPosition(5,3).WithSize(1,1).GetEntry();
+  initialHeading_=tab.Add("Start heading deg",localization_config::START_HEADING_DEG).WithPosition(6,3).WithSize(1,1).GetEntry();
+  initializePose_=tab.Add("Initialize pose",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
+      .WithPosition(3,3).WithSize(1,1).GetEntry();
   const PoseInitialization defaults;
   const char* labels[]={"Left IR wall","Rear sonar wall","Right IR wall","Front sonar wall"};
   for (int i=0;i<4;++i)
     wallReferences_[i]=tab.Add(labels[i],wpi::Twine(defaults.wall[i]))
-        .WithWidget(frc::BuiltInWidgets::kTextView).WithPosition(2*i,2).WithSize(2,1).GetEntry();
-  tab.AddNumber("Initialized X mm",[this] { return navigation_.HasReference()?navigation_.RequestedPose().x_MM:-1; })
-      .WithPosition(0,3).WithSize(2,1);
-  tab.AddNumber("Initialized Y mm",[this] { return navigation_.HasReference()?navigation_.RequestedPose().y_MM:-1; })
-      .WithPosition(2,3).WithSize(2,1);
-  tab.AddNumber("Initialized heading deg",[this] {
-    return navigation_.HasReference()?navigation_.RequestedPose().headingRad*180/robot_geometry::PI:0;
-  }).WithPosition(4,3).WithSize(2,1);
-  tab.AddBoolean("Initialized",[this] { return navigation_.HasReference(); }).WithPosition(6,3).WithSize(2,1);
-  tab.AddString("Travel wall support",[this] { return navigation_.WallSupportStatus(); })
-      .WithPosition(0,4).WithSize(8,1);
-  initializeFromTab_.SetBoolean(false);
+        .WithWidget(frc::BuiltInWidgets::kTextView).WithPosition(i,4).WithSize(1,1).GetEntry();
+  initializePose_.SetBoolean(false);
   UpdateStartingAreaSelection();
 }
 
@@ -390,7 +390,7 @@ void RobotSubsystem::UpdateStartingAreaSelection() {
 void RobotSubsystem::InitializeNavigationDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Navigation");
   tab.AddString("Navigation status",[this] {
-    std::string status=std::string("P8-r32 MVP | ")+(routineNotice_.empty()?navigation_.Status():routineNotice_);
+    std::string status=std::string("P8-r33 MVP | ")+(routineNotice_.empty()?navigation_.Status():routineNotice_);
     if (navigation_.HasReference()) {
       status+=" | from ";
       status+=selectedSource_<navigation_config::GOAL_COUNT?navigation_config::GOALS[selectedSource_].name:"Current pose";
@@ -399,10 +399,8 @@ void RobotSubsystem::InitializeNavigationDashboard() {
   }).WithPosition(0,0).WithSize(6,1);
   stopNavigation_=tab.Add("Stop",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
       .WithPosition(6,0).WithSize(2,1).GetEntry();
-  initializePose_=tab.Add("Initialize pose",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
-      .WithPosition(0,1).WithSize(2,1).GetEntry();
   goToGoal_=tab.Add("Go to goal",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
-      .WithPosition(2,1).WithSize(2,1).GetEntry();
+      .WithPosition(0,1).WithSize(4,1).GetEntry();
   tab.AddBoolean("Referenced",[this] { return navigation_.HasReference(); }).WithPosition(4,1).WithSize(1,1);
   tab.AddBoolean("Enabled",[] { return frc::RobotState::IsEnabled(); }).WithPosition(5,1).WithSize(1,1);
   tab.AddNumber("Remaining mm",[this] { return navigation_.RemainingMM(); }).WithPosition(6,1).WithSize(2,1);
@@ -436,7 +434,7 @@ void RobotSubsystem::InitializeNavigationDashboard() {
   intermediatePoses_=tab.Add("Intermediate poses (x,y,deg; ...)",wpi::Twine(""))
       .WithWidget(frc::BuiltInWidgets::kTextView).WithPosition(2,4).WithSize(6,1).GetEntry();
   UpdateGoalSelection();
-  initializePose_.SetBoolean(false); goToGoal_.SetBoolean(false); stopNavigation_.SetBoolean(false);
+  goToGoal_.SetBoolean(false); stopNavigation_.SetBoolean(false);
 }
 
 void RobotSubsystem::UpdateGoalSelection() {
