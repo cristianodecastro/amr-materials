@@ -248,7 +248,7 @@ void RobotSubsystem::InitializeMotionDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Motion");
   tab.AddString("Motion status",[this] {
     // Visible revision distinguishes this executable from stale robot/UI data.
-    const std::string revision="P8-r28 MVP | ";
+    const std::string revision="P8-r31 MVP | ";
     if (!routineNotice_.empty()) return revision+routineNotice_;
     if (frc::RobotState::IsAutonomous()) return revision+(navigationSelected_?navigation_.Status():tapeRoutine_.GetStatus());
     return revision+(hardware_.HasDriveFault()?
@@ -336,11 +336,11 @@ void RobotSubsystem::InitializePoseDashboard() {
   tab.AddString("Initialization status",[this] {
     return routineNotice_.empty()?navigation_.InitializationStatus():routineNotice_;
   }).WithPosition(0,0).WithSize(8,1);
-  initialX_=tab.Add("Start X mm or -",wpi::Twine("-"))
+  initialX_=tab.Add("Start X mm or -",wpi::Twine(std::to_string(localization_config::START_X_MM)))
       .WithWidget(frc::BuiltInWidgets::kTextView).WithPosition(0,1).WithSize(2,1).GetEntry();
-  initialY_=tab.Add("Start Y mm or -",wpi::Twine("-"))
+  initialY_=tab.Add("Start Y mm or -",wpi::Twine(std::to_string(localization_config::START_Y_MM)))
       .WithWidget(frc::BuiltInWidgets::kTextView).WithPosition(2,1).WithSize(2,1).GetEntry();
-  initialHeading_=tab.Add("Start heading deg",0.0).WithPosition(4,1).WithSize(2,1).GetEntry();
+  initialHeading_=tab.Add("Start heading deg",localization_config::START_HEADING_DEG).WithPosition(4,1).WithSize(2,1).GetEntry();
   initializeFromTab_=tab.Add("Initialize pose",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
       .WithPosition(6,1).WithSize(2,1).GetEntry();
   const PoseInitialization defaults;
@@ -364,7 +364,12 @@ void RobotSubsystem::InitializePoseDashboard() {
 void RobotSubsystem::InitializeNavigationDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Navigation");
   tab.AddString("Navigation status",[this] {
-    return std::string("P8-r28 MVP | ")+(routineNotice_.empty()?navigation_.Status():routineNotice_);
+    std::string status=std::string("P8-r31 MVP | ")+(routineNotice_.empty()?navigation_.Status():routineNotice_);
+    if (navigation_.HasReference()) {
+      status+=" | from ";
+      status+=selectedSource_<navigation_config::GOAL_COUNT?navigation_config::GOALS[selectedSource_].name:"Current pose";
+    }
+    return status;
   }).WithPosition(0,0).WithSize(6,1);
   stopNavigation_=tab.Add("Stop",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
       .WithPosition(6,0).WithSize(2,1).GetEntry();
@@ -389,12 +394,17 @@ void RobotSubsystem::InitializeNavigationDashboard() {
       .WithPosition(6,3).WithSize(2,1);
   for (const auto& preset:navigation_config::GOALS) {
     const int index=static_cast<int>(goalSettings_.size());
-    goalSettings_.push_back({preset.xMM,preset.yMM,preset.headingDeg,preset.intermediatePoses});
+    goalSettings_.push_back({preset.xMM,preset.yMM,preset.headingDeg});
     if (index==0) goalChooser_.SetDefaultOption(preset.name,index);
     else goalChooser_.AddOption(preset.name,index);
   }
   goalChooser_.AddOption("Custom",static_cast<int>(goalSettings_.size()));
-  goalSettings_.push_back({navigation_config::DEFAULT_GOAL_X_MM,navigation_config::DEFAULT_GOAL_Y_MM,0,""});
+  goalSettings_.push_back({navigation_config::DEFAULT_GOAL_X_MM,navigation_config::DEFAULT_GOAL_Y_MM,navigation_config::DEFAULT_GOAL_HEADING_DEG});
+  const int count=static_cast<int>(goalSettings_.size());
+  routeSettings_.assign(count*count,""); // extra row/column: Current pose / Custom
+  for (int source=0;source<navigation_config::GOAL_COUNT;++source)
+    for (int goal=0;goal<navigation_config::GOAL_COUNT;++goal)
+      routeSettings_[source*count+goal]=GoalNavigationRoutine::DefaultIntermediates(source,goal);
   tab.Add("Saved goal",goalChooser_).WithWidget(frc::BuiltInWidgets::kComboBoxChooser)
       .WithPosition(0,4).WithSize(2,1);
   intermediatePoses_=tab.Add("Intermediate poses (x,y,deg; ...)",wpi::Twine(""))
@@ -405,14 +415,35 @@ void RobotSubsystem::InitializeNavigationDashboard() {
 
 void RobotSubsystem::UpdateGoalSelection() {
   if (goalSettings_.empty()) return;
-  const int selected=goalChooser_.GetSelected();
-  if (selected<0 || selected>=static_cast<int>(goalSettings_.size()) || selected==selectedGoal_) return;
+  const int count=static_cast<int>(goalSettings_.size());
+  // Save the displayed destination and source-specific guides before switching.
+  // Editing the dashboard does not modify a route already captured by StartGoal.
   if (selectedGoal_>=0) {
     auto& old=goalSettings_[selectedGoal_];
-    old={goalX_.GetDouble(old.xMM),goalY_.GetDouble(old.yMM),goalHeading_.GetDouble(old.headingDeg),
-        intermediatePoses_.GetString(old.intermediatePoses)};
+    old={goalX_.GetDouble(old.xMM),goalY_.GetDouble(old.yMM),goalHeading_.GetDouble(old.headingDeg)};
+    auto& route=routeSettings_[selectedSource_*count+selectedGoal_];
+    route=intermediatePoses_.GetString(route);
   }
+  const int selected=goalChooser_.GetSelected();
+  if (selected<0 || selected>=count) return;
+  int source=selectedSource_;
+  // Freeze the source during travel. After arrival, use the current measured
+  // pose to select the next transfer, including a return to Start.
+  if (!navigation_.IsRunning()) {
+    source=navigation_config::GOAL_COUNT;
+    if (navigation_.HasReference()) {
+      const auto pose=navigation_.GetState()==GoalNavigationRoutine::State::Complete?
+          navigation_.ControlPose():localization_.GetPose();
+      double nearest=navigation_config::SOURCE_MATCH_RADIUS_MM;
+      for (int i=0;i<navigation_config::GOAL_COUNT;++i) {
+        const double distance=std::hypot(pose.x_MM-goalSettings_[i].xMM,pose.y_MM-goalSettings_[i].yMM);
+        if (distance<=nearest) { nearest=distance; source=i; }
+      }
+    }
+  }
+  if (selected==selectedGoal_ && source==selectedSource_) return;
   const auto& next=goalSettings_[selected];
   goalX_.SetDouble(next.xMM); goalY_.SetDouble(next.yMM); goalHeading_.SetDouble(next.headingDeg);
-  intermediatePoses_.SetString(next.intermediatePoses); selectedGoal_=selected;
+  intermediatePoses_.SetString(routeSettings_[source*count+selected]);
+  selectedGoal_=selected; selectedSource_=source;
 }

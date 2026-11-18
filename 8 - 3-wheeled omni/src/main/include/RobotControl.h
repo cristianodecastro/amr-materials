@@ -146,9 +146,11 @@ class RobotSubsystem : public frc2::SubsystemBase {
   nt::NetworkTableEntry initializePose_,initializeFromTab_,goToGoal_,stopNavigation_,goalX_,goalY_,goalHeading_;
   nt::NetworkTableEntry intermediatePoses_,initialX_,initialY_,initialHeading_,wallReferences_[4];
   frc::SendableChooser<int> goalChooser_;
-  struct GoalSettings { double xMM,yMM,headingDeg; std::string intermediatePoses; };
+  struct GoalSettings { double xMM,yMM,headingDeg; };
   std::vector<GoalSettings> goalSettings_;
+  std::vector<std::string> routeSettings_;
   int selectedGoal_=-1;
+  int selectedSource_=navigation_config::GOAL_COUNT; // GOAL_COUNT = unnamed current pose
   nt::NetworkTableEntry startTapeLeft_,startTapeRight_,stopTape_;
   bool autonomousSession_=false;
   std::string routineNotice_;

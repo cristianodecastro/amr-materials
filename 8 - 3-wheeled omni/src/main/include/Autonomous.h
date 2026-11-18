@@ -71,6 +71,7 @@ class GoalNavigationRoutine {
   void Enter();
   bool InitializePose(const PoseInitialization& settings);
   bool StartGoal(RobotPose goal,const NavigationInput& in,const std::string& intermediatePoses="");
+  static std::string DefaultIntermediates(int source,int destination);
   void Update(const NavigationInput& in);
   void Abort();
   void Fail(const std::string& message);

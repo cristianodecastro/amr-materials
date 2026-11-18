@@ -67,6 +67,18 @@ bool ReadIntermediatePoses(const std::string& text,double heading,std::vector<Ro
 }
 }
 void GoalNavigationRoutine::Enter() { *this=GoalNavigationRoutine{}; }
+std::string GoalNavigationRoutine::DefaultIntermediates(int source,int destination) {
+  if (source<0 || source>=navigation_config::GOAL_COUNT || destination<0 || destination>=navigation_config::GOAL_COUNT) return {};
+  std::ostringstream poses;
+  bool first=true;
+  for (const int guide:navigation_config::ROUTES[source][destination].guide) {
+    if (guide==navigation_config::NO_GUIDE) continue;
+    const auto& pose=navigation_config::INTERMEDIATES[guide];
+    if (!first) poses<<';';
+    poses<<pose.xMM<<','<<pose.yMM<<','<<pose.headingDeg; first=false;
+  }
+  return poses.str();
+}
 void GoalNavigationRoutine::Abort() { Stop(); state_=State::Aborted; status_="Stopped"; }
 void GoalNavigationRoutine::Fail(const std::string& message) { Stop(); state_=State::Fault; status_=message; }
 bool GoalNavigationRoutine::InitializePose(const PoseInitialization& settings) {
@@ -115,19 +127,24 @@ bool GoalNavigationRoutine::StartGoal(RobotPose goal,const NavigationInput& in,c
         std::to_string(navigation_config::MAX_INTERMEDIATE_POINTS)+" points)"; return false;
   }
   goal.headingRad=robot_geometry::Wrap(goal.headingRad);
+  // Consecutive goals retain a valid driving offset if that axis could not
+  // receive a stationary global update at the preceding goal.
+  const bool continuing=state_==State::Complete;
+  if (!continuing) for (auto& offset:rangeOffset_) offset=0;
+  const RobotPose start={in.motion.pose.x_MM+rangeOffset_[0],in.motion.pose.y_MM+rangeOffset_[1],in.motion.pose.headingRad};
   route.push_back(goal); route_=std::move(route); leg_=0; worldVX_=worldVY_=0;
-  legStart_={in.motion.pose.x_MM,in.motion.pose.y_MM}; carryHeading_=transitHeadingActive_=false;
+  legStart_={start.x_MM,start.y_MM}; carryHeading_=transitHeadingActive_=false;
   transitHeadingTarget_=in.motion.pose.headingRad;
   finalControllerReady_=route_.size()==1;
   goal_=goal; goal_.headingRad=robot_geometry::Wrap(goal_.headingRad);
   settled_=-1; travelHeading_=in.motion.pose.headingRad;
-  remaining_=0; auto previous=in.motion.pose;
+  remaining_=0; auto previous=start;
   for (auto p:route_) { remaining_+=std::hypot(p.x_MM-previous.x_MM,p.y_MM-previous.y_MM); previous=p; }
   point_.Reset({goal_.x_MM,goal_.y_MM},in.motion.now,navigation_config::SPEED_MMPS,navigation_config::ACCEL_MMPS2);
   heading_.Reset(); Stop(); state_=State::Driving;
   history_.clear(); positionCorrection_={0,0};
-  controlPose_=in.motion.pose;
-  for (int axis=0;axis<2;++axis) { rangeOffset_[axis]=rangeTarget_[axis]=0; rangeStamp_[axis]=-1; rangeSources_[axis]=0; }
+  controlPose_=start;
+  for (int axis=0;axis<2;++axis) { rangeTarget_[axis]=0; rangeStamp_[axis]=-1; rangeSources_[axis]=0; }
   for (auto& stamp:consumedStamp_) stamp=-1;
   for (auto& time:wallTime_) time=-1;
   status_=route_.size()==1?"Direct XY travel; holding starting heading":"Manual pose route started";
@@ -260,6 +277,17 @@ void GoalNavigationRoutine::CorrectFromWalls(NavigationInput& in) {
     for (const auto& wall:walls_) consider(wall.axis,wall.coordinate);
     consider(0,0); consider(0,localization_config::ARENA_WIDTH_MM);
     consider(1,0); consider(1,localization_config::ARENA_HEIGHT_MM);
+    if (arena_config::HORIZONTAL_WALL_REFERENCE_ENABLED) {
+      // A finite wall, not an infinite Y plane: a beam alongside its ends
+      // must still reference the outer wall, with mount/heading at acquisition.
+      for (const double face:{arena_config::HORIZONTAL_WALL_SOUTH_Y_MM,arena_config::HORIZONTAL_WALL_NORTH_Y_MM}) {
+        if (std::fabs(ray.direction[1])<=1e-6) continue;
+        const double distance=(face-ray.origin[1])/ray.direction[1];
+        const double hitX=ray.origin[0]+distance*ray.direction[0];
+        if (hitX>=arena_config::HORIZONTAL_WALL_MIN_X_MM && hitX<=arena_config::HORIZONTAL_WALL_MAX_X_MM)
+          consider(1,face);
+      }
+    }
     if (axis<0 || std::fabs(predicted-in.rangeMM[sensor])>navigation_config::WALL_MAX_INNOVATION_MM) continue;
     const double weight=ray.direction[axis]*ray.direction[axis];
     sums[axis]+=weight*(predicted-in.rangeMM[sensor])*ray.direction[axis]; weights[axis]+=weight;

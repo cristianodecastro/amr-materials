@@ -50,14 +50,14 @@ Sonars use FlexDIO 2/3 front and 0/1 rear (even trigger, odd echo). IR sensors u
 
 Basic teleoperated driving and on-demand photo capture are retained. The inactive project-7 arena mission/planner, simple tasks, colour classification/calibration, Cobra recapture/file persistence, lift, and servo code are removed. Build and vendor configuration remain unchanged.
 
-## Sensor-supported navigation (P8-r28 MVP)
+## Sensor-supported navigation (P8-r31 MVP)
 
 Navigation follows your editable intermediate poses and final goal. Encoder counts and reset-relative gyro heading remain the basic motion estimate. Valid range readings provide a small position offset to guide driving; they do not veto a route or generate recovery faults. The obstacle map, grid searches, automatic detours, staging/recovery controller and planning worker have been deleted.
 
 ### Initialize
 
 1. Select and enable Autonomous in Control Station. This alone does not start driving.
-2. On **Initialization**, enter the known start X/Y in millimeters. Use `-` for either unknown coordinate, and enter the starting heading explicitly.
+2. On **Initialization**, enter the known start X/Y in millimeters. The fields default to the named **Start** pose `(950,900,-90)`; use these only when physically placed there. Use `-` for either unknown coordinate, and enter the starting heading explicitly.
 3. In each sensor's wall field, use `X=coordinate` for a vertical wall, `Y=coordinate` for a horizontal wall, or `-` to exclude that sensor from initialization. These are global wall coordinates, not measured gaps.
 4. Press **Initialize pose**. Supplied coordinates stay as entered; valid selected readings determine the unspecified axes. If an axis cannot be determined, supply it or correct the reference selection. There is no stationary gate or reference timeout.
 
@@ -67,7 +67,30 @@ The usual north-facing lower-left reference is X=`-`, Y=`-`, heading=`0`, left I
 
 On **Navigation**, choose **Saved goal** or **Custom**, edit final X/Y/heading and enter zero or more **Intermediate poses** as `x,y,heading; x,y,heading`. Empty means a direct leg. Old `x,y` entries inherit the preceding heading. Up to 32 intermediate poses are supported. All distances are millimeters; headings are degrees.
 
-Heading zero is north (+Y); +90 is west, -90 east and +/-180 south. The **Top right** preset remains `(1700,1700,90)` with guides `650,850,0;1500,850,90;1700,1400,90`. Each saved goal keeps its own edits while switching selections until restart; durable defaults are in `navigation_config::GOALS` in `RobotConfig.h`.
+Heading zero is north (+Y); +90 is west, -90 east and +/-180 south. There are five named poses:
+
+| Saved goal | X (mm) | Y (mm) | Heading (deg) |
+| --- | --- | --- | --- |
+| Storage right (formerly Top right) | 1700 | 1700 | 90 |
+| Storage left | 300 | 1700 | -90 |
+| Delivery right | 1700 | 400 | 90 |
+| Delivery left | 300 | 400 | 0 |
+| Start | 950 | 900 | -90 |
+
+Initialize once at the actual starting pose. After **Goal reached**, choose any of the other four named goals and press **Go to goal** again. Returning to **Start** is ordinary navigation: selecting it does not reset odometry or gyro. Consecutive moves retain the sensor-assisted driving offset on any axis that could not receive a stationary global update at the preceding arrival.
+
+Two shared intermediate poses are defined once in `navigation_config::INTERMEDIATES` in `RobotConfig.h`: **Intermediate left `(500,900,-90)`** and **Intermediate right `(1500,900,-90)`**. `ROUTES` contains their IDs, rather than repeated coordinates; rows are sources and columns are destinations in the `GOALS` order above.
+
+- Storage and delivery on the same side connect directly, in either direction.
+- Transfers between sides use the source-side intermediate, then the destination-side intermediate.
+- Transfers between Start and another goal use that goal's side intermediate.
+- Selecting the current goal has no intermediates.
+
+For example, Storage left to Delivery right uses Intermediate left, Intermediate right, then Delivery right. Storage left to Delivery left is direct. Delivery right to Start uses Intermediate right, then Start. All intermediate headings are -90 degrees. These remain pass-through poses with relaxed tolerances and simultaneous rotation/translation, without mandatory in-place turns. The dashboard still permits editing, adding or removing intermediate poses per transfer. Physical clearance must be evaluated on the robot.
+
+When stopped, the dashboard identifies the nearest named pose within 75 mm and automatically loads that source-to-destination list; **Navigation status** shows `from <source>`. The source stays fixed during travel. If no named source matches, it shows **Current pose** and uses a separate, initially empty guide list. Review/edit that list before Go when starting elsewhere. Custom destinations also have separate guide lists.
+
+Final X/Y/heading edits belong to the selected destination. Intermediate-list edits belong to the current source–destination pair. Both survive switching selections until the program restarts; durable defaults are in `navigation_config::GOALS` and `ROUTES` in `RobotConfig.h`. Changing a selection or editing a field during travel does not change the active captured route.
 
 Press **Go to goal** to snapshot the selected route. Intermediates use a 25 mm passing radius/cross-track corridor and relaxed 10 degree heading guidance. A 100 mm lookahead, up to 25 mm corner blending and a continuous acceleration ramp smooth transitions. An explicitly requested in-place turn still rotates there. The final XY arrival is followed by the final heading and the normal **10 mm / 1 degree** stationary completion check.
 
@@ -95,6 +118,10 @@ The shared final XY controller now reads `position_control_config`, so its tunin
 ### Sensor geometry and driving feedback
 
 This first version uses the four known outer arena walls plus the additional reference planes entered at initialization. It is sensor-assisted localization against known coordinates; it does not learn unknown obstacles as a SLAM system.
+
+The updated drawing's written restricted-region dimensions are recorded in `arena_config`: upper 230 x 780 mm, bottom band 2000 x 230 mm, and lower central strip 30 x 370 mm. The divider centreline is X=1000 mm; the lower strip spans X=985..1015 mm. Start remains at X=950 mm, independently of that centreline, accounting for the manipulator. These are scene descriptions, not new route vetoes or obstacles inferred from floor tape.
+
+The horizontal wooden wall below the upper region is separate from that restricted region. Its finite reference uses X=700..1300 mm (600 mm centred on X=1000), with faces Y=1200/1220 mm. These remain editable estimates based on the drawing and the user's approximate confirmation. `HORIZONTAL_WALL_REFERENCE_ENABLED` is now **true**. Only beams that intersect its actual span can reference it; beams passing its ends can still reference outer walls. The usual valid/fresh-reading and discrepancy checks apply, including sensor mount offsets and acquisition-time heading. This adds no sensor-required stop or clearance failure.
 
 Sensor mounts in the body frame (+X forward, +Y left) remain:
 

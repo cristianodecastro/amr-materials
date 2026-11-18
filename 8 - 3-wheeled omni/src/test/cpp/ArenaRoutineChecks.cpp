@@ -786,10 +786,16 @@ void MvpManualRouteInput() {
   nav.Abort();
   REQUIRE_ARENA(nav.StartGoal({250,950,0},in,"250,450;250,700"));
   nav.Update(in); REQUIRE_ARENA(nav.LegIndex()==1); // a point at the start is skipped without stopping
-  for (const auto& preset:navigation_config::GOALS) {
-    nav.Abort();
-    REQUIRE_ARENA(nav.StartGoal({preset.xMM,preset.yMM,robot_geometry::Radians(preset.headingDeg)},in,preset.intermediatePoses));
-  }
+  for (int source=0;source<navigation_config::GOAL_COUNT;++source)
+    for (int destination=0;destination<navigation_config::GOAL_COUNT;++destination) {
+      if (source==destination) continue;
+      nav.Abort();
+      const auto& start=navigation_config::GOALS[source];
+      const auto& goal=navigation_config::GOALS[destination];
+      in.motion.pose={start.xMM,start.yMM,robot_geometry::Radians(start.headingDeg)};
+      REQUIRE_ARENA(nav.StartGoal({goal.xMM,goal.yMM,robot_geometry::Radians(goal.headingDeg)},in,
+          GoalNavigationRoutine::DefaultIntermediates(source,destination)));
+    }
 }
 void YawDirectionCheckAllowsDelayedReversalButRejectsSustainedOpposition() {
   HeadingMotionControl feedback;

@@ -58,7 +58,7 @@ static constexpr double CONTROL_PERIOD_S=0.020,MAX_CONTROL_GAP_S=0.10;
 // Controller ramps use a capped step; Teleop keeps its original timing limits.
 static constexpr double AUTO_MAX_SAMPLE_GAP_S=0.50,AUTO_MAX_CONTROL_STEP_S=0.04;
 static constexpr double ARENA_WIDTH_MM=2000,ARENA_HEIGHT_MM=2000;
-static constexpr double START_X_MM=950,START_Y_MM=900,START_HEADING_DEG=0;
+static constexpr double START_X_MM=950,START_Y_MM=900,START_HEADING_DEG=-90;
 
 static constexpr double FRONT_SENSOR_OFFSET_MM=171.6,REAR_SENSOR_OFFSET_MM=173;
 static constexpr double LEFT_SENSOR_OFFSET_MM=60,RIGHT_SENSOR_OFFSET_MM=60;
@@ -130,6 +130,26 @@ static constexpr double YAW_DIRECTION_CHECK_MIN_RADPS=YAW_DIRECTION_CHECK_MIN_DP
 static constexpr double YAW_RESPONSE_SETTLE_S=0.30;
 }
 
+// Layout from docs/court_barriers.png. Written dimensions take precedence over
+// the drawing's scale. Divider centreline is X=1000, independently of Start X.
+// These describe the scene, not a route-blocking/footprint feasibility layer.
+namespace arena_config {
+static constexpr double DIVIDER_X_MM=1000;
+struct RestrictedRegion { double minX,minY,maxX,maxY; };
+static constexpr RestrictedRegion RESTRICTED_REGIONS[]={
+    {DIVIDER_X_MM-115,1220,DIVIDER_X_MM+115,2000}, // upper: 230 x 780
+    {0,0,2000,230},                            // bottom: 2000 x 230
+    {DIVIDER_X_MM-15,230,DIVIDER_X_MM+15,600}}; // lower strip: 30 x 370
+// The horizontal wooden wall is separate from the upper restricted rectangle;
+// the centre square itself is floor tape. Wall faces are inferred from the
+// 600 mm span and 780 mm north-wall offset, approximately confirmed by the user.
+// Keep the faces editable for refinement of the physical measurements.
+static constexpr bool HORIZONTAL_WALL_REFERENCE_ENABLED=true;
+static constexpr double HORIZONTAL_WALL_MIN_X_MM=DIVIDER_X_MM-300;
+static constexpr double HORIZONTAL_WALL_MAX_X_MM=DIVIDER_X_MM+300;
+static constexpr double HORIZONTAL_WALL_SOUTH_Y_MM=1200,HORIZONTAL_WALL_NORTH_Y_MM=1220;
+}
+
 // Minimum version: manually supplied intermediate poses and one final pose.
 namespace navigation_config {
 // FINAL POSE
@@ -156,14 +176,38 @@ static constexpr unsigned MAX_INTERMEDIATE_POINTS=32;
 static constexpr double WALL_MAX_INNOVATION_MM=100,WALL_BLEND=0.25,WALL_MAX_STEP_MM=5;
 static constexpr double WALL_HISTORY_S=0.5;
 static constexpr double BRAKE_PREVIEW_S=0.25;
-// Each goal owns an ordered "x,y,headingDeg; ..." list. Empty means direct travel.
-// These short north-lane examples demonstrate zero, one and multiple points.
-struct GoalPreset { const char* name; double xMM,yMM,headingDeg; const char* intermediatePoses; };
-static constexpr GoalPreset GOALS[]={
-    {"Short north",250,700,0,""},
-    {"North via 700",250,950,0,"250,700,0"},
-    {"Long north",250,1200,0,"250,700,0;250,950,0"},
-    {"Top right",1700,1700,90,"650,850,0;1500,850,90;1700,1400,90"}};
+// Named poses and shared pass-through guides.
+enum GoalId { STORAGE_RIGHT,STORAGE_LEFT,DELIVERY_RIGHT,DELIVERY_LEFT,START,GOAL_COUNT };
+static constexpr double SOURCE_MATCH_RADIUS_MM=75;
+struct GoalPreset { const char* name; double xMM,yMM,headingDeg; };
+static constexpr GoalPreset GOALS[GOAL_COUNT]={
+    {"Storage right",1700,1700,90}, {"Storage left",300,1700,-90},
+    {"Delivery right",1700,400,90}, {"Delivery left",300,400,-0},
+    {"Start",localization_config::START_X_MM,localization_config::START_Y_MM,localization_config::START_HEADING_DEG}};
+enum GuideId { NO_GUIDE=-1,LEFT_GUIDE,RIGHT_GUIDE };
+static constexpr GoalPreset INTERMEDIATES[2]={
+    {"Intermediate left",500,900,-90}, {"Intermediate right",1500,900,-90}};
+// Row = source, column = destination, in GOALS order above. NO_GUIDE means
+// direct. Same-side storage/delivery transfers are direct; crossing sides uses
+// source-side then destination-side guides; Start uses the other pose's side.
+// Translation and rotation overlap; guides do not introduce mandatory stops.
+struct RoutePreset { int guide[2]; };
+static constexpr RoutePreset ROUTES[GOAL_COUNT][GOAL_COUNT]={
+  { // from Storage right -> Storage right, Storage left, Delivery right, Delivery left, Start
+    {{NO_GUIDE,NO_GUIDE}}, {{RIGHT_GUIDE,LEFT_GUIDE}}, {{NO_GUIDE,NO_GUIDE}},
+    {{RIGHT_GUIDE,LEFT_GUIDE}}, {{RIGHT_GUIDE,NO_GUIDE}}},
+  { // from Storage left
+    {{LEFT_GUIDE,RIGHT_GUIDE}}, {{NO_GUIDE,NO_GUIDE}}, {{LEFT_GUIDE,RIGHT_GUIDE}},
+    {{NO_GUIDE,NO_GUIDE}}, {{LEFT_GUIDE,NO_GUIDE}}},
+  { // from Delivery right
+    {{NO_GUIDE,NO_GUIDE}}, {{RIGHT_GUIDE,LEFT_GUIDE}}, {{NO_GUIDE,NO_GUIDE}},
+    {{RIGHT_GUIDE,LEFT_GUIDE}}, {{RIGHT_GUIDE,NO_GUIDE}}},
+  { // from Delivery left
+    {{LEFT_GUIDE,RIGHT_GUIDE}}, {{NO_GUIDE,NO_GUIDE}}, {{LEFT_GUIDE,RIGHT_GUIDE}},
+    {{NO_GUIDE,NO_GUIDE}}, {{LEFT_GUIDE,NO_GUIDE}}},
+  { // from Start
+    {{RIGHT_GUIDE,NO_GUIDE}}, {{LEFT_GUIDE,NO_GUIDE}}, {{RIGHT_GUIDE,NO_GUIDE}},
+    {{LEFT_GUIDE,NO_GUIDE}}, {{NO_GUIDE,NO_GUIDE}}}};
 static constexpr double DEFAULT_GOAL_X_MM=GOALS[0].xMM,DEFAULT_GOAL_Y_MM=GOALS[0].yMM,DEFAULT_GOAL_HEADING_DEG=GOALS[0].headingDeg;
 }
 // Shared final XY controller for Navigation and the tape approach.
