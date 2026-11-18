@@ -20,7 +20,7 @@ void Robot::RobotInit() {
   subsystem_.InitializeDashboard();
   camera_.Start();
   frc::Shuffleboard::Update();
-  frc::Shuffleboard::SelectTab("Motion");
+  frc::Shuffleboard::SelectTab("Pose setup");
 }
 void Robot::RobotPeriodic() {
   frc2::CommandScheduler::GetInstance().Run();
@@ -29,7 +29,7 @@ void Robot::RobotPeriodic() {
 void Robot::DisabledInit() { subsystem_.StopAll(); }
 void Robot::AutonomousInit() {
   subsystem_.EnterAutonomous();
-  frc::Shuffleboard::SelectTab("Motion");
+  frc::Shuffleboard::SelectTab("Navigation");
 }
 void Robot::TeleopInit() {
   subsystem_.StopAll();
