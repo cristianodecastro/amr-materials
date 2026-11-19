@@ -17,7 +17,8 @@ class HeadingMotionControl {
   void Reset() { opposed_=commandTime_=lastRequest_=lastMeasured_=0; direction_=0; holdRecheck_=0; }
   double Request(double error,double oldYaw,double measuredYaw,double dt,
       double deadband=heading_control_config::HOLD_HEADING_DEADBAND_RAD,
-      double gain=heading_control_config::HOLD_HEADING_KP);
+      double gain=heading_control_config::HOLD_HEADING_KP,
+      double maxYaw=heading_control_config::HOLD_HEADING_MAX_YAW_RADPS);
   std::string CheckFeedback(double previousRequest,double measuredYaw,double dt);
   double FeedbackRequest() const { return lastRequest_; }
   double FeedbackMeasured() const { return lastMeasured_; }
@@ -28,7 +29,7 @@ class HeadingMotionControl {
   int direction_=0;
 };
 
-// Shared final-position controller for tape tests and direct pose tasks.
+// Stop/settle position controller retained for the tape test only.
 class WaypointDrive {
  public:
   void Reset(ArenaPoint target,double now,double speed,double acceleration,
@@ -69,7 +70,7 @@ struct PoseInitialization {
 class GoalNavigationRoutine {
  public:
   enum class State { Unreferenced, Reference, ReferenceReady, Ready, Driving,
-    FinalHeading, Complete, Aborted, Fault };
+    Complete, Aborted, Fault };
   void Enter();
   bool InitializePose(const PoseInitialization& settings);
   bool StartGoal(RobotPose goal,const NavigationInput& in,const std::string& intermediatePoses="");
@@ -79,7 +80,7 @@ class GoalNavigationRoutine {
   void Fail(const std::string& message);
   State GetState() const { return state_; }
   bool IsRunning() const { return state_==State::Reference || state_==State::ReferenceReady ||
-      state_==State::Driving || state_==State::FinalHeading; }
+      state_==State::Driving; }
   bool HasReference() const { return referenced_; }
   bool NeedsPoseReset() const { return poseResetPending_; }
   bool NeedsHeadingReset() const { return initialHeadingPending_; }
@@ -106,16 +107,16 @@ class GoalNavigationRoutine {
   State state_=State::Unreferenced;
   bool referenced_=false;
   RobotPose goal_{0,0,0},requestedPose_{0,0,0},controlPose_{0,0,0};
-  double travelHeading_=0,settled_=-1,remaining_=0;
+  double settled_=-1,remaining_=0;
   double forward_=0,left_=0,yaw_=0;
   std::vector<RobotPose> route_;
   unsigned leg_=0;
   ArenaPoint legStart_={0,0};
   bool carryHeading_=false;
   bool transitHeadingActive_=false;
+  bool finalToleranceActive_=false;
   double transitHeadingTarget_=0;
   double carriedHeading_=0,worldVX_=0,worldVY_=0;
-  bool finalControllerReady_=false;
   struct WallReference { int axis=-1; double coordinate=0; };
   WallReference walls_[4];
   struct PoseSample { double time; RobotPose pose; };
@@ -128,7 +129,6 @@ class GoalNavigationRoutine {
   double initialWall_[2]={0,0},initialHeading_=0;
   bool initialHeadingPending_=false,poseResetPending_=false,initialUseArea_=false;
   RobotPose initialArea_={0,0,0};
-  WaypointDrive point_;
   HeadingMotionControl heading_;
   std::string status_="Set initialization, then Initialize pose";
   std::string initializationStatus_="Set wall X/Y or '-' and heading or '-', then Initialize pose";

@@ -155,16 +155,20 @@ namespace navigation_config {
 // FINAL POSE
 static constexpr double POSITION_TOLERANCE_MM=10;
 static constexpr double FINAL_SETTLE_S=0.30,FINAL_APPROACH_DISTANCE_MM=200;
+// Only the heading tolerance tightens in the final window. Translation has the
+// same cap and acceleration, with a continuous physical stopping envelope.
+static constexpr double FINAL_BRAKE_RESPONSE_S=0.18;
 // TRANSLATION
 static constexpr double SPEED_MMPS=350,ACCEL_MMPS2=300;
 // TRANSIT HEADING: hysteresis prevents repeated small corrections.
 static constexpr double TRANSIT_HEADING_START_DEG=12,TRANSIT_HEADING_RELEASE_DEG=6;
 static constexpr double TRANSIT_HEADING_KP=0.8;
+// Use the normal Teleop yaw cap throughout Navigation; the tape-test helper
+// retains its separate 20 deg/s default. No near-goal yaw-speed reduction.
+static constexpr double MAX_YAW_RATE_DPS=localization_config::TELEOP_MAX_YAW_RATE_DPS;
+static constexpr double MAX_YAW_RATE_RADPS=MAX_YAW_RATE_DPS*robot_geometry::PI/180;
 static constexpr double TRANSIT_HEADING_START_RAD=TRANSIT_HEADING_START_DEG*robot_geometry::PI/180;
 static constexpr double TRANSIT_HEADING_RELEASE_RAD=TRANSIT_HEADING_RELEASE_DEG*robot_geometry::PI/180;
-// NEAR FINAL GOAL: tighter hold; final stopped yaw uses heading_control_config.
-static constexpr double APPROACH_HEADING_DEADBAND_DEG=3,APPROACH_HEADING_KP=1.2;
-static constexpr double APPROACH_HEADING_DEADBAND_RAD=APPROACH_HEADING_DEADBAND_DEG*robot_geometry::PI/180;
 // INTERMEDIATE POSES / SMOOTHING
 static constexpr double INTERMEDIATE_POSITION_TOLERANCE_MM=25,MIN_PASS_SPEED_MMPS=120;
 static constexpr double INTERMEDIATE_HEADING_TOLERANCE_DEG=10;
@@ -175,7 +179,6 @@ static constexpr unsigned MAX_INTERMEDIATE_POINTS=32;
 // Conservative wall association and complementary XY correction, Auto only.
 static constexpr double WALL_MAX_INNOVATION_MM=100,WALL_BLEND=0.25,WALL_MAX_STEP_MM=5;
 static constexpr double WALL_HISTORY_S=0.5;
-static constexpr double BRAKE_PREVIEW_S=0.25;
 // Named poses and shared pass-through guides.
 enum GoalId { STORAGE_RIGHT,STORAGE_LEFT,DELIVERY_RIGHT,DELIVERY_LEFT,START,GOAL_COUNT };
 static constexpr double SOURCE_MATCH_RADIUS_MM=75;
@@ -215,7 +218,8 @@ static constexpr RoutePreset ROUTES[GOAL_COUNT][GOAL_COUNT]={
     {{LEFT_GUIDE,NO_GUIDE}}, {{NO_GUIDE,NO_GUIDE}}}};
 static constexpr double DEFAULT_GOAL_X_MM=GOALS[0].xMM,DEFAULT_GOAL_Y_MM=GOALS[0].yMM,DEFAULT_GOAL_HEADING_DEG=GOALS[0].headingDeg;
 }
-// Shared final XY controller for Navigation and the tape approach.
+// Stop/settle XY controller retained for the tape approach. Navigation's
+// continuous final-leg tuning lives in navigation_config above.
 namespace position_control_config {
 static constexpr double POSITION_TOLERANCE_MM=navigation_config::POSITION_TOLERANCE_MM;
 static constexpr double POSITION_KP=1.5,MIN_APPROACH_MMPS=120;

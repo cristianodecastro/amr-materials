@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <cmath>
 #include <string>
+#include <sstream>
+#include <iomanip>
 
 RobotSubsystem::RobotSubsystem() {
   // CobraCheck starts with the exact user-supplied RobotConfig references.
@@ -162,8 +164,8 @@ void RobotSubsystem::UpdateNavigation(double now,double dt,bool reference,bool g
       }
     }
   }
-  if (hardware_.HasDriveFault() && (navigation_.GetState()==GoalNavigationRoutine::State::Driving ||
-      navigation_.GetState()==GoalNavigationRoutine::State::FinalHeading)) navigation_.Fail(hardware_.GetDriveStatus());
+  if (hardware_.HasDriveFault() && navigation_.GetState()==GoalNavigationRoutine::State::Driving)
+    navigation_.Fail(hardware_.GetDriveStatus());
   const bool wasComplete=navigation_.GetState()==GoalNavigationRoutine::State::Complete;
   navigation_.Update(in);
   if (!wasComplete && navigation_.GetState()==GoalNavigationRoutine::State::Complete)
@@ -176,7 +178,7 @@ void RobotSubsystem::UpdateNavigation(double now,double dt,bool reference,bool g
     UpdateGoalSelection();
   }
   const auto state=navigation_.GetState();
-  const bool drive=state==GoalNavigationRoutine::State::Driving || state==GoalNavigationRoutine::State::FinalHeading;
+  const bool drive=state==GoalNavigationRoutine::State::Driving;
   hardware_.SetAutonomousDriveEnabled(drive);
   if (drive) {
     hardware_.DriveAutonomousRobotRelative(navigation_.Forward(),navigation_.Left(),navigation_.Yaw(),
@@ -278,7 +280,7 @@ void RobotSubsystem::InitializeMotionDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Motion");
   tab.AddString("Motion status",[this] {
     // Visible revision distinguishes this executable from stale robot/UI data.
-    const std::string revision="P8-r35 MVP | ";
+    const std::string revision="P8-r36 MVP | ";
     if (hardware_.HasDriveFault()) return revision+hardware_.GetDriveStatus();
     if (frc::RobotState::IsAutonomous()) return revision+"Autonomous drive diagnostics";
     return revision+teleopDrive_.GetStatus();
@@ -292,8 +294,10 @@ void RobotSubsystem::InitializeMotionDashboard() {
   tab.AddNumber("Y (mm)",[this] { return localization_.GetPose().y_MM; }).WithPosition(2,1).WithSize(2,1);
   tab.AddNumber("Heading N=0 deg",[this] { return localization_.GetPose().headingRad*180/robot_geometry::PI; })
       .WithPosition(4,1).WithSize(2,1);
-  tab.AddString("Loop / peak ms",[this] {
-    return std::to_string(static_cast<int>(controlDt_*1000))+" / "+std::to_string(static_cast<int>(peakControlDt_*1000));
+  tab.AddString("Gyro raw / offset deg",[this] {
+    std::ostringstream text;
+    text<<std::fixed<<std::setprecision(1)<<hardware_.GetYawDegrees()<<" / "<<localization_.HeadingOffsetDegrees();
+    return text.str();
   }).WithPosition(6,1).WithSize(2,1);
   for (int i=0;i<localization_config::WHEEL_COUNT;++i) {
     const int y=i+2;
@@ -352,7 +356,7 @@ void RobotSubsystem::InitializeSensingDashboard() {
 void RobotSubsystem::InitializeTapeDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Tape test");
   tab.AddString("Tape status",[this] {
-    return std::string("P8-r35 MVP | ")+(!navigationSelected_ && !routineNotice_.empty()?routineNotice_:tapeRoutine_.GetStatus());
+    return std::string("P8-r36 MVP | ")+(!navigationSelected_ && !routineNotice_.empty()?routineNotice_:tapeRoutine_.GetStatus());
   }).WithPosition(0,0).WithSize(6,1);
   stopTape_=tab.Add("Stop tape",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
       .WithPosition(6,0).WithSize(2,1).GetEntry();
@@ -395,7 +399,7 @@ void RobotSubsystem::InitializeNavigationDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Navigation");
   tab.AddString("Navigation / reference status",[this] {
     const bool reference=navigation_.GetState()==GoalNavigationRoutine::State::Reference || !navigation_.HasReference();
-    std::string status=std::string("P8-r35 MVP | ")+(navigationSelected_ && !routineNotice_.empty()?routineNotice_:
+    std::string status=std::string("P8-r36 MVP | ")+(navigationSelected_ && !routineNotice_.empty()?routineNotice_:
         (reference?navigation_.InitializationStatus():navigation_.Status()));
     if (navigation_.HasReference()) status+=" | from "+std::string(selectedSource_<navigation_config::GOAL_COUNT?
         navigation_config::GOALS[selectedSource_].name:"Current pose");

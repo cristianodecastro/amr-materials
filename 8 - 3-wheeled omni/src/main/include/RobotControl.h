@@ -110,6 +110,9 @@ class Localization {
   bool IsHealthy() const { return autonomousMode_?odometry_.Healthy():teleopTelemetry_.Healthy(); }
   const char* OdometryFaultReason() const { return autonomousMode_?odometry_.FaultReason():"Teleop odometry unavailable"; }
   const RobotPose& GetPose() const { return autonomousMode_?odometry_.Pose():teleopTelemetry_.Pose(); }
+  double HeadingOffsetDegrees() const {
+    return (autonomousMode_?odometry_.HeadingOffsetRad():teleopTelemetry_.HeadingOffsetRad())*180/robot_geometry::PI;
+  }
   double GetBodyVelocityX_MMps() const { return autonomousMode_?odometry_.ForwardSpeed():teleopTelemetry_.ForwardSpeed(); }
   double GetBodyVelocityY_MMps() const { return autonomousMode_?odometry_.LeftSpeed():teleopTelemetry_.LeftSpeed(); }
  private:

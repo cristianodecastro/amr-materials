@@ -76,6 +76,7 @@ inline bool BodyDisplacement(const double (&wheelMM)[3],double gyroTurn,double& 
 // frequency. Actual dt is used only for velocity display and sample checks.
 class EncoderGyroOdometry {
  public:
+  double HeadingOffsetRad() const { return offset_; }
   void Reset(RobotPose pose,const double (&counts)[3],double yawDeg) {
     pose_=pose; pose_.headingRad=robot_geometry::Wrap(pose.headingRad);
     offset_=robot_geometry::Wrap(pose_.headingRad-robot_geometry::Radians(yawDeg));
@@ -133,6 +134,7 @@ class EncoderGyroOdometry {
 // Teleop steering never consumes it, and Autonomous never reads this state.
 class TeleopPoseTelemetry {
  public:
+  double HeadingOffsetRad() const { return offset_; }
   void SetPosition(double x,double y) { pose_.x_MM=x; pose_.y_MM=y; }
   void Reset(RobotPose pose,const double (&counts)[3],double yawDeg,double ax,double ay) {
     pose_=pose; offset_=robot_geometry::Wrap(pose.headingRad-robot_geometry::Radians(yawDeg));

@@ -131,20 +131,19 @@ bool GoalNavigationRoutine::StartGoal(RobotPose goal,const NavigationInput& in,c
   const RobotPose start={in.motion.pose.x_MM+rangeOffset_[0],in.motion.pose.y_MM+rangeOffset_[1],in.motion.pose.headingRad};
   route.push_back(goal); route_=std::move(route); leg_=0; worldVX_=worldVY_=0;
   legStart_={start.x_MM,start.y_MM}; carryHeading_=transitHeadingActive_=false;
+  finalToleranceActive_=false;
   transitHeadingTarget_=in.motion.pose.headingRad;
-  finalControllerReady_=route_.size()==1;
   goal_=goal; goal_.headingRad=robot_geometry::Wrap(goal_.headingRad);
-  settled_=-1; travelHeading_=in.motion.pose.headingRad;
+  settled_=-1;
   remaining_=0; auto previous=start;
   for (auto p:route_) { remaining_+=std::hypot(p.x_MM-previous.x_MM,p.y_MM-previous.y_MM); previous=p; }
-  point_.Reset({goal_.x_MM,goal_.y_MM},in.motion.now,navigation_config::SPEED_MMPS,navigation_config::ACCEL_MMPS2);
   heading_.Reset(); Stop(); state_=State::Driving;
   history_.clear(); positionCorrection_={0,0};
   controlPose_=start;
   for (int axis=0;axis<2;++axis) { rangeTarget_[axis]=0; rangeStamp_[axis]=-1; rangeSources_[axis]=0; }
   for (auto& stamp:consumedStamp_) stamp=-1;
   for (auto& time:wallTime_) time=-1;
-  status_=route_.size()==1?"Direct XY travel; holding starting heading":"Manual pose route started";
+  status_=route_.size()==1?"Direct goal: concurrent XY + yaw":"Manual pose route started";
   return true;
 }
 void GoalNavigationRoutine::AdvanceRoute(const NavigationInput& in) {
@@ -165,7 +164,7 @@ void GoalNavigationRoutine::AdvanceRoute(const NavigationInput& in) {
     if (!carryHeading_ && headingError>navigation_config::INTERMEDIATE_HEADING_TOLERANCE_RAD) {
       carryHeading_=true; carriedHeading_=p.headingRad;
     }
-    travelHeading_=p.headingRad; legStart_={p.x_MM,p.y_MM}; ++leg_;
+    legStart_={p.x_MM,p.y_MM}; ++leg_;
   }
 }
 void GoalNavigationRoutine::DriveRoute(const NavigationInput& in,double previousYaw) {
@@ -176,37 +175,36 @@ void GoalNavigationRoutine::DriveRoute(const NavigationInput& in,double previous
     remaining_+=std::hypot(route_[i].x_MM-route_[i-1].x_MM,route_[i].y_MM-route_[i-1].y_MM);
   const double angle=robot_geometry::ArenaAngle(m.pose.headingRad),co=std::cos(angle),si=std::sin(angle);
   const bool intermediate=leg_+1<route_.size();
-  const double target=carryHeading_?carriedHeading_:(intermediate?route_[leg_].headingRad:travelHeading_);
+  // Begin the final commanded orientation on the final LEG, not after XY stops.
+  const double target=intermediate?(carryHeading_?carriedHeading_:route_[leg_].headingRad):goal_.headingRad;
   const double headingError=robot_geometry::Wrap(target-m.pose.headingRad);
   const bool inPlace=intermediate && std::hypot(route_[leg_].x_MM-legStart_.x,route_[leg_].y_MM-legStart_.y)<navigation_config::MIN_SEGMENT_MM;
-  const bool approach=remaining_<=navigation_config::FINAL_APPROACH_DISTANCE_MM;
-  if (approach || inPlace) {
-    transitHeadingActive_=false;
-    yaw_=heading_.Request(headingError,previousYaw,m.yawRateRadps,m.dt,
-        inPlace?navigation_config::INTERMEDIATE_HEADING_TOLERANCE_RAD:navigation_config::APPROACH_HEADING_DEADBAND_RAD,
-        navigation_config::APPROACH_HEADING_KP);
-  } else {
-    if (target!=transitHeadingTarget_) { transitHeadingTarget_=target; transitHeadingActive_=false; }
-    if (!transitHeadingActive_ && std::fabs(headingError)>=navigation_config::TRANSIT_HEADING_START_RAD) transitHeadingActive_=true;
-    if (std::fabs(headingError)<=navigation_config::TRANSIT_HEADING_RELEASE_RAD) transitHeadingActive_=false;
-    yaw_=transitHeadingActive_?heading_.Request(headingError,previousYaw,m.yawRateRadps,m.dt,
-        navigation_config::TRANSIT_HEADING_RELEASE_RAD,navigation_config::TRANSIT_HEADING_KP):0;
-    // A coasting/braking release completes this correction. Do not restart it
-    // at the same threshold on the next frame while XY travel continues.
-    if (std::fabs(yaw_)<=wheel_drive_config::COMMAND_STOP_RADPS) transitHeadingActive_=false;
-  }
-  if (leg_+1==route_.size()) {
-    if (!finalControllerReady_) {
-      point_.Reset({goal_.x_MM,goal_.y_MM},m.now,navigation_config::SPEED_MMPS,navigation_config::ACCEL_MMPS2,
-          co*worldVX_+si*worldVY_,-si*worldVX_+co*worldVY_);
-      finalControllerReady_=true;
-    }
-    point_.Update(m,in.forwardMMps,in.leftMMps,0);
-    forward_=point_.Forward(); left_=point_.Left(); status_="Final XY: "+point_.Status();
-    if (point_.Reached()) {
-      Stop(); heading_.Reset(); settled_=-1; state_=State::FinalHeading;
-      status_="XY reached; setting final heading";
-    }
+  if (!intermediate && remaining_<=navigation_config::FINAL_APPROACH_DISTANCE_MM) finalToleranceActive_=true;
+  const bool finalTolerance=finalToleranceActive_;
+  const double release=inPlace?navigation_config::INTERMEDIATE_HEADING_TOLERANCE_RAD:
+      (finalTolerance?heading_control_config::HEADING_TOLERANCE_RAD:navigation_config::TRANSIT_HEADING_RELEASE_RAD);
+  const double start=inPlace || finalTolerance?release:navigation_config::TRANSIT_HEADING_START_RAD;
+  if (target!=transitHeadingTarget_) { transitHeadingTarget_=target; transitHeadingActive_=false; }
+  if (!transitHeadingActive_ && std::fabs(headingError)>start) transitHeadingActive_=true;
+  if (std::fabs(headingError)<=release) transitHeadingActive_=false;
+  yaw_=transitHeadingActive_?heading_.Request(headingError,previousYaw,m.yawRateRadps,m.dt,
+      release,navigation_config::TRANSIT_HEADING_KP,navigation_config::MAX_YAW_RATE_RADPS):0;
+  if (std::fabs(yaw_)<=wheel_drive_config::COMMAND_STOP_RADPS) transitHeadingActive_=false;
+  if (!intermediate) {
+    const double dx=goal_.x_MM-center.x,dy=goal_.y_MM-center.y;
+    const double distance=std::hypot(dx,dy);
+    // Same speed cap/acceleration as transit. This continuous stopping envelope
+    // is physical end-point braking, not a reduced-speed goal mode or pulse task.
+    const double available=std::max(0.0,distance-navigation_config::POSITION_TOLERANCE_MM);
+    const double response=navigation_config::ACCEL_MMPS2*navigation_config::FINAL_BRAKE_RESPONSE_S;
+    const double speed=std::min(navigation_config::SPEED_MMPS,
+        std::sqrt(response*response+2*navigation_config::ACCEL_MMPS2*available)-response);
+    const double wantedX=distance>0?dx*speed/distance:0,wantedY=distance>0?dy*speed/distance:0;
+    const double change=std::hypot(wantedX-worldVX_,wantedY-worldVY_);
+    const double gain=change>0?std::min(1.0,navigation_config::ACCEL_MMPS2*m.dt/change):1;
+    worldVX_+=gain*(wantedX-worldVX_); worldVY_+=gain*(wantedY-worldVY_);
+    forward_=co*worldVX_+si*worldVY_; left_=-si*worldVX_+co*worldVY_;
+    status_="Final leg: continuous XY + yaw";
     return;
   }
   const auto p=route_[leg_]; const double distance=std::hypot(p.x_MM-center.x,p.y_MM-center.y);
@@ -227,10 +225,6 @@ void GoalNavigationRoutine::DriveRoute(const NavigationInput& in,double previous
   }
   double speed=std::min(cap,std::sqrt(cornerSpeed*cornerSpeed+2*navigation_config::ACCEL_MMPS2*
       std::max(0.0,distance-navigation_config::LOOKAHEAD_MM)));
-  // Anticipate final braking across the last transit pose, rather than handing
-  // the final controller a high-speed command only a few millimeters out.
-  speed=std::min(speed,std::max(navigation_config::MIN_PASS_SPEED_MMPS,
-      std::sqrt(2*navigation_config::ACCEL_MMPS2*std::max(0.0,remaining_-cap*navigation_config::BRAKE_PREVIEW_S))));
   if (std::hypot(carrot.x-center.x,carrot.y-center.y)<navigation_config::MIN_SEGMENT_MM) carrot={p.x_MM,p.y_MM};
   const double carrotDistance=std::hypot(carrot.x-center.x,carrot.y-center.y);
   const double wantedX=(carrot.x-center.x)*speed/carrotDistance,wantedY=(carrot.y-center.y)*speed/carrotDistance;
@@ -364,23 +358,20 @@ void GoalNavigationRoutine::Update(const NavigationInput& input) {
   CorrectFromWalls(in);
   controlPose_=m.pose;
   remaining_=std::hypot(goal_.x_MM-m.pose.x_MM,goal_.y_MM-m.pose.y_MM);
-  if (state_==State::Driving) {
-    DriveRoute(in,previousYaw);
-  } else if (state_==State::FinalHeading) {
-    if (remaining_>navigation_config::POSITION_TOLERANCE_MM) {
-      travelHeading_=goal_.headingRad; heading_.Reset();
-      point_.Reset({goal_.x_MM,goal_.y_MM},m.now,navigation_config::SPEED_MMPS,
-          navigation_config::ACCEL_MMPS2,in.forwardMMps,in.leftMMps);
-      state_=State::Driving; settled_=-1; status_="Correcting final XY"; return;
-    }
-    const double error=robot_geometry::Wrap(goal_.headingRad-m.pose.headingRad);
-    yaw_=heading_.Request(error,previousYaw,m.yawRateRadps,m.dt,heading_control_config::HEADING_TOLERANCE_RAD);
-    if (std::fabs(error)<=heading_control_config::HEADING_TOLERANCE_RAD &&
-        std::fabs(m.yawRateRadps)<=robot_geometry::Radians(heading_control_config::STATIONARY_YAW_DPS) &&
-        std::hypot(in.forwardMMps,in.leftMMps)<=heading_control_config::STATIONARY_SPEED_MMPS) {
-      yaw_=0;
-      if (settled_<0) settled_=m.now;
-      if (m.now-settled_>=navigation_config::FINAL_SETTLE_S) {
+  if (state_!=State::Driving) return;
+  DriveRoute(in,previousYaw);
+  const bool finalLeg=leg_+1==route_.size();
+  const double positionError=std::hypot(goal_.x_MM-m.pose.x_MM,goal_.y_MM-m.pose.y_MM);
+  const double headingError=std::fabs(robot_geometry::Wrap(goal_.headingRad-m.pose.headingRad));
+  if (finalLeg && positionError<=navigation_config::POSITION_TOLERANCE_MM &&
+      headingError<=heading_control_config::HEADING_TOLERANCE_RAD &&
+      std::fabs(m.yawRateRadps)<=robot_geometry::Radians(heading_control_config::STATIONARY_YAW_DPS) &&
+      std::hypot(in.forwardMMps,in.leftMMps)<=heading_control_config::STATIONARY_SPEED_MMPS &&
+      std::hypot(worldVX_,worldVY_)<=heading_control_config::STATIONARY_SPEED_MMPS) {
+    Stop(); worldVX_=worldVY_=0;
+    if (settled_<0) settled_=m.now;
+    status_="Goal pose reached; final settle";
+    if (m.now-settled_>=navigation_config::FINAL_SETTLE_S) {
         // Only readings acquired during this stationary goal settle may be
         // committed to global odometry. Missing/invalid ranges do not gate it.
         double correction[2]={},pose[2]={m.pose.x_MM,m.pose.y_MM};
@@ -397,11 +388,9 @@ void GoalNavigationRoutine::Update(const NavigationInput& input) {
         controlPose_={pose[0],pose[1],m.pose.headingRad};
         remaining_=std::hypot(goal_.x_MM-pose[0],goal_.y_MM-pose[1]);
         if (remaining_>navigation_config::POSITION_TOLERANCE_MM) {
-          point_.Reset({goal_.x_MM,goal_.y_MM},m.now,navigation_config::SPEED_MMPS,navigation_config::ACCEL_MMPS2);
-          state_=State::Driving; settled_=-1; status_="Final position correction"; return;
+          settled_=-1; status_="Range update: continuing XY + yaw"; return;
         }
         Stop(); state_=State::Complete; status_="Goal reached: within 10 mm / 1 deg";
-      }
-    } else settled_=-1;
-  }
+    }
+  } else settled_=-1;
 }

@@ -4,7 +4,7 @@
 
 namespace at=heading_control_config;
 double HeadingMotionControl::Request(double error,double oldYaw,double measuredYaw,double dt,
-                                     double deadband,double gain) {
+                                     double deadband,double gain,double maxYaw) {
   holdRecheck_=std::max(0.0,holdRecheck_-dt);
   if (holdRecheck_>1e-9 && std::fabs(error)<at::HOLD_RECHECK_WINDOW_RAD) return 0;
   const double toward=(error<0?-1:1)*measuredYaw;
@@ -12,7 +12,7 @@ double HeadingMotionControl::Request(double error,double oldYaw,double measuredY
   // reference. A zero correction stays exactly zero through the output path.
   const bool coastingToward=toward>robot_geometry::Radians(at::STATIONARY_YAW_DPS) &&
       toward*(at::HOLD_BRAKE_RESPONSE_S+dt)>=std::fabs(error)-deadband;
-  const double limit=at::HOLD_HEADING_MAX_YAW_RADPS;
+  const double limit=maxYaw;
   const double request=std::max(-limit,std::min(limit,
       error*gain-measuredYaw*at::HOLD_YAW_RATE_DAMPING));
   // Rate damping releases power; it must not command an opposite turn while

@@ -621,7 +621,24 @@ void IntermediatePoseToleranceChecks() {
   REQUIRE_ARENA(nav.StartGoal({250,950,0},in,"250,450,90;250,700"));
   nav.Update(in); REQUIRE_ARENA(nav.LegIndex()==0 && nav.Yaw()>0); // in-place intermediate heading
   in.motion.pose.headingRad=robot_geometry::PI/2; nav.Update(in); REQUIRE_ARENA(nav.LegIndex()==1);
-  in.motion.pose={250,700,0}; nav.Update(in); REQUIRE_ARENA(nav.LegIndex()==2 && nav.Yaw()>0); // inherited +90 stays a moving reference
+  in.motion.pose={250,700,0}; nav.Update(in); REQUIRE_ARENA(nav.LegIndex()==2 && Near(nav.Yaw(),0)); // final leg now uses goal heading 0
+}
+void ContinuousGoalPoseChecks() {
+  GoalNavigationRoutine nav; auto in=MvpReference(nav);
+  for (auto& valid:in.valid) valid=false;
+  REQUIRE_ARENA(nav.StartGoal({250,1200,robot_geometry::PI/2},in)); nav.Update(in);
+  REQUIRE_ARENA(nav.Forward()>0 && nav.Yaw()>0); // final heading begins DURING translation
+  REQUIRE_ARENA(nav.GetState()==GoalNavigationRoutine::State::Driving);
+  nav.Abort(); in.motion.pose={250,1050,robot_geometry::Radians(-3)};
+  REQUIRE_ARENA(nav.StartGoal({250,1200,0},in)); nav.Update(in);
+  REQUIRE_ARENA(nav.Forward()>0 && nav.Yaw()>0);
+  REQUIRE_ARENA(Near(nav.Yaw(),robot_geometry::Radians(3)*navigation_config::TRANSIT_HEADING_KP));
+  in.motion.pose.y_MM=990; nav.Update(in); // beyond 200 mm again: final tolerance must not loosen
+  REQUIRE_ARENA(nav.Yaw()>0 && nav.Forward()>0);
+  nav.Abort(); in.motion.pose={250,1200,robot_geometry::Radians(-3)};
+  REQUIRE_ARENA(nav.StartGoal({250,1200,0},in)); nav.Update(in);
+  REQUIRE_ARENA(Near(nav.Forward(),0) && Near(nav.Left(),0) && nav.Yaw()>0);
+  REQUIRE_ARENA(nav.GetState()==GoalNavigationRoutine::State::Driving); // no stop/turn state handoff
 }
 void ContinuousTransitChecks() {
   GoalNavigationRoutine nav; auto in=MvpReference(nav);
@@ -840,7 +857,7 @@ void RunActiveChecks() {
   FixedCobraReferencesNeedNoCalibration(); FixedCobraRejectsDisconnectedAndInvalidReadings();
   ClockwiseRawCountsMatchOdometryAndWheelMonitor(); EncoderGyroOdometryChecks(); TitanOutputFloorPolarityAndQuantization();
   YawDirectionCheckAllowsDelayedReversalButRejectsSustainedOpposition();
-  MvpStartReferenceAndStop(); FlexibleInitializationChecks(); IntermediatePoseToleranceChecks();
+  MvpStartReferenceAndStop(); FlexibleInitializationChecks(); IntermediatePoseToleranceChecks(); ContinuousGoalPoseChecks();
   ContinuousTransitChecks(); TravelWallSupportChecks();
   BoundedLateSamplesKeepOdometryAndAutoDriveHealthy(); HealthFailuresIdentifyTheirActualSource();
   RangeCorrectionsUseEachBeamHeadingAndMount(); UnusableAndCloseRangesNeverVetoMotion();

@@ -40,7 +40,7 @@ There are no individual motor trims, early-wheel holds or extra wheel-output ram
 
 - Enable Teleoperated mode in Studica Control Station and center both sticks to arm. Left stick translates, including diagonals; right stick left/right rotates CCW/CW. There is no gyro steering in Teleop.
 - Disabled, disconnected, and Test modes cannot drive the motors.
-- Motion tab: drive diagnostics only: status/revision, enabled/controller/IMU/odometry state, pose, loop time, and one aligned encoder/speed/PWM row per motor. No task-start controls.
+- Motion tab: drive diagnostics only: status/revision, enabled/controller/IMU/odometry state, pose, raw gyro/stored heading offset, and one aligned encoder/speed/PWM row per motor. No task-start controls.
 - Navigation tab: starting area, wall X/Y, start heading, Initialize, saved destination, goal pose, Go/Stop, current pose, remaining distance, and guides/override. All pose setup and goal controls live here once.
 - Tape test tab: left/right approaches and Stop, tape-task status, pose, CH0..CH3 voltages, scan distance, CH1-CH2 difference, and the two corner-reference readings.
 - Sensing tab: read-only front/rear sonar, left/right IR voltage and distance validity, and Cobra CH0..CH3 voltages/detection. No tape-task status or commands.
@@ -52,7 +52,7 @@ Sonars use FlexDIO 2/3 front and 0/1 rear (even trigger, odd echo). IR sensors u
 
 Basic teleoperated driving and on-demand photo capture are retained. The inactive project-7 arena mission/planner, simple tasks, colour classification/calibration, Cobra recapture/file persistence, lift, and servo code are removed. Build and vendor configuration remain unchanged.
 
-## Sensor-supported navigation (P8-r35 MVP)
+## Sensor-supported navigation (P8-r36 MVP)
 
 Navigation follows your editable intermediate poses and final goal. Encoder counts and reset-relative gyro heading remain the basic motion estimate. Valid range readings provide a small position offset to guide driving; they do not veto a route or generate recovery faults. The obstacle map, grid searches, automatic detours, staging/recovery controller and planning worker have been deleted.
 
@@ -114,13 +114,13 @@ At Go, default guides are built directly from `RobotConfig.h`, rather than trust
 
 Final X/Y/heading edits belong to the selected destination. Edited-guide drafts belong to the current source–destination pair. Both survive switching selections until the program restarts; durable defaults are in `navigation_config::GOALS` and `ROUTES` in `RobotConfig.h`. The override toggle resets off when the source/destination pair changes: enable it again to use that pair's draft. Changing a selection or editing a field during travel does not change the active captured route.
 
-Press **Go to goal** to snapshot the selected route. Intermediates use a 25 mm passing radius/cross-track corridor and relaxed 10 degree heading guidance. A 100 mm lookahead, up to 25 mm corner blending and a continuous acceleration ramp smooth transitions. An explicitly requested in-place turn still rotates there. The final XY arrival is followed by the final heading and the normal **10 mm / 1 degree** stationary completion check.
+Press **Go to goal** to snapshot the selected route. Intermediates use a 25 mm passing radius/cross-track corridor and relaxed 10 degree heading guidance. A 100 mm lookahead, up to 25 mm corner blending and a continuous acceleration ramp smooth transitions. An explicitly requested in-place turn still rotates there. On the final leg, the goal heading is commanded while XY travel continues. There is no separate final-heading state. Completion still requires **10 mm / 1 degree** and a stationary settle.
 
-Every control update recalculates the remaining segment, lookahead direction, distance and velocity request from the latest sensor-assisted driving pose. A valid range discrepancy can therefore change the robot's path to the next fixed waypoint without stopping, resetting the route or changing the final goal. Final correction pulses also update their direction when the estimated position changes.
+Every control update recalculates the remaining segment, lookahead direction, distance and velocity request from the latest sensor-assisted driving pose. A valid range discrepancy can therefore change the robot's path to the next fixed waypoint without stopping, resetting the route or changing the final goal. The final leg uses the same continuous vector/ramp update rather than timed XY correction pulses.
 
-During transit, heading correction starts only above **12 degrees** of error and releases near **6 degrees**, with a lower gain of **0.8**. This hysteresis avoids repeated small gyro corrections at one threshold. Inside the last **200 mm of route distance**, heading hold tightens to **3 degrees**, gain **1.2**. Planned large turns and translation remain simultaneous; final stopped heading retains the 1 degree tolerance. Sensor-based global XY correction is still committed only during the stopped final settle.
+During transit, heading correction starts above **12 degrees** of error and releases near **6 degrees**. The yaw cap is **90 deg/s throughout Navigation** (the normal Teleop cap), replacing the inherited 20 deg/s tape-test limit that delayed large turns. Tape control retains its own limit. The heading gain stays **0.8 throughout Navigation**, including the goal: the former 1.2 approach gain and separate 2.4-gain final-turn handoff are removed. On the final leg the target is the actual goal heading, so a large requested turn starts during travel. Within the last **200 mm**, only the heading tolerance tightens to **1 degree**; it stays tight for the rest of the run, avoiding threshold chatter if sensor offsets change the remaining distance. XY and yaw remain concurrent. Sensor-based global XY correction is still committed only during the stopped final settle.
 
-Normal requested speed is **350 mm/s**, acceleration **300 mm/s^2**. The existing 15% nonzero motor-output floor remains. The route is defined by your intermediate poses: no automatic obstacle detour or collision-veto layer remains. Place the poses so the segments, corner blends and turns have room for the robot and manipulator.
+Translation retains the same **350 mm/s cap** and **300 mm/s^2 acceleration**. There is no reduced-speed goal mode, mandatory XY-stop-then-turn, or timed brake/settle/correction-pulse cycle in Navigation. A continuous stopping-distance envelope accounts for the remaining distance, acceleration and **0.18 s brake response**; physical braking to stop within 10 mm is retained. The final 0.3 s settle happens only once both XY and heading meet their tolerances. The existing 15% nonzero motor-output floor remains. The route is defined by your intermediate poses: no automatic obstacle detour or collision-veto layer remains. Place the poses so the segments, corner blends and turns have room for the robot and manipulator.
 
 ### Motion tuning in one header
 
@@ -128,14 +128,14 @@ Edit **`src/main/include/RobotConfig.h`** for all motion tuning. The index at it
 
 | Section | Main settings |
 | --- | --- |
-| `navigation_config` | Translation speed/acceleration; 25 mm intermediate and 10 mm final tolerances; lookahead/corner blend; 12/6 degree transit hysteresis; transit gain; 200 mm final approach distance; approach heading gain/deadband; final settle duration; range blend/step limits |
+| `navigation_config` | Translation speed/acceleration; 25 mm intermediate and 10 mm final tolerances; lookahead/corner blend; 12/6 degree transit hysteresis; transit gain; 200 mm tolerance-tightening distance; constant heading gain; continuous final-braking response; final settle duration; range blend/step limits |
 | `heading_control_config` | Final 1 degree tolerance; yaw speed/acceleration; rate damping; coasting prediction; heading recheck; stationary thresholds |
-| `position_control_config` | Shared final XY proportional gain; minimum approach speed; braking response; capture-radius ratio; velocity filter; correction/rest/settle times |
+| `position_control_config` | Tape-test XY gain, speed, braking, capture radius, filtering and correction/rest/settle times (Navigation does not use these pulse phases) |
 | `wheel_drive_config` | PWM floor; bounded common output scaling; neutral thresholds; encoder speed, stall and direction thresholds |
 | `localization_config` | Wheel geometry/count conversion; sensor mounts; control/sample timing; Teleop speeds, acceleration and stick deadband |
 | `tape_test_config` | Tape approach targets, speed/acceleration, scan/centering settings and task limits |
 
-The shared final XY controller now reads `position_control_config`, so its tuning is no longer hidden among tape-only settings. Moving existing Teleop values into named constants preserves their previous defaults. No motion gain, speed limit or tolerance needs a source-file edit.
+The tape-test XY controller reads `position_control_config`; Navigation uses its own continuous final-leg settings in `navigation_config`. Moving existing Teleop values into named constants preserves their previous defaults. No motion gain, speed limit or tolerance needs a source-file edit.
 
 ### Sensor geometry and driving feedback
 
@@ -174,6 +174,6 @@ The same valid selected ranges may establish global X/Y during explicit initiali
 
 The retained navigation protections are explicit Stop/Disable/disconnect, unavailable or invalid gyro/odometry/control data, and the existing hardware motor/encoder fault checks. Malformed/nonfinite settings are rejected before starting. There is no navigation task deadline, progress watchdog, scene-feasibility error, recovery failure or sensor-required travel gate.
 
-The bounded late-sample handling remains: autonomous odometry preserves encoder travel through intervals up to 500 ms, while controller ramps use at most a 40 ms step. Larger/unusable feedback gaps remain control-data faults during travel. Sensor initialization can recover an old odometry health fault by resetting it, while retaining IMU/Control Station/clock checks. Old drive faults do not prevent a sensor-only reference; they remain checked before driving. Teleop driving behavior, camera capture, project 7 and build/vendor configuration are unchanged. Motion again displays Loop/peak timing, without task controls.
+The bounded late-sample handling remains: autonomous odometry preserves encoder travel through intervals up to 500 ms, while controller ramps use at most a 40 ms step. Larger/unusable feedback gaps remain control-data faults during travel. Sensor initialization can recover an old odometry health fault by resetting it, while retaining IMU/Control Station/clock checks. Old drive faults do not prevent a sensor-only reference; they remain checked before driving. Teleop driving behavior, camera capture, project 7 and build/vendor configuration are unchanged. Motion displays **Gyro raw / offset deg**, without task controls. The first value is the CCW-signed AHRS yaw; the second is the actual stored arena-heading offset, not an angle calculated from the target. Goal changes and range corrections never write either value. Only explicit numeric-heading initialization/mode synchronization establishes an offset; the goal controller reads heading. This makes physical turning, a changed reference, and sensor drift distinguishable. A raw-yaw change while physically stationary still requires a hardware observation; no synthetic heading freeze, gyro re-zero or calibration is added to hide it.
 
 `Navigation.cpp` now contains route following, reference initialization and range support. `Autonomous.cpp` retains the shared heading/position and tape controllers. `LocalNavigation.cpp` and its planner/map classes are deleted. Existing component-check source covers beam/mount projections, invalid readings, stopped correction, control transitions and timing; motion-model simulation code has been removed. No simulations are run after the user's prohibition. Validation for this revision is compilation/build checks; physical behavior must be evaluated on the robot.
