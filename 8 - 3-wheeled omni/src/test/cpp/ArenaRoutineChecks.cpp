@@ -637,7 +637,7 @@ void ContinuousGoalPoseChecks() {
   nav.Abort(); in.motion.pose={250,1050,robot_geometry::Radians(-3)};
   REQUIRE_ARENA(nav.StartGoal({250,1200,0},in)); nav.Update(in);
   REQUIRE_ARENA(nav.Forward()>0 && nav.Yaw()>0);
-  REQUIRE_ARENA(Near(nav.Yaw(),robot_geometry::Radians(3)*navigation_config::TRANSIT_HEADING_KP));
+  REQUIRE_ARENA(Near(nav.Yaw(),navigation_config::MIN_YAW_RATE_RADPS));
   in.motion.pose.y_MM=990; nav.Update(in); // beyond 200 mm again: final tolerance must not loosen
   REQUIRE_ARENA(nav.Yaw()>0 && nav.Forward()>0);
   nav.Abort(); in.motion.pose={250,1200,robot_geometry::Radians(-3)};
@@ -645,6 +645,34 @@ void ContinuousGoalPoseChecks() {
   REQUIRE_ARENA(Near(nav.Forward(),0) && Near(nav.Left(),0) && nav.Yaw()>0);
   REQUIRE_ARENA(nav.GetState()==GoalNavigationRoutine::State::Driving); // no stop/turn state handoff
 }
+void MinimumYawAndStationaryCorrectionChecks() {
+  HeadingMotionControl yaw;
+  const double minimum=navigation_config::MIN_YAW_RATE_RADPS,maximum=navigation_config::MAX_YAW_RATE_RADPS;
+  const double tolerance=heading_control_config::HEADING_TOLERANCE_RAD;
+  REQUIRE_ARENA(Near(yaw.Request(robot_geometry::Radians(2),0,0,0.02,tolerance,1,maximum,minimum),minimum));
+  yaw.Reset();
+  REQUIRE_ARENA(yaw.Request(robot_geometry::Radians(0.5),minimum,0,0.02,tolerance,1,maximum,minimum)==0);
+  yaw.Reset();
+  REQUIRE_ARENA(yaw.Request(robot_geometry::Radians(2),minimum,robot_geometry::Radians(40),0.02,tolerance,1,maximum,minimum)==0);
+  StationaryYawCorrection correction;
+  double counts[3]={};
+  correction.Update(0,0,counts,true,true);
+  correction.Update(0.03,0.5,counts,true,true);
+  correction.Update(0.06,1,counts,true,true);
+  const double held=correction.Update(0.09,1.5,counts,true,true);
+  REQUIRE_ARENA(correction.Holding());
+  REQUIRE_ARENA(Near(correction.Update(0.12,2,counts,true,true),held));
+  const double bias=correction.CorrectionDegrees();
+  // Even very slow commanded motion passes through immediately.
+  const double turning=correction.Update(0.121,2.02,counts,false,true);
+  REQUIRE_ARENA(!correction.Holding() && turning>held && Near(correction.CorrectionDegrees(),bias));
+  counts[0]+=1;
+  REQUIRE_ARENA(correction.Update(0.122,2.04,counts,true,true)>turning && !correction.Holding());
+  REQUIRE_ARENA(correction.Update(1.122,2.06,counts,true,true)>turning+0.9 && !correction.Holding());
+  REQUIRE_ARENA(Near(correction.CorrectionDegrees(),bias));
+  correction.Clear(); REQUIRE_ARENA(!correction.Holding() && correction.CorrectionDegrees()==0);
+}
+
 void ContinuousTransitChecks() {
   GoalNavigationRoutine nav; auto in=MvpReference(nav);
   for (auto& valid:in.valid) valid=false;
@@ -862,7 +890,7 @@ void RunActiveChecks() {
   FixedCobraReferencesNeedNoCalibration(); FixedCobraRejectsDisconnectedAndInvalidReadings();
   ClockwiseRawCountsMatchOdometryAndWheelMonitor(); EncoderGyroOdometryChecks(); TitanOutputFloorPolarityAndQuantization();
   YawDirectionCheckAllowsDelayedReversalButRejectsSustainedOpposition();
-  MvpStartReferenceAndStop(); FlexibleInitializationChecks(); IntermediatePoseToleranceChecks(); ContinuousGoalPoseChecks();
+  MvpStartReferenceAndStop(); FlexibleInitializationChecks(); IntermediatePoseToleranceChecks(); ContinuousGoalPoseChecks(); MinimumYawAndStationaryCorrectionChecks();
   ContinuousTransitChecks(); TravelWallSupportChecks();
   BoundedLateSamplesKeepOdometryAndAutoDriveHealthy(); HealthFailuresIdentifyTheirActualSource();
   RangeCorrectionsUseEachBeamHeadingAndMount(); UnusableAndCloseRangesNeverVetoMotion();

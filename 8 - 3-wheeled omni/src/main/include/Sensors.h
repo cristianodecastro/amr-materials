@@ -52,6 +52,51 @@ class YawRateEstimator {
   std::uint32_t previousTime_=0;
 };
 
+// Autonomous zero-motion observation. Raw AHRS yaw remains untouched. The
+// correction changes only while three independent encoders and neutral PWM
+// support rest; ordinary motion passes through with a fixed correction.
+class StationaryYawCorrection {
+ public:
+  void Clear() { have_=held_=false; correction_=0; quietSince_=-1; }
+  double Update(double raw,double now,const double (&counts)[3],bool neutral,bool quietAcceleration) {
+    if (!std::isfinite(raw) || !std::isfinite(now)) { Clear(); return raw; }
+    bool finiteCounts=true;
+    for (double count:counts) finiteCounts=finiteCounts && std::isfinite(count);
+    if (!finiteCounts) { held_=false; quietSince_=-1; have_=false; return raw-correction_; }
+    if (!have_) {
+      have_=true; previousRaw_=raw; previousTime_=now;
+      for (int i=0;i<3;++i) previousCounts_[i]=counts[i];
+      held_=false; return raw-correction_;
+    }
+    const double dt=now-previousTime_;
+    const double delta=robot_geometry::Wrap(robot_geometry::Radians(raw-previousRaw_))*180/robot_geometry::PI;
+    bool still=yaw_stability_config::ENABLED && neutral && quietAcceleration &&
+        dt>0 && dt<=localization_config::AUTO_MAX_SAMPLE_GAP_S &&
+        std::fabs(delta)<=yaw_stability_config::MAX_RAW_STEP_DEG;
+    for (int i=0;i<3;++i)
+      still=still && std::fabs(counts[i]-previousCounts_[i])<=yaw_stability_config::ENCODER_COUNT_EPSILON;
+    held_=false;
+    if (still) {
+      if (quietSince_<0) { quietSince_=now; quietRaw_=raw; }
+      const double windowChange=std::fabs(robot_geometry::Wrap(robot_geometry::Radians(raw-quietRaw_))*180/robot_geometry::PI);
+      const double allowed=yaw_stability_config::MAX_RAW_RATE_DPS*(now-quietSince_)+yaw_stability_config::RAW_NOISE_ALLOWANCE_DEG;
+      if (windowChange>allowed) quietSince_=-1;
+      else if (now-quietSince_>=yaw_stability_config::CONFIRM_STILL_S) {
+        correction_=robot_geometry::Wrap(robot_geometry::Radians(correction_+delta))*180/robot_geometry::PI;
+        held_=true;
+      }
+    } else quietSince_=-1;
+    previousRaw_=raw; previousTime_=now;
+    for (int i=0;i<3;++i) previousCounts_[i]=counts[i];
+    return robot_geometry::Wrap(robot_geometry::Radians(raw-correction_))*180/robot_geometry::PI;
+  }
+  double CorrectionDegrees() const { return correction_; }
+  bool Holding() const { return held_; }
+ private:
+  bool have_=false,held_=false;
+  double previousRaw_=0,previousTime_=0,quietSince_=-1,quietRaw_=0,correction_=0,previousCounts_[3]={};
+};
+
 // Fixed user-provided references. Runtime only observes fresh sensor readings.
 class CobraCheck {
  public:

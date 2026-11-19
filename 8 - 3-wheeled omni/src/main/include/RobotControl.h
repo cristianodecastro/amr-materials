@@ -109,7 +109,7 @@ class Localization {
   explicit Localization(Hardware* hardware);
   void Reset(double x_MM,double y_MM,double headingDeg);
   void ApplyReference(RobotPose pose,bool resetHeading);
-  void UpdateOdometry(double dtSeconds);
+  void UpdateOdometry(double dtSeconds,double now);
   void SetAutonomousMode(bool autonomous);
   void CorrectAutonomousPosition(ArenaPoint delta) {
     if (autonomousMode_) odometry_.CorrectPosition(delta.x,delta.y);
@@ -122,12 +122,19 @@ class Localization {
   }
   double GetBodyVelocityX_MMps() const { return autonomousMode_?odometry_.ForwardSpeed():teleopTelemetry_.ForwardSpeed(); }
   double GetBodyVelocityY_MMps() const { return autonomousMode_?odometry_.LeftSpeed():teleopTelemetry_.LeftSpeed(); }
+  double YawRateDegreesPerSecond() const {
+    return autonomousMode_ && stationaryYaw_.Holding()?0:hardware_->GetYawRateDegreesPerSecond();
+  }
+  double YawDriftCorrectionDegrees() const { return autonomousMode_?stationaryYaw_.CorrectionDegrees():0; }
+  bool IsHeadingHeld() const { return autonomousMode_ && stationaryYaw_.Holding(); }
  private:
   Hardware* hardware_;
   drive_kinematics::EncoderGyroOdometry odometry_;
   drive_kinematics::TeleopPoseTelemetry teleopTelemetry_;
   bool autonomousMode_=false;
   bool imuSynchronized_=false;
+  StationaryYawCorrection stationaryYaw_;
+  double headingYawDeg_=0;
 };
 // Project 8: manual driving and one explicit-start sensor/tape test.
 class RobotSubsystem : public frc2::SubsystemBase {

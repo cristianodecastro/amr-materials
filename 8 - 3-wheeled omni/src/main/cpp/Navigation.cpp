@@ -188,7 +188,7 @@ void GoalNavigationRoutine::DriveRoute(const NavigationInput& in,double previous
   if (!transitHeadingActive_ && std::fabs(headingError)>start) transitHeadingActive_=true;
   if (std::fabs(headingError)<=release) transitHeadingActive_=false;
   yaw_=transitHeadingActive_?heading_.Request(headingError,previousYaw,m.yawRateRadps,m.dt,
-      release,navigation_config::TRANSIT_HEADING_KP,navigation_config::MAX_YAW_RATE_RADPS):0;
+      release,navigation_config::TRANSIT_HEADING_KP,navigation_config::MAX_YAW_RATE_RADPS,navigation_config::MIN_YAW_RATE_RADPS):0;
   if (std::fabs(yaw_)<=wheel_drive_config::COMMAND_STOP_RADPS) transitHeadingActive_=false;
   if (!intermediate) {
     const double dx=goal_.x_MM-center.x,dy=goal_.y_MM-center.y;

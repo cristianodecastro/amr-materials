@@ -18,7 +18,7 @@ class HeadingMotionControl {
   double Request(double error,double oldYaw,double measuredYaw,double dt,
       double deadband=heading_control_config::HOLD_HEADING_DEADBAND_RAD,
       double gain=heading_control_config::HOLD_HEADING_KP,
-      double maxYaw=heading_control_config::HOLD_HEADING_MAX_YAW_RADPS);
+      double maxYaw=heading_control_config::HOLD_HEADING_MAX_YAW_RADPS,double minYaw=0);
   std::string CheckFeedback(double previousRequest,double measuredYaw,double dt);
   double FeedbackRequest() const { return lastRequest_; }
   double FeedbackMeasured() const { return lastMeasured_; }

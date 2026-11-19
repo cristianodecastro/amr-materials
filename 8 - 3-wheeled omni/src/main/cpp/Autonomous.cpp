@@ -4,7 +4,7 @@
 
 namespace at=heading_control_config;
 double HeadingMotionControl::Request(double error,double oldYaw,double measuredYaw,double dt,
-                                     double deadband,double gain,double maxYaw) {
+                                     double deadband,double gain,double maxYaw,double minYaw) {
   holdRecheck_=std::max(0.0,holdRecheck_-dt);
   if (holdRecheck_>1e-9 && std::fabs(error)<at::HOLD_RECHECK_WINDOW_RAD) return 0;
   const double toward=(error<0?-1:1)*measuredYaw;
@@ -25,7 +25,11 @@ double HeadingMotionControl::Request(double error,double oldYaw,double measuredY
   }
   if (oldYaw*error<0) oldYaw=0;
   const double step=at::HOLD_YAW_ACCEL_RADPS2*dt;
-  return oldYaw+std::max(-step,std::min(step,request-oldYaw));
+  const double ramped=oldYaw+std::max(-step,std::min(step,request-oldYaw));
+  // Apply only after the zero/coasting checks above. Navigation's breakaway
+  // floor bypasses the ineffective bottom of the ramp, not its braking logic.
+  const double floor=std::min(maxYaw,std::max(0.0,minYaw));
+  return std::copysign(std::max(floor,std::fabs(ramped)),error);
 }
 std::string HeadingMotionControl::CheckFeedback(double previousRequest,double measuredYaw,double dt) {
   lastRequest_=previousRequest; lastMeasured_=measuredYaw;

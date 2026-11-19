@@ -7,6 +7,7 @@
 // wheel_drive_config: PWM floor, output scaling and encoder fault thresholds.
 // heading_control_config: shared gyro controller and final heading tolerance.
 // navigation_config: transit/approach behavior, route smoothing and sensor blend.
+// yaw_stability_config: autonomous zero-motion heading stabilization.
 // position_control_config: shared final XY braking/settling/correction behavior.
 // tape_test_config: tape approach and scan settings.
 
@@ -96,6 +97,15 @@ static constexpr double STALL_REQUEST_MMPS=20,STALL_MEASURED_MMPS=3,STALL_OUTPUT
 static constexpr double DIRECTION_GRACE_S=0.30,WRONG_DIRECTION_TIMEOUT_S=0.25;
 }
 
+namespace yaw_stability_config {
+// Auto only. A zero-rate observation requires ALL wheels unchanged, neutral
+// electrical outputs, quiet acceleration and small raw yaw increments.
+static constexpr bool ENABLED=true;
+static constexpr double CONFIRM_STILL_S=1.0,MAX_RAW_RATE_DPS=0.5,MAX_LINEAR_ACCEL_G=0.02;
+static constexpr double MAX_RAW_STEP_DEG=0.10,RAW_NOISE_ALLOWANCE_DEG=0.05;
+static constexpr double ENCODER_COUNT_EPSILON=0;
+}
+
 // Observational manual-mode pose display; never steers Teleop or feeds Auto.
 namespace teleop_odometry_config {
 static constexpr double ACCEL_DEADBAND_G=0.005,ACCEL_VELOCITY_BLEND=0.15;
@@ -170,6 +180,9 @@ static constexpr double TRANSIT_HEADING_KP=1.0;
 // separate 20 deg/s default. These values also apply on the final leg.
 static constexpr double MAX_YAW_RATE_DPS=120;
 static constexpr double MAX_YAW_RATE_RADPS=MAX_YAW_RATE_DPS*robot_geometry::PI/180;
+// Breakaway yaw floor, not a motor trim. Zero/braking/tolerance bypass it.
+static constexpr double MIN_YAW_RATE_DPS=40;
+static constexpr double MIN_YAW_RATE_RADPS=MIN_YAW_RATE_DPS*robot_geometry::PI/180;
 static constexpr double TRANSIT_HEADING_START_RAD=TRANSIT_HEADING_START_DEG*robot_geometry::PI/180;
 static constexpr double TRANSIT_HEADING_RELEASE_RAD=TRANSIT_HEADING_RELEASE_DEG*robot_geometry::PI/180;
 // INTERMEDIATE POSES / SMOOTHING
