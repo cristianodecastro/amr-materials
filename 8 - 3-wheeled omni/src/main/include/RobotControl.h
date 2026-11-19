@@ -97,9 +97,10 @@ class Hardware {
 
   AHRS imu_{frc::SPI::Port::kMXP}; // preserve the original device sampling configuration
   YawRateEstimator yawRate_;
-  double imuYawDeg_=0,imuYawRateDps_=0,imuTemperatureC_=0,imuSampleTime_=-1,imuQuietSince_=-1;
+  double imuYawDeg_=0,imuYawRateDps_=0,imuTemperatureC_=0,imuSampleTime_=-1,imuCalibrationDoneSince_=-1;
+  double imuUpdateCount_=-1;
   std::uint32_t imuTimestamp_=0;
-  bool imuHaveSample_=false,imuConnected_=false,imuCalibrating_=true,imuReady_=false;
+  bool imuHaveSample_=false,imuConnected_=false,imuCalibrating_=true,imuReady_=false,imuDataFresh_=false;
 };
 
 // Mode-isolated pose observers. Only Autonomous uses the simplified odometry.

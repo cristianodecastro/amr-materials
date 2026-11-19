@@ -142,39 +142,38 @@ std::string Hardware::GetDriveStatus() const {
 void Hardware::SampleImu(double now) {
   imuConnected_=imu_.IsConnected(); imuCalibrating_=imu_.IsCalibrating();
   if (!imuConnected_) {
-    imuReady_=false; imuQuietSince_=-1; imuHaveSample_=false;
+    imuReady_=imuDataFresh_=false; imuCalibrationDoneSince_=-1; imuHaveSample_=false;
     yawRate_.Reset(); imuYawRateDps_=0; return;
   }
   const auto stamp=static_cast<std::uint32_t>(imu_.GetLastSensorTimestamp());
+  const double updates=imu_.GetUpdateCount();
   const double yaw=-imu_.GetYaw();
   if (stamp==static_cast<std::uint32_t>(imu_.GetLastSensorTimestamp()) && std::isfinite(yaw)) {
-    if (!imuHaveSample_ || stamp!=imuTimestamp_) {
+    if (!imuHaveSample_ || stamp!=imuTimestamp_ || (std::isfinite(updates) && updates!=imuUpdateCount_)) {
       imuSampleTime_=now; imuTimestamp_=stamp; imuHaveSample_=true;
+      imuUpdateCount_=updates;
       imuYawDeg_=yaw;
       imuYawRateDps_=imuCalibrating_?0:yawRate_.Update(yaw,stamp);
       imuTemperatureC_=imu_.GetTempC();
     }
   }
-  const bool fresh=imuHaveSample_ && now>=imuSampleTime_ && now-imuSampleTime_<=localization_config::IMU_SAMPLE_STALE_S;
-  if (imuCalibrating_ || !fresh) {
-    imuReady_=false; imuQuietSince_=-1; yawRate_.Reset(); imuYawRateDps_=0; return;
+  imuDataFresh_=imuHaveSample_ && now>=imuSampleTime_ && now-imuSampleTime_<=localization_config::IMU_SAMPLE_STALE_S;
+  if (imuCalibrating_ || !imuDataFresh_) {
+    imuReady_=false; imuCalibrationDoneSince_=-1; yawRate_.Reset(); imuYawRateDps_=0; return;
   }
   // Startup calibration is followed by a separate initial yaw-offset phase.
-  // Wait nonblockingly for stillness ONCE, not at goals or every motor stop.
-  if (!imuReady_) {
-    // IsRotating can itself be asserted by bad gyro bias (vendor API docs),
-    // so do not make that flag an indefinite startup lockout for this issue.
-    if (imu_.IsMoving()) imuQuietSince_=-1;
-    else if (imuQuietSince_<0) imuQuietSince_=now;
-    if (imuQuietSince_>=0 && now-imuQuietSince_>=localization_config::IMU_INITIAL_YAW_SETTLE_S) imuReady_=true;
-  }
+  // Fixed nonblocking grace period after calibration. Motion flags are not
+  // readiness gates: bias/noise can assert them indefinitely while stationary.
+  if (imuCalibrationDoneSince_<0) imuCalibrationDoneSince_=now;
+  imuReady_=now-imuCalibrationDoneSince_>=localization_config::IMU_INITIAL_YAW_SETTLE_S;
 }
 double Hardware::GetYawDegrees() { return imuYawDeg_; }
 double Hardware::GetYawRateDegreesPerSecond() { return imuYawRateDps_; }
 std::string Hardware::GetImuStatus() const {
   if (!imuConnected_) return "IMU disconnected";
   if (imuCalibrating_) return "Gyro calibrating: keep robot still";
-  if (!imuReady_) return "Initial yaw offset: keep robot still; waiting for fresh data";
+  if (!imuDataFresh_) return "IMU stream stale: waiting for new yaw packets";
+  if (!imuReady_) return "Initial yaw settling (2.1 s after calibration): keep robot still";
   std::ostringstream text;
   text<<std::fixed<<std::setprecision(3)<<"Ready | "<<imuYawRateDps_<<" deg/s | "
       <<std::setprecision(1)<<imuTemperatureC_<<" C";

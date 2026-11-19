@@ -280,7 +280,7 @@ void RobotSubsystem::InitializeMotionDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Motion");
   tab.AddString("Motion status",[this] {
     // Visible revision distinguishes this executable from stale robot/UI data.
-    const std::string revision="P8-r38 MVP | ";
+    const std::string revision="P8-r39 MVP | ";
     if (hardware_.HasDriveFault()) return revision+hardware_.GetDriveStatus();
     if (frc::RobotState::IsAutonomous()) return revision+"Autonomous drive diagnostics";
     return revision+teleopDrive_.GetStatus();
@@ -357,7 +357,7 @@ void RobotSubsystem::InitializeSensingDashboard() {
 void RobotSubsystem::InitializeTapeDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Tape test");
   tab.AddString("Tape status",[this] {
-    return std::string("P8-r38 MVP | ")+(!navigationSelected_ && !routineNotice_.empty()?routineNotice_:tapeRoutine_.GetStatus());
+    return std::string("P8-r39 MVP | ")+(!navigationSelected_ && !routineNotice_.empty()?routineNotice_:tapeRoutine_.GetStatus());
   }).WithPosition(0,0).WithSize(6,1);
   stopTape_=tab.Add("Stop tape",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
       .WithPosition(6,0).WithSize(2,1).GetEntry();
@@ -400,7 +400,7 @@ void RobotSubsystem::InitializeNavigationDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Navigation");
   tab.AddString("Navigation / reference status",[this] {
     const bool reference=navigation_.GetState()==GoalNavigationRoutine::State::Reference || !navigation_.HasReference();
-    std::string status=std::string("P8-r38 MVP | ")+(navigationSelected_ && !routineNotice_.empty()?routineNotice_:
+    std::string status=std::string("P8-r39 MVP | ")+(navigationSelected_ && !routineNotice_.empty()?routineNotice_:
         (reference?navigation_.InitializationStatus():navigation_.Status()));
     if (navigation_.HasReference()) status+=" | from "+std::string(selectedSource_<navigation_config::GOAL_COUNT?
         navigation_config::GOALS[selectedSource_].name:"Current pose");

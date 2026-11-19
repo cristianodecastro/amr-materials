@@ -52,7 +52,7 @@ Sonars use FlexDIO 2/3 front and 0/1 rear (even trigger, odd echo). IR sensors u
 
 Basic teleoperated driving and on-demand photo capture are retained. The inactive project-7 arena mission/planner, simple tasks, colour classification/calibration, Cobra recapture/file persistence, lift, and servo code are removed. Build and vendor configuration remain unchanged.
 
-## Sensor-supported navigation (P8-r38 MVP)
+## Sensor-supported navigation (P8-r39 MVP)
 
 Navigation follows your editable intermediate poses and final goal. Encoder counts and reset-relative gyro heading remain the basic motion estimate. Valid range readings provide a small position offset to guide driving; they do not veto a route or generate recovery faults. The obstacle map, grid searches, automatic detours, staging/recovery controller and planning worker have been deleted.
 
@@ -190,7 +190,7 @@ Code changes:
 
 - Sample yaw and its board timestamp together once per normal control cycle, then share that cached yaw/rate between odometry, control and dashboard. Reject a packet if its timestamp changes while reading it; do not mix two sensor updates.
 - Do not use pre-calibration constructor readings as the final arena reference. Wait nonblockingly for startup calibration and a 2.1-second initial yaw-offset settling interval with fresh packets, then synchronize the existing arena heading once. The control period and AHRS/SPI configuration remain unchanged.
-- The settling guard is startup/reconnect-only; it does not run at goals or each time the motors stop. It does not certify that factory calibration or physical mounting is correct. IsRotating is not used as a startup lockout because vendor documentation says poor gyro calibration itself can assert that flag.
+- The settling guard is startup/reconnect-only; it does not run at goals or each time the motors stop. It does not certify that factory calibration or physical mounting is correct. Neither IsMoving nor IsRotating gates readiness. The r37 IsMoving condition could continually restart the settling timer and keep IMU ready false indefinitely; r39 removes that condition. Readiness now requires connection, completed sensor calibration, fresh packets, and a fixed 2.1-second grace period. Freshness accepts a change in either the sensor timestamp or received-update counter. Gyro status distinguishes disconnected, calibrating, stale stream, and settling states.
 - Motion retains Gyro raw / offset deg. Sensing now includes Gyro status: calibration/settling/ready state, measured yaw rate in deg/s, and sensor temperature. The raw value is uncorrected by this project except for its CCW sign. It remains visible if the board itself drifts.
 
 Physical verification and recovery:
