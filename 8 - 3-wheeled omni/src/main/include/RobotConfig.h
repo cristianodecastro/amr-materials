@@ -54,6 +54,9 @@ static constexpr double MAX_WHEEL_SPEED_MMPS=2*robot_geometry::PI*WHEEL_RADIUS_M
 // Retain the requested half-speed chassis limit; no wheel trim or distance scale.
 static constexpr double TELEOP_SPEED_MMPS=MAX_WHEEL_SPEED_MMPS/2;
 static constexpr double CONTROL_PERIOD_S=0.020,MAX_CONTROL_GAP_S=0.10;
+// navX completes its initial yaw-offset phase AFTER IsCalibrating clears.
+// Nonblocking startup-only quiet interval; source SPI/IMU rates are unchanged.
+static constexpr double IMU_INITIAL_YAW_SETTLE_S=2.1,IMU_SAMPLE_STALE_S=0.20;
 // Autonomous can integrate a bounded late sample using the real elapsed time.
 // Controller ramps use a capped step; Teleop keeps its original timing limits.
 static constexpr double AUTO_MAX_SAMPLE_GAP_S=0.50,AUTO_MAX_CONTROL_STEP_S=0.04;
@@ -162,10 +165,10 @@ static constexpr double FINAL_BRAKE_RESPONSE_S=0.18;
 static constexpr double SPEED_MMPS=350,ACCEL_MMPS2=300;
 // TRANSIT HEADING: hysteresis prevents repeated small corrections.
 static constexpr double TRANSIT_HEADING_START_DEG=12,TRANSIT_HEADING_RELEASE_DEG=6;
-static constexpr double TRANSIT_HEADING_KP=0.8;
-// Use the normal Teleop yaw cap throughout Navigation; the tape-test helper
-// retains its separate 20 deg/s default. No near-goal yaw-speed reduction.
-static constexpr double MAX_YAW_RATE_DPS=localization_config::TELEOP_MAX_YAW_RATE_DPS;
+static constexpr double TRANSIT_HEADING_KP=1.0;
+// Navigation-only rotation tuning. Teleop retains 90 deg/s; tape retains its
+// separate 20 deg/s default. These values also apply on the final leg.
+static constexpr double MAX_YAW_RATE_DPS=120;
 static constexpr double MAX_YAW_RATE_RADPS=MAX_YAW_RATE_DPS*robot_geometry::PI/180;
 static constexpr double TRANSIT_HEADING_START_RAD=TRANSIT_HEADING_START_DEG*robot_geometry::PI/180;
 static constexpr double TRANSIT_HEADING_RELEASE_RAD=TRANSIT_HEADING_RELEASE_DEG*robot_geometry::PI/180;

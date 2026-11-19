@@ -44,6 +44,9 @@ class Hardware {
 
   double GetYawDegrees();
   double GetYawRateDegreesPerSecond();
+  void SampleImu(double now);
+  bool IsImuReady() const { return imuReady_; }
+  std::string GetImuStatus() const;
   double GetWorldAccelX_G();
   double GetWorldAccelY_G();
   bool IsImuConnected();
@@ -94,6 +97,9 @@ class Hardware {
 
   AHRS imu_{frc::SPI::Port::kMXP}; // preserve the original device sampling configuration
   YawRateEstimator yawRate_;
+  double imuYawDeg_=0,imuYawRateDps_=0,imuTemperatureC_=0,imuSampleTime_=-1,imuQuietSince_=-1;
+  std::uint32_t imuTimestamp_=0;
+  bool imuHaveSample_=false,imuConnected_=false,imuCalibrating_=true,imuReady_=false;
 };
 
 // Mode-isolated pose observers. Only Autonomous uses the simplified odometry.
@@ -120,6 +126,7 @@ class Localization {
   drive_kinematics::EncoderGyroOdometry odometry_;
   drive_kinematics::TeleopPoseTelemetry teleopTelemetry_;
   bool autonomousMode_=false;
+  bool imuSynchronized_=false;
 };
 // Project 8: manual driving and one explicit-start sensor/tape test.
 class RobotSubsystem : public frc2::SubsystemBase {

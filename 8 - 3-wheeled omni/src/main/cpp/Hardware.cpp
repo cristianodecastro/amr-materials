@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <sstream>
+#include <iomanip>
 
 namespace {
 constexpr bool PortsValid() {
@@ -137,19 +139,51 @@ std::string Hardware::GetDriveStatus() const {
 
 // The navX reports clockwise-positive yaw and a board frame with +Y forward,
 // +X right. Localization uses CCW-positive yaw and +X forward, +Y left.
-double Hardware::GetYawDegrees() { return -imu_.GetYaw(); }
-double Hardware::GetYawRateDegreesPerSecond() {
-  const auto timestamp=static_cast<std::uint32_t>(imu_.GetLastSensorTimestamp());
-  const double yaw=GetYawDegrees(); // same CCW sign and frame as localization
-  // An AHRS update may arrive between the timestamp and angle reads. Keep the
-  // last consistent rate rather than combine two different sensor samples.
-  if (timestamp!=static_cast<std::uint32_t>(imu_.GetLastSensorTimestamp())) return yawRate_.Rate();
-  return yawRate_.Update(yaw,timestamp);
+void Hardware::SampleImu(double now) {
+  imuConnected_=imu_.IsConnected(); imuCalibrating_=imu_.IsCalibrating();
+  if (!imuConnected_) {
+    imuReady_=false; imuQuietSince_=-1; imuHaveSample_=false;
+    yawRate_.Reset(); imuYawRateDps_=0; return;
+  }
+  const auto stamp=static_cast<std::uint32_t>(imu_.GetLastSensorTimestamp());
+  const double yaw=-imu_.GetYaw();
+  if (stamp==static_cast<std::uint32_t>(imu_.GetLastSensorTimestamp()) && std::isfinite(yaw)) {
+    if (!imuHaveSample_ || stamp!=imuTimestamp_) {
+      imuSampleTime_=now; imuTimestamp_=stamp; imuHaveSample_=true;
+      imuYawDeg_=yaw;
+      imuYawRateDps_=imuCalibrating_?0:yawRate_.Update(yaw,stamp);
+      imuTemperatureC_=imu_.GetTempC();
+    }
+  }
+  const bool fresh=imuHaveSample_ && now>=imuSampleTime_ && now-imuSampleTime_<=localization_config::IMU_SAMPLE_STALE_S;
+  if (imuCalibrating_ || !fresh) {
+    imuReady_=false; imuQuietSince_=-1; yawRate_.Reset(); imuYawRateDps_=0; return;
+  }
+  // Startup calibration is followed by a separate initial yaw-offset phase.
+  // Wait nonblockingly for stillness ONCE, not at goals or every motor stop.
+  if (!imuReady_) {
+    // IsRotating can itself be asserted by bad gyro bias (vendor API docs),
+    // so do not make that flag an indefinite startup lockout for this issue.
+    if (imu_.IsMoving()) imuQuietSince_=-1;
+    else if (imuQuietSince_<0) imuQuietSince_=now;
+    if (imuQuietSince_>=0 && now-imuQuietSince_>=localization_config::IMU_INITIAL_YAW_SETTLE_S) imuReady_=true;
+  }
+}
+double Hardware::GetYawDegrees() { return imuYawDeg_; }
+double Hardware::GetYawRateDegreesPerSecond() { return imuYawRateDps_; }
+std::string Hardware::GetImuStatus() const {
+  if (!imuConnected_) return "IMU disconnected";
+  if (imuCalibrating_) return "Gyro calibrating: keep robot still";
+  if (!imuReady_) return "Initial yaw offset: keep robot still; waiting for fresh data";
+  std::ostringstream text;
+  text<<std::fixed<<std::setprecision(3)<<"Ready | "<<imuYawRateDps_<<" deg/s | "
+      <<std::setprecision(1)<<imuTemperatureC_<<" C";
+  return text.str();
 }
 double Hardware::GetWorldAccelX_G() { return imu_.GetWorldLinearAccelY(); }
 double Hardware::GetWorldAccelY_G() { return -imu_.GetWorldLinearAccelX(); }
-bool Hardware::IsImuConnected() { return imu_.IsConnected(); }
-bool Hardware::IsImuCalibrating() { return imu_.IsCalibrating(); }
+bool Hardware::IsImuConnected() { return imuConnected_; }
+bool Hardware::IsImuCalibrating() { return imuCalibrating_; }
 
 void Hardware::PingSonar(int index) {
   switch (index) {

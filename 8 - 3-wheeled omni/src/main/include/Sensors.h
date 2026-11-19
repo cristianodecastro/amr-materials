@@ -30,6 +30,7 @@ inline IrReading SharpIrFromVoltage(double voltage) {
 // not divide by the robot loop period or treat repeated samples as zero speed.
 class YawRateEstimator {
  public:
+  void Reset() { haveSample_=false; rate_=0; }
   double Update(double yawDeg,std::uint32_t timestampMS) {
     if (!std::isfinite(yawDeg)) { haveSample_=false; rate_=0; return rate_; }
     if (!haveSample_) {

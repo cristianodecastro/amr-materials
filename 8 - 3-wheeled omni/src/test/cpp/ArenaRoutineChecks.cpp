@@ -204,6 +204,11 @@ void GyroRelativeHeadingAndCurvedTravel() {
   odometry.Reset({0,0,0},counts,137);
   REQUIRE_ARENA(odometry.Update(counts,137,30,0.02));
   REQUIRE_ARENA(Near(odometry.Pose().headingRad,0)); // no extra gyro-rate integration
+  const double fixedOffset=odometry.HeadingOffsetRad();
+  REQUIRE_ARENA(odometry.Update(counts,137,4.0/60,0.02)); // reported 4 deg/min rate is not integrated twice
+  REQUIRE_ARENA(Near(odometry.Pose().headingRad,0) && odometry.HeadingOffsetRad()==fixedOffset);
+  REQUIRE_ARENA(odometry.Update(counts,138,0,0.02)); // yaw angle itself changes: preserve that measured change
+  REQUIRE_ARENA(Near(odometry.Pose().headingRad,robot_geometry::Radians(1)) && odometry.HeadingOffsetRad()==fixedOffset);
   REQUIRE_ARENA(odometry.Update(counts,137,0,0.2) && odometry.Healthy());
   REQUIRE_ARENA(!odometry.Update(counts,137,0,0.6) && !odometry.Healthy());
   REQUIRE_ARENA(Near(odometry.Pose().x_MM,0));

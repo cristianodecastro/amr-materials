@@ -49,8 +49,8 @@ void RobotSubsystem::Periodic() {
   controlDt_=dt;
   if (std::isfinite(dt)) peakControlDt_=std::max(peakControlDt_,dt);
   const bool enabled=frc::RobotState::IsEnabled();
-  if (hardware_.IsImuConnected() && !hardware_.IsImuCalibrating())
-    localization_.UpdateOdometry(dt);
+  hardware_.SampleImu(now); // one coherent raw yaw/rate packet for this control frame
+  localization_.UpdateOdometry(dt);
   // Live sensing at 20 Hz; classification always uses supplied calibration.
   if (lastSensorTime_<0 || now-lastSensorTime_>=localization_config::SENSOR_UPDATE_PERIOD_S) {
     line_=hardware_.ReadLine();
@@ -114,14 +114,14 @@ NavigationInput RobotSubsystem::NavigationSample(double now,double dt,bool refer
   const bool station=frc::DriverStation::GetInstance().IsDSAttached(),imu=hardware_.IsImuConnected();
   // A sensor reset can recover old odometry faults; it still requires live IMU,
   // Control Station and valid clock/range samples. Travel requires full odometry.
-  const bool calibrating=hardware_.IsImuCalibrating(),odometry=referenceOnly || localization_.IsHealthy();
+  const bool calibrating=!hardware_.IsImuReady(),odometry=referenceOnly || localization_.IsHealthy();
   in.motion={localization_.GetPose(),now,dt,
       imu && !calibrating && odometry && station,false,false,
       robot_geometry::Radians(hardware_.GetYawRateDegreesPerSecond())};
   in.forwardMMps=localization_.GetBodyVelocityX_MMps(); in.leftMMps=localization_.GetBodyVelocityY_MMps();
   if (!station) in.healthIssue="Control Station disconnected";
   else if (!imu) in.healthIssue="IMU disconnected";
-  else if (calibrating) in.healthIssue="IMU is calibrating";
+  else if (calibrating) in.healthIssue=hardware_.GetImuStatus();
   else if (!odometry) in.healthIssue=std::string("Odometry: ")+localization_.OdometryFaultReason();
   in.rangeMM[0]=irReading_[0].distanceMM; in.valid[0]=irReading_[0].valid; in.stamp[0]=lastSensorTime_;
   in.rangeMM[2]=irReading_[1].distanceMM; in.valid[2]=irReading_[1].valid; in.stamp[2]=lastSensorTime_;
@@ -197,7 +197,7 @@ void RobotSubsystem::UpdateTapeRoutine(double now,double dt,bool startLeft,bool 
   TapeRoutineInput in;
   // Actual body velocity and sustained pose tolerances govern completion.
   in.motion={localization_.GetPose(),now,dt,
-      hardware_.IsImuConnected() && !hardware_.IsImuCalibrating() && localization_.IsHealthy() &&
+      hardware_.IsImuReady() && localization_.IsHealthy() &&
           frc::DriverStation::GetInstance().IsDSAttached(),
       start,stop,robot_geometry::Radians(hardware_.GetYawRateDegreesPerSecond())};
   in.leftRangeMM=irReading_[0].distanceMM; in.leftValid=irReading_[0].valid; in.leftTime=lastSensorTime_;
@@ -280,7 +280,7 @@ void RobotSubsystem::InitializeMotionDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Motion");
   tab.AddString("Motion status",[this] {
     // Visible revision distinguishes this executable from stale robot/UI data.
-    const std::string revision="P8-r36 MVP | ";
+    const std::string revision="P8-r38 MVP | ";
     if (hardware_.HasDriveFault()) return revision+hardware_.GetDriveStatus();
     if (frc::RobotState::IsAutonomous()) return revision+"Autonomous drive diagnostics";
     return revision+teleopDrive_.GetStatus();
@@ -288,7 +288,7 @@ void RobotSubsystem::InitializeMotionDashboard() {
   tab.AddBoolean("Enabled",[] { return frc::RobotState::IsEnabled(); }).WithPosition(4,0).WithSize(1,1);
   tab.AddBoolean("Controller",[this] { return driverConnected_; }).WithPosition(5,0).WithSize(1,1);
   tab.AddBoolean("Odometry",[this] { return localization_.IsHealthy(); }).WithPosition(6,0).WithSize(1,1);
-  tab.AddBoolean("IMU ready",[this] { return hardware_.IsImuConnected() && !hardware_.IsImuCalibrating(); })
+  tab.AddBoolean("IMU ready",[this] { return hardware_.IsImuReady(); })
       .WithPosition(7,0).WithSize(1,1);
   tab.AddNumber("X (mm)",[this] { return localization_.GetPose().x_MM; }).WithPosition(0,1).WithSize(2,1);
   tab.AddNumber("Y (mm)",[this] { return localization_.GetPose().y_MM; }).WithPosition(2,1).WithSize(2,1);
@@ -350,13 +350,14 @@ void RobotSubsystem::InitializeSensingDashboard() {
   }
   tab.AddString("Sensing status",[this] {
     return std::string("All sensors live; fixed Cobra calibration | ")+cobraCheck_.Status();
-  }).WithPosition(0,4).WithSize(8,1);
+  }).WithPosition(0,4).WithSize(4,1);
+  tab.AddString("Gyro status",[this] { return hardware_.GetImuStatus(); }).WithPosition(4,4).WithSize(4,1);
 }
 
 void RobotSubsystem::InitializeTapeDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Tape test");
   tab.AddString("Tape status",[this] {
-    return std::string("P8-r36 MVP | ")+(!navigationSelected_ && !routineNotice_.empty()?routineNotice_:tapeRoutine_.GetStatus());
+    return std::string("P8-r38 MVP | ")+(!navigationSelected_ && !routineNotice_.empty()?routineNotice_:tapeRoutine_.GetStatus());
   }).WithPosition(0,0).WithSize(6,1);
   stopTape_=tab.Add("Stop tape",false).WithWidget(frc::BuiltInWidgets::kToggleButton)
       .WithPosition(6,0).WithSize(2,1).GetEntry();
@@ -399,7 +400,7 @@ void RobotSubsystem::InitializeNavigationDashboard() {
   auto& tab=frc::Shuffleboard::GetTab("Navigation");
   tab.AddString("Navigation / reference status",[this] {
     const bool reference=navigation_.GetState()==GoalNavigationRoutine::State::Reference || !navigation_.HasReference();
-    std::string status=std::string("P8-r36 MVP | ")+(navigationSelected_ && !routineNotice_.empty()?routineNotice_:
+    std::string status=std::string("P8-r38 MVP | ")+(navigationSelected_ && !routineNotice_.empty()?routineNotice_:
         (reference?navigation_.InitializationStatus():navigation_.Status()));
     if (navigation_.HasReference()) status+=" | from "+std::string(selectedSource_<navigation_config::GOAL_COUNT?
         navigation_config::GOALS[selectedSource_].name:"Current pose");
